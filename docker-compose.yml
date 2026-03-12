@@ -1,0 +1,373 @@
+version: "3.4"
+
+services:
+  ############################
+  # PostgreSQL Database (Actor State Store)
+  ############################
+  postgres-db:
+    image: postgres:16.2-alpine
+    restart: always
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=daprmq_secret_123
+      - POSTGRES_DB=actor_state
+    ports:
+      - "5432:5432"
+    networks:
+      - daprmq-network
+    volumes:
+      - postgres-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  ############################
+  # pgAdmin (Database Management UI)
+  ############################
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    restart: always
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@admin.com
+      - PGADMIN_DEFAULT_PASSWORD=admin
+      - PGADMIN_CONFIG_SERVER_MODE=False
+      - PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED=False
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+      - ./dapr/pgadmin/servers.json:/pgadmin4/servers.json:ro
+      - ./dapr/pgadmin/pgpassfile:/tmp/pgpassfile:ro
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+    networks:
+      - daprmq-network
+
+  ############################
+  # Dapr Placement Service
+  ############################
+  placement:
+    image: "${DAPR_PLACEMENT_VERSION}"
+    command: ["./placement", "-port", "50005", "-log-level", "info"]
+    ports:
+      - "50005:50005"
+    networks:
+      - daprmq-network
+
+  ############################
+  # .NET API Server + Dapr Sidecar
+  ############################
+  dotnet-api-server:
+    container_name: daprmq-host-1
+    build:
+      context: ./dotnet
+      dockerfile: Dockerfile
+    environment:
+      - ASPNETCORE_URLS=http://+:8080
+      - DAPR_GRPC_ENDPOINT=http://dotnet-api-server-dapr:50003
+      - DAPR_HTTP_ENDPOINT=http://dotnet-api-server-dapr:3502
+      - REGISTER_ACTORS=true
+      - SEGMENT_DELETION_RETENTION_SECONDS=${SEGMENT_DELETION_RETENTION_SECONDS}
+    ports:
+      - "8000:8080" # REST HTTP/1.1
+      - "8100:8081" # gRPC HTTP/2
+    depends_on:
+      dotnet-api-server-dapr:
+        condition: service_started
+    networks:
+      - daprmq-network
+
+  dotnet-api-server-2:
+    container_name: daprmq-host-2
+    build:
+      context: ./dotnet
+      dockerfile: Dockerfile
+    environment:
+      - ASPNETCORE_URLS=http://+:8080
+      - DAPR_GRPC_ENDPOINT=http://dotnet-api-server-dapr-2:50003
+      - DAPR_HTTP_ENDPOINT=http://dotnet-api-server-dapr-2:3502
+      - REGISTER_ACTORS=true
+      - SEGMENT_DELETION_RETENTION_SECONDS=${SEGMENT_DELETION_RETENTION_SECONDS}
+    ports:
+      - "8001:8080" # REST HTTP/1.1
+      - "8101:8081" # gRPC HTTP/2
+    depends_on:
+      dotnet-api-server-dapr-2:
+        condition: service_started
+    networks:
+      - daprmq-network
+
+  dotnet-api-server-3:
+    container_name: daprmq-gateway
+    build:
+      context: ./dotnet
+      dockerfile: Dockerfile
+    environment:
+      - ASPNETCORE_URLS=http://+:8080
+      - DAPR_GRPC_ENDPOINT=http://dotnet-api-server-dapr-3:50003
+      - DAPR_HTTP_ENDPOINT=http://dotnet-api-server-dapr-3:3502
+      - REGISTER_ACTORS=false
+      - SEGMENT_DELETION_RETENTION_SECONDS=${SEGMENT_DELETION_RETENTION_SECONDS}
+    ports:
+      - "8002:8080" # REST HTTP/1.1
+      - "8102:8081" # gRPC HTTP/2
+    depends_on:
+      dotnet-api-server-dapr-3:
+        condition: service_started
+    networks:
+      - daprmq-network
+
+  dotnet-api-server-4:
+    container_name: daprmq-host-3
+    build:
+      context: ./dotnet
+      dockerfile: Dockerfile
+    environment:
+      - ASPNETCORE_URLS=http://+:8080
+      - DAPR_GRPC_ENDPOINT=http://dotnet-api-server-dapr-4:50003
+      - DAPR_HTTP_ENDPOINT=http://dotnet-api-server-dapr-4:3502
+      - REGISTER_ACTORS=true
+      - SEGMENT_DELETION_RETENTION_SECONDS=${SEGMENT_DELETION_RETENTION_SECONDS}
+    ports:
+      - "8003:8080" # REST HTTP/1.1
+      - "8103:8081" # gRPC HTTP/2
+    depends_on:
+      dotnet-api-server-dapr-4:
+        condition: service_started
+    networks:
+      - daprmq-network
+
+  dotnet-api-server-dapr:
+    container_name: daprmq-host-1-dapr
+    image: "${DAPR_RUNTIME_VERSION}"
+    command:
+      [
+        "./daprd",
+        "-app-id",
+        "daprmq-service",
+        "-app-channel-address",
+        "dotnet-api-server",
+        "-app-port",
+        "8080",
+        "-dapr-http-port",
+        "3502",
+        "-dapr-grpc-port",
+        "50003",
+        "-placement-host-address",
+        "placement:50005",
+        "-scheduler-host-address",
+        "scheduler-0:50006",
+        "-resources-path",
+        "/components",
+        "-config",
+        "/dapr-config/config.yml",
+        "-log-level",
+        "info",
+      ]
+    volumes:
+      - "./dapr/components:/components"
+      - "./dapr/config:/dapr-config"
+    ports:
+      - "3502:3502" # Dapr HTTP port for host access
+      - "50003:50003" # Dapr gRPC port for host access
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+      placement:
+        condition: service_started
+    healthcheck:
+      test:
+        ["CMD", "wget", "-q", "--spider", "http://localhost:3502/v1.0/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - daprmq-network
+
+  dotnet-api-server-dapr-2:
+    container_name: daprmq-host-2-dapr
+    image: "${DAPR_RUNTIME_VERSION}"
+    command:
+      [
+        "./daprd",
+        "-app-id",
+        "daprmq-service",
+        "-app-channel-address",
+        "dotnet-api-server-2",
+        "-app-port",
+        "8080",
+        "-dapr-http-port",
+        "3502",
+        "-dapr-grpc-port",
+        "50003",
+        "-placement-host-address",
+        "placement:50005",
+        "-scheduler-host-address",
+        "scheduler-0:50006",
+        "-resources-path",
+        "/components",
+        "-config",
+        "/dapr-config/config.yml",
+        "-log-level",
+        "info",
+      ]
+    volumes:
+      - "./dapr/components:/components"
+      - "./dapr/config:/dapr-config"
+    ports:
+      - "3503:3502" # Dapr HTTP port for host access
+      - "50004:50003" # Dapr gRPC port for host access
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+      placement:
+        condition: service_started
+    healthcheck:
+      test:
+        ["CMD", "wget", "-q", "--spider", "http://localhost:3502/v1.0/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - daprmq-network
+
+  dotnet-api-server-dapr-3:
+    container_name: daprmq-gateway-dapr
+    image: "${DAPR_RUNTIME_VERSION}"
+    command:
+      [
+        "./daprd",
+        "-app-id",
+        "daprmq-service",
+        "-app-channel-address",
+        "dotnet-api-server-3",
+        "-app-port",
+        "8080",
+        "-dapr-http-port",
+        "3502",
+        "-dapr-grpc-port",
+        "50003",
+        "-placement-host-address",
+        "placement:50005",
+        "-scheduler-host-address",
+        "scheduler-0:50006",
+        "-resources-path",
+        "/components",
+        "-config",
+        "/dapr-config/config.yml",
+        "-log-level",
+        "info",
+      ]
+    volumes:
+      - "./dapr/components:/components"
+      - "./dapr/config:/dapr-config"
+    ports:
+      - "3504:3502" # Dapr HTTP port for host access
+      - "50007:50003" # Dapr gRPC port for host access
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+      placement:
+        condition: service_started
+    healthcheck:
+      test:
+        ["CMD", "wget", "-q", "--spider", "http://localhost:3502/v1.0/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - daprmq-network
+
+  dotnet-api-server-dapr-4:
+    container_name: daprmq-host-3-dapr
+    image: "${DAPR_RUNTIME_VERSION}"
+    command:
+      [
+        "./daprd",
+        "-app-id",
+        "daprmq-service",
+        "-app-channel-address",
+        "dotnet-api-server-4",
+        "-app-port",
+        "8080",
+        "-dapr-http-port",
+        "3502",
+        "-dapr-grpc-port",
+        "50003",
+        "-placement-host-address",
+        "placement:50005",
+        "-scheduler-host-address",
+        "scheduler-0:50006",
+        "-resources-path",
+        "/components",
+        "-config",
+        "/dapr-config/config.yml",
+        "-log-level",
+        "info",
+      ]
+    volumes:
+      - "./dapr/components:/components"
+      - "./dapr/config:/dapr-config"
+    ports:
+      - "3505:3502" # Dapr HTTP port for host access
+      - "50008:50003" # Dapr gRPC port for host access
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+      placement:
+        condition: service_started
+    healthcheck:
+      test:
+        ["CMD", "wget", "-q", "--spider", "http://localhost:3502/v1.0/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - daprmq-network
+
+  ############################
+  # Dapr Scheduler Service
+  ############################
+  scheduler-0:
+    image: "${DAPR_SCHEDULER_VERSION}"
+    command:
+      [
+        "./scheduler",
+        "--id",
+        "scheduler-0",
+        "--listen-address",
+        "0.0.0.0",
+        "--etcd-data-dir",
+        "/var/run/dapr/scheduler",
+        "--etcd-initial-cluster",
+        "scheduler-0=http://scheduler-0:2380",
+        "--port",
+        "50006",
+        "--override-broadcast-host-port",
+        "scheduler-0:50006",
+      ]
+    volumes:
+      - ./dapr_scheduler:/var/run/dapr/scheduler
+    ports:
+      - "50006:50006"
+      - "2380:2380"
+    networks:
+      - daprmq-network
+
+networks:
+  daprmq-network:
+    driver: bridge
+
+volumes:
+  postgres-db-data:
+    driver: local
+  pgadmin-data:
+    driver: local

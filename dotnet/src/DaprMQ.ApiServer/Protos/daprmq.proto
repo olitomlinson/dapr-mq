@@ -1,0 +1,221 @@
+syntax = "proto3";
+
+package daprmq;
+
+option csharp_namespace = "DaprMQ.ApiServer.Grpc";
+
+// DaprMQ service provides FIFO queue operations with priority support,
+// acknowledgment-based message handling, and lock management.
+service DaprMQ {
+  // Push an item to the queue with optional priority.
+  // Priority 0 is the fast lane, priority 1 (default) is normal processing.
+  // Lower priority numbers are processed first.
+  rpc Push(PushRequest) returns (PushResponse);
+
+  // Pop a single item from the queue without acknowledgment.
+  // Returns immediately if queue is empty or item is locked.
+  rpc Pop(PopRequest) returns (PopResponse);
+
+  // Pop a single item from the queue with acknowledgment.
+  // Creates a lock with TTL and returns a lock_id for acknowledgment.
+  rpc PopWithAck(PopWithAckRequest) returns (PopWithAckResponse);
+
+  // Acknowledge and permanently remove a locked item from the queue.
+  // Requires valid lock_id from PopWithAck.
+  rpc Acknowledge(AcknowledgeRequest) returns (AcknowledgeResponse);
+
+  // Extend the TTL of an existing lock.
+  // Useful for long-running processing that needs more time.
+  rpc ExtendLock(ExtendLockRequest) returns (ExtendLockResponse);
+
+  // Move a locked item to the dead letter queue and void the lock.
+  // Used when a message cannot be processed successfully after multiple attempts.
+  rpc DeadLetter(DeadLetterRequest) returns (DeadLetterResponse);
+}
+
+// Request to push an item to a queue
+message PushRequest {
+  // Queue identifier (actor ID)
+  string queue_id = 1;
+
+  // Item data as JSON string
+  string item_json = 2;
+
+  // Priority level (0=fast lane, 1=default, 2+=lower priority)
+  // Lower numbers processed first
+  int32 priority = 3;
+}
+
+// Response from push operation
+message PushResponse {
+  // Whether the push was successful
+  bool success = 1;
+
+  // Human-readable message
+  string message = 2;
+}
+
+// Request to pop an item without acknowledgment
+message PopRequest {
+  // Queue identifier (actor ID)
+  string queue_id = 1;
+}
+
+// Response from pop operation (without acknowledgment)
+message PopResponse {
+  // Result of the pop operation
+  oneof result {
+    // Item successfully popped
+    PopSuccess success = 1;
+
+    // Queue is empty
+    PopEmpty empty = 2;
+
+    // Item is locked by another consumer
+    PopLocked locked = 3;
+  }
+}
+
+// Successfully popped item
+message PopSuccess {
+  // Item data as JSON string
+  string item_json = 1;
+}
+
+// Queue is empty
+message PopEmpty {
+  // Human-readable message
+  string message = 1;
+}
+
+// Item is locked
+message PopLocked {
+  // Human-readable message explaining the lock
+  string message = 1;
+
+  // Unix timestamp (seconds since epoch) when lock expires
+  double lock_expires_at = 2;
+}
+
+// Request to pop an item with acknowledgment
+message PopWithAckRequest {
+  // Queue identifier (actor ID)
+  string queue_id = 1;
+
+  // Lock time-to-live in seconds (default: 30)
+  int32 ttl_seconds = 2;
+}
+
+// Response from pop with acknowledgment operation
+message PopWithAckResponse {
+  // Result of the pop operation
+  oneof result {
+    // Item successfully popped with lock created
+    PopWithAckSuccess success = 1;
+
+    // Queue is empty
+    PopEmpty empty = 2;
+
+    // Item is already locked by another consumer
+    PopLocked locked = 3;
+  }
+}
+
+// Successfully popped item with lock
+message PopWithAckSuccess {
+  // Item data as JSON string
+  string item_json = 1;
+
+  // Lock identifier for acknowledgment
+  string lock_id = 2;
+
+  // Unix timestamp (seconds since epoch) when lock expires
+  double lock_expires_at = 3;
+}
+
+// Request to acknowledge and remove a locked item
+message AcknowledgeRequest {
+  // Queue identifier (actor ID)
+  string queue_id = 1;
+
+  // Lock identifier from PopWithAck
+  string lock_id = 2;
+}
+
+// Response from acknowledge operation
+message AcknowledgeResponse {
+  // Whether acknowledgment was successful
+  bool success = 1;
+
+  // Human-readable message
+  string message = 2;
+
+  // Number of items acknowledged and removed
+  int32 items_acknowledged = 3;
+
+  // Error code if failed (LOCK_EXPIRED, LOCK_NOT_FOUND, INVALID_LOCK_ID)
+  string error_code = 4;
+}
+
+// Request to extend lock TTL
+message ExtendLockRequest {
+  // Queue identifier (actor ID)
+  string queue_id = 1;
+
+  // Lock identifier from PopWithAck
+  string lock_id = 2;
+
+  // Additional TTL in seconds to add (default: 30)
+  int32 additional_ttl_seconds = 3;
+}
+
+// Response from extend lock operation
+message ExtendLockResponse {
+  // Whether lock extension was successful
+  bool success = 1;
+
+  // Unix timestamp (seconds since epoch) of new expiration time
+  double new_expires_at = 2;
+
+  // Error code if failed (LOCK_EXPIRED, LOCK_NOT_FOUND, INVALID_LOCK_ID, INVALID_TTL)
+  string error_code = 3;
+
+  // Human-readable error message if failed
+  string error_message = 4;
+}
+
+// Request to move locked item to dead letter queue
+message DeadLetterRequest {
+  // Queue identifier (actor ID)
+  string queue_id = 1;
+
+  // Lock identifier from PopWithAck
+  string lock_id = 2;
+}
+
+// Response from dead letter operation
+message DeadLetterResponse {
+  // Result of the dead letter operation
+  oneof result {
+    // Item successfully moved to DLQ
+    DeadLetterSuccess success = 1;
+
+    // Failed to move item
+    DeadLetterError error = 2;
+  }
+}
+
+// Successfully moved item to dead letter queue
+message DeadLetterSuccess {
+  // Dead letter queue actor ID where item was moved
+  string dlq_actor_id = 1;
+}
+
+// Failed to move item to dead letter queue
+message DeadLetterError {
+  // Error code (LOCK_EXPIRED, LOCK_NOT_FOUND, INVALID_LOCK_ID)
+  string error_code = 1;
+
+  // Human-readable error message
+  string message = 2;
+}
