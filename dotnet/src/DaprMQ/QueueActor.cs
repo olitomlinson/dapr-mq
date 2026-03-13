@@ -320,9 +320,9 @@ public class QueueActor : Actor, IQueueActor
             throw new InvalidOperationException($"Queue corrupted: {metadata.ErrorMessage}");
         }
 
-        var (response, _) = await PopWithPriorityAsync();
+        var (response, priority) = await PopWithPriorityAsync();
         await StateManager.SaveStateAsync();  // Commit the staged changes atomically
-        return response;
+        return response with { Priority = priority };
     }
 
     /// <summary>
@@ -676,6 +676,7 @@ public class QueueActor : Actor, IQueueActor
             return new PopWithAckResponse
             {
                 ItemJson = peekResult.ItemJson,
+                Priority = priority,
                 Locked = true,
                 IsEmpty = false,
                 LockId = lockId,

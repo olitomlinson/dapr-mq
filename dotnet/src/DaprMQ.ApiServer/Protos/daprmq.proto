@@ -80,6 +80,9 @@ message PopResponse {
 message PopSuccess {
   // Item data as JSON string
   string item_json = 1;
+
+  // Priority level of the popped item
+  optional int32 priority = 2;
 }
 
 // Queue is empty
@@ -131,6 +134,9 @@ message PopWithAckSuccess {
 
   // Unix timestamp (seconds since epoch) when lock expires
   double lock_expires_at = 3;
+
+  // Priority level of the popped item
+  optional int32 priority = 4;
 }
 
 // Request to acknowledge and remove a locked item

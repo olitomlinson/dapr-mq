@@ -199,6 +199,7 @@ public class QueueActorTests
         // Assert
         Assert.NotNull(result.ItemJson);
         Assert.False(result.Locked);
+        Assert.Equal(0, result.Priority); // Verify priority is returned
         var returnedItem = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(result.ItemJson);
         Assert.Equal("test", returnedItem!["message"].ToString());
     }
@@ -261,6 +262,7 @@ public class QueueActorTests
         Assert.True(result.Locked);
         Assert.NotNull(result.LockId);
         Assert.NotNull(result.ItemJson);
+        Assert.Equal(0, result.Priority); // Verify priority is returned
     }
 
     [Fact]
@@ -336,6 +338,11 @@ public class QueueActorTests
 
         Assert.True(metadata.Queues.ContainsKey(1), "Item should be in priority 1 queue");
         Assert.False(metadata.Queues.ContainsKey(0), "Item should NOT be in priority 0 queue");
+
+        // Also verify Pop returns priority 1
+        var popResult = await actor.Pop();
+        Assert.NotNull(popResult.ItemJson);
+        Assert.Equal(1, popResult.Priority); // Verify default priority is returned
     }
 
     [Fact]

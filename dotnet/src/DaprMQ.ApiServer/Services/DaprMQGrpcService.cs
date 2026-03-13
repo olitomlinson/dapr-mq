@@ -100,7 +100,8 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
             {
                 Success = new PopSuccess
                 {
-                    ItemJson = result.ItemJson ?? ""
+                    ItemJson = result.ItemJson ?? "",
+                    Priority = result.Priority ?? 1
                 }
             };
         }
@@ -156,7 +157,8 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                 {
                     ItemJson = result.ItemJson ?? "",
                     LockId = result.LockId ?? "",
-                    LockExpiresAt = result.LockExpiresAt ?? 0
+                    LockExpiresAt = result.LockExpiresAt ?? 0,
+                    Priority = result.Priority ?? 1
                 }
             };
         }

@@ -24,7 +24,8 @@ public record ApiPushResponse(
 );
 
 public record ApiPopResponse(
-    object Item
+    object Item,
+    int? Priority = null
 );
 
 public record ApiPopWithAckResponse(
@@ -32,7 +33,8 @@ public record ApiPopWithAckResponse(
     bool Locked,
     string? LockId,
     double? LockExpiresAt,
-    string? Message
+    string? Message,
+    int? Priority = null
 );
 
 public record ApiAcknowledgeResponse(

@@ -116,7 +116,8 @@ public class QueueController : ControllerBase
                 result.Locked,
                 result.LockId,
                 result.LockExpiresAt,
-                result.Message));
+                result.Message,
+                result.Priority));
 
             }
             else
@@ -145,7 +146,7 @@ public class QueueController : ControllerBase
                     return NoContent();
                 }
 
-                return Ok(new ApiPopResponse(JsonDocument.Parse(result.ItemJson).RootElement));
+                return Ok(new ApiPopResponse(JsonDocument.Parse(result.ItemJson).RootElement, result.Priority));
             }
         }
         catch (Exception ex)

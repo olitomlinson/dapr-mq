@@ -49,6 +49,11 @@ public record PopResponse
     public string? ItemJson { get; init; }
 
     /// <summary>
+    /// Priority of the popped item (null if no item was popped).
+    /// </summary>
+    public int? Priority { get; init; }
+
+    /// <summary>
     /// Whether the queue is locked.
     /// </summary>
     public bool Locked { get; init; }
@@ -78,6 +83,11 @@ public record PopWithAckResponse
     /// The popped item (as JSON string), or null if queue is empty or locked.
     /// </summary>
     public string? ItemJson { get; init; }
+
+    /// <summary>
+    /// Priority of the popped item (null if no item was popped).
+    /// </summary>
+    public int? Priority { get; init; }
 
     /// <summary>
     /// Whether the queue is locked.
