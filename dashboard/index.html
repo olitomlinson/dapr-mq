@@ -59,6 +59,10 @@
             cursor: not-allowed;
         }
 
+        button.priority-0-btn {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ee5a6f 100%);
+        }
+
         pre {
             background: rgba(0, 0, 0, 0.3);
             padding: 15px;
@@ -137,6 +141,115 @@
             font-family: monospace;
             word-wrap: break-word;
         }
+
+        .message-container {
+            position: relative;
+        }
+
+        .priority-badge {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+            color: #ffffff;
+        }
+
+        .priority-0 {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ee5a6f 100%);
+        }
+
+        .priority-1 {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+
+        .priority-2 {
+            background: linear-gradient(135deg, #00d4aa 0%, #00bfa5 100%);
+        }
+
+        .priority-default {
+            background: linear-gradient(135deg, #a0aec0 0%, #718096 100%);
+        }
+
+        .lock-info {
+            font-size: 12px;
+            color: #00d4aa;
+            margin-top: 0;
+            padding: 12px 15px;
+            background: rgba(0, 212, 170, 0.15);
+            border-radius: 0 0 8px 8px;
+            border-top: 2px solid rgba(0, 212, 170, 0.3);
+        }
+
+        .message-container pre:has(+ .lock-info) {
+            margin-bottom: 0;
+            border-radius: 8px 8px 0 0;
+        }
+
+        .lock-id {
+            font-family: monospace;
+            font-size: 11px;
+            word-break: break-all;
+        }
+
+        .lock-actions {
+            margin-top: 10px;
+            display: flex;
+            gap: 8px;
+        }
+
+        .lock-actions button {
+            flex: 1;
+            padding: 8px 12px;
+            font-size: 13px;
+        }
+
+        .ack-btn {
+            background: linear-gradient(135deg, #48bb78 0%, #38a169 100%);
+        }
+
+        .deadletter-btn {
+            background: linear-gradient(135deg, #fc8181 0%, #f56565 100%);
+        }
+
+        .lock-info.acknowledged {
+            background: rgba(72, 187, 120, 0.15);
+            border-top-color: rgba(72, 187, 120, 0.3);
+            color: #48bb78;
+        }
+
+        .lock-info.deadlettered {
+            background: rgba(245, 101, 101, 0.15);
+            border-top-color: rgba(245, 101, 101, 0.3);
+            color: #f56565;
+        }
+
+        .lock-info a {
+            color: inherit;
+            font-weight: bold;
+        }
+
+        .lock-info a:hover {
+            opacity: 0.8;
+        }
+
+        .queue-badge {
+            display: inline-block;
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: bold;
+            margin-left: 12px;
+            vertical-align: middle;
+        }
+
+        .deadletter-badge {
+            background: linear-gradient(135deg, #fc8181 0%, #f56565 100%);
+            color: #ffffff;
+            box-shadow: 0 2px 8px rgba(245, 101, 101, 0.3);
+        }
     </style>
 </head>
 <body>
@@ -185,7 +298,10 @@
         };
 
         const Dashboard = () => {
-            const [queueId] = useState(() => generateQueueId());
+            const [queueId] = useState(() => {
+                const params = new URLSearchParams(window.location.search);
+                return params.get('queue_name') || generateQueueId();
+            });
             const [currentPayload, setCurrentPayload] = useState(() => generatePayload());
             const [messagesPushed, setMessagesPushed] = useState(0);
             const [messagesPopped, setMessagesPopped] = useState(0);
@@ -194,6 +310,15 @@
             const [isPushing, setIsPushing] = useState(false);
             const [isPopping, setIsPopping] = useState(false);
             const [error, setError] = useState(null);
+
+            const isDeadLetterQueue = queueId.endsWith('-deadletter');
+
+            const getPriorityClass = (priority) => {
+                if (priority === 0) return 'priority-0';
+                if (priority === 1) return 'priority-1';
+                if (priority === 2) return 'priority-2';
+                return 'priority-default';
+            };
 
             const pushMessage = async (priority) => {
                 setIsPushing(true);
@@ -231,7 +356,7 @@
                     } else if (response.ok) {
                         const data = await response.json();
                         setMessagesPopped(prev => prev + 1);
-                        setPoppedMessages(prev => [data.item, ...prev]);
+                        setPoppedMessages(prev => [{ item: data.item, priority: data.priority }, ...prev]);
                     } else {
                         const errorData = await response.json().catch(() => ({ message: 'Unknown error' }));
                         setError({ status: response.status, data: errorData });
@@ -243,20 +368,108 @@
                 }
             };
 
+            const popWithAck = async () => {
+                setIsPopping(true);
+                try {
+                    const response = await fetch(`${API_BASE}/queue/${queueId}/pop`, {
+                        method: 'POST',
+                        headers: { 'require_ack': 'true' }
+                    });
+
+                    if (response.status === 204) {
+                        alert('Queue is empty');
+                    } else if (response.ok) {
+                        const data = await response.json();
+                        setMessagesPopped(prev => prev + 1);
+                        setPoppedMessages(prev => [{
+                            item: data.item,
+                            priority: data.priority,
+                            locked: data.locked,
+                            lockId: data.lockId,
+                            lockExpiresAt: data.lockExpiresAt
+                        }, ...prev]);
+                    } else {
+                        const errorData = await response.json().catch(() => ({ message: 'Unknown error' }));
+                        setError({ status: response.status, data: errorData });
+                    }
+                } catch (err) {
+                    setError({ status: 'Network Error', data: err.message });
+                } finally {
+                    setIsPopping(false);
+                }
+            };
+
+            const acknowledgeMessage = async (e, lockId, index) => {
+                e.preventDefault();
+                e.stopPropagation();
+
+                try {
+                    const response = await fetch(`${API_BASE}/queue/${queueId}/acknowledge`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ lockId })
+                    });
+
+                    if (response.ok) {
+                        // Update message status to acknowledged
+                        setPoppedMessages(prev => prev.map((msg, i) =>
+                            i === index ? { ...msg, acknowledged: true } : msg
+                        ));
+                    } else {
+                        const errorData = await response.json().catch(() => ({ message: 'Unknown error' }));
+                        setError({ status: response.status, data: errorData });
+                    }
+                } catch (err) {
+                    setError({ status: 'Network Error', data: err.message });
+                }
+            };
+
+            const deadLetterMessage = async (e, lockId, index) => {
+                e.preventDefault();
+                e.stopPropagation();
+
+                try {
+                    const response = await fetch(`${API_BASE}/queue/${queueId}/deadletter`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ lockId })
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        const dlqName = data.dlqActorId || `${queueId}-deadletter`;
+                        // Update message status to dead lettered
+                        setPoppedMessages(prev => prev.map((msg, i) =>
+                            i === index ? { ...msg, deadLettered: true, dlqActorId: dlqName } : msg
+                        ));
+                    } else {
+                        const errorData = await response.json().catch(() => ({ message: 'Unknown error' }));
+                        setError({ status: response.status, data: errorData });
+                    }
+                } catch (err) {
+                    setError({ status: 'Network Error', data: err.message });
+                }
+            };
+
             return (
                 <>
                     <div className="container">
                         <h1>DaprMQ Dashboard</h1>
 
                         <div className="card">
-                            <h3>Queue: <span>{queueId}</span></h3>
+                            <h3>
+                                Queue: <span>{queueId}</span>
+                                {isDeadLetterQueue && (
+                                    <span className="queue-badge deadletter-badge">☠️ DEAD LETTER</span>
+                                )}
+                            </h3>
                             <p>Stats: <span>{messagesPushed} pushed | {messagesPopped} popped</span></p>
                         </div>
 
                         <div className="card">
-                            <h3>Current Payload</h3>
+                            <h3>Push a payload</h3>
                             <pre>{JSON.stringify(currentPayload, null, 2)}</pre>
-                            <button onClick={() => pushMessage(0)} disabled={isPushing}>
+                            <button className="priority-0-btn" onClick={() => pushMessage(0)} disabled={isPushing}>
                                 {isPushing ? 'Pushing...' : 'Push with Priority 0'}
                             </button>
                             <button onClick={() => pushMessage(1)} disabled={isPushing}>
@@ -270,6 +483,9 @@
                                 <button onClick={popMessage} disabled={isPopping}>
                                     {isPopping ? 'Popping...' : 'Pop from Queue'}
                                 </button>
+                                <button onClick={popWithAck} disabled={isPopping}>
+                                    {isPopping ? 'Popping...' : 'Pop with Ack'}
+                                </button>
                             </div>
                         )}
 
@@ -277,9 +493,49 @@
                             <div className="card">
                                 <h3>Popped Messages ({poppedMessages.length})</h3>
                                 {poppedMessages.map((msg, index) => (
-                                    <pre key={index} style={{ marginBottom: index < poppedMessages.length - 1 ? '10px' : '0' }}>
-                                        {JSON.stringify(msg, null, 2)}
-                                    </pre>
+                                    <div key={index} className="message-container" style={{ marginBottom: index < poppedMessages.length - 1 ? '10px' : '0' }}>
+                                        <div className={`priority-badge ${getPriorityClass(msg.priority)}`}>
+                                            P{msg.priority ?? '?'}
+                                        </div>
+                                        <pre>
+                                            {JSON.stringify(msg.item, null, 2)}
+                                        </pre>
+                                        {msg.locked && msg.lockId && (
+                                            <div className={`lock-info ${msg.acknowledged ? 'acknowledged' : ''} ${msg.deadLettered ? 'deadlettered' : ''}`}>
+                                                {msg.acknowledged ? (
+                                                    <div>✓ <strong>Message acknowledged successfully</strong></div>
+                                                ) : msg.deadLettered ? (
+                                                    <div>
+                                                        ✕ <strong>Message moved to dead-letter queue </strong>
+                                                        <a
+                                                            href={`?queue_name=${msg.dlqActorId}`}
+                                                            target="_blank"
+                                                            rel="noopener noreferrer"
+                                                            style={{color: '#f56565', textDecoration: 'underline'}}
+                                                        >
+                                                            ({msg.dlqActorId})
+                                                        </a>
+                                                    </div>
+                                                ) : (
+                                                    <>
+                                                        🔒 <strong>Locked</strong> - Requires acknowledgement
+                                                        <div className="lock-id">Lock ID: {msg.lockId}</div>
+                                                        {msg.lockExpiresAt && (
+                                                            <div>Expires: {new Date(msg.lockExpiresAt * 1000).toLocaleString()}</div>
+                                                        )}
+                                                        <div className="lock-actions">
+                                                            <button className="ack-btn" onClick={(e) => acknowledgeMessage(e, msg.lockId, index)}>
+                                                                ✓ Acknowledge
+                                                            </button>
+                                                            <button className="deadletter-btn" onClick={(e) => deadLetterMessage(e, msg.lockId, index)}>
+                                                                ✕ Dead Letter
+                                                            </button>
+                                                        </div>
+                                                    </>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
                                 ))}
                             </div>
                         )}
