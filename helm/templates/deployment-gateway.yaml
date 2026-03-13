@@ -1,0 +1,78 @@
+{{- if .Values.gateway.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "daprmq.fullname" . }}-gateway
+  labels:
+    {{- include "daprmq.gateway.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.gateway.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "daprmq.gateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id: "{{ .Release.Name }}-daprmq-gateway"
+        dapr.io/app-port: {{ include "daprmq.gateway.port" . | quote }}
+        dapr.io/app-protocol: {{ .Values.dapr.protocol | quote }}
+        dapr.io/config: {{ include "daprmq.fullname" . }}-dapr-config
+        dapr.io/log-level: {{ .Values.dapr.logLevel | quote }}
+        {{- with .Values.gateway.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "daprmq.gateway.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.gateway.podSecurityContext | nindent 8 }}
+      containers:
+      - name: daprmq
+        image: {{ include "daprmq.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.gateway.httpPort }}
+          protocol: TCP
+        - name: grpc
+          containerPort: {{ .Values.gateway.grpcPort }}
+          protocol: TCP
+        env:
+        - name: ASPNETCORE_URLS
+          value: "http://+:{{ .Values.gateway.httpPort }}"
+        - name: ASPNETCORE_ENVIRONMENT
+          value: "Production"
+        - name: REGISTER_ACTORS
+          value: "false"
+        - name: ACTOR_TYPE_NAME
+          value: "{{ .Release.Name }}-daprmq-QueueActor"
+        - name: SEGMENT_DELETION_RETENTION_SECONDS
+          value: {{ .Values.app.segmentDeletionRetentionSeconds | quote }}
+        - name: SEGMENT_CLEANUP_SCAN_INTERVAL_SECONDS
+          value: {{ .Values.app.segmentCleanupScanIntervalSeconds | quote }}
+        livenessProbe:
+          {{- toYaml .Values.gateway.livenessProbe | nindent 10 }}
+        readinessProbe:
+          {{- toYaml .Values.gateway.readinessProbe | nindent 10 }}
+        resources:
+          {{- toYaml .Values.gateway.resources | nindent 10 }}
+        securityContext:
+          {{- toYaml .Values.gateway.securityContext | nindent 10 }}
+      {{- with .Values.gateway.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.gateway.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.gateway.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

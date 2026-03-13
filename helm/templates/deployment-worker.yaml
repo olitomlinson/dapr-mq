@@ -1,0 +1,83 @@
+{{- if .Values.worker.enabled }}
+{{- if not .Values.dapr.stateStoreName }}
+{{- fail "dapr.stateStoreName is required. Please specify the name of your Dapr state store Component using --set dapr.stateStoreName=<name>" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "daprmq.fullname" . }}-worker
+  labels:
+    {{- include "daprmq.worker.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.worker.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "daprmq.worker.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id: "{{ .Release.Name }}-daprmq-worker"
+        dapr.io/app-port: "{{ .Values.worker.httpPort }}"
+        dapr.io/app-protocol: "http"
+        dapr.io/config: {{ include "daprmq.fullname" . }}-dapr-config
+        dapr.io/log-level: {{ .Values.dapr.logLevel | quote }}
+        {{- with .Values.worker.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "daprmq.worker.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.worker.podSecurityContext | nindent 8 }}
+      containers:
+      - name: daprmq
+        image: {{ include "daprmq.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.worker.httpPort }}
+          protocol: TCP
+        - name: grpc
+          containerPort: {{ .Values.worker.grpcPort }}
+          protocol: TCP
+        env:
+        - name: ASPNETCORE_URLS
+          value: "http://+:{{ .Values.worker.httpPort }}"
+        - name: ASPNETCORE_ENVIRONMENT
+          value: "Production"
+        - name: REGISTER_ACTORS
+          value: "true"
+        - name: ACTOR_TYPE_NAME
+          value: "{{ .Release.Name }}-daprmq-QueueActor"
+        - name: SEGMENT_DELETION_RETENTION_SECONDS
+          value: {{ .Values.app.segmentDeletionRetentionSeconds | quote }}
+        - name: SEGMENT_CLEANUP_SCAN_INTERVAL_SECONDS
+          value: {{ .Values.app.segmentCleanupScanIntervalSeconds | quote }}
+        livenessProbe:
+          {{- toYaml .Values.worker.livenessProbe | nindent 10 }}
+        readinessProbe:
+          {{- toYaml .Values.worker.readinessProbe | nindent 10 }}
+        resources:
+          {{- toYaml .Values.worker.resources | nindent 10 }}
+        securityContext:
+          {{- toYaml .Values.worker.securityContext | nindent 10 }}
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -1,0 +1,170 @@
+# Default values for DaprMQ Helm chart
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Global image configuration
+image:
+  registry: ""
+  repository: daprmq
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Dapr configuration
+dapr:
+  # Dapr app protocol: "http" or "grpc"
+  # NOTE: This setting only affects the GATEWAY nodes.
+  # Worker nodes always use HTTP (required for actor registration).
+  protocol: "http"
+
+  # Dapr sidecar log level
+  logLevel: "info"
+
+  # REQUIRED: Name of the Dapr state store Component CR deployed in your namespace
+  # Multiple installations can share the same state store (actor isolation by app-id)
+  # No default value - must be explicitly set during installation
+  stateStoreName: ""
+
+# Application configuration
+app:
+  # Segment deletion retention in seconds (0 = immediate deletion)
+  segmentDeletionRetentionSeconds: 0
+
+  # Segment cleanup scan interval in seconds
+  segmentCleanupScanIntervalSeconds: 60
+
+# Worker configuration (REGISTER_ACTORS=true)
+worker:
+  enabled: true
+  replicaCount: 2
+
+  # Container port (8080 for HTTP, 8081 for gRPC)
+  # This is automatically set based on dapr.protocol
+  httpPort: 8080
+  grpcPort: 8081
+
+  # Resource limits and requests
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # Liveness probe configuration
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8080
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+
+  # Readiness probe configuration
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    successThreshold: 1
+    failureThreshold: 3
+
+  # Pod annotations (in addition to Dapr annotations)
+  podAnnotations: {}
+
+  # Pod security context
+  podSecurityContext: {}
+    # fsGroup: 2000
+
+  # Container security context
+  securityContext: {}
+    # capabilities:
+    #   drop:
+    #   - ALL
+    # readOnlyRootFilesystem: true
+    # runAsNonRoot: true
+    # runAsUser: 1000
+
+  # Node selector
+  nodeSelector: {}
+
+  # Tolerations
+  tolerations: []
+
+  # Affinity rules
+  affinity: {}
+
+# Gateway configuration (REGISTER_ACTORS=false)
+gateway:
+  enabled: true
+  replicaCount: 1
+
+  # Container port (8080 for HTTP, 8081 for gRPC)
+  # This is automatically set based on dapr.protocol
+  httpPort: 8080
+  grpcPort: 8081
+
+  # Resource limits and requests
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # Liveness probe configuration
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8080
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+
+  # Readiness probe configuration
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    successThreshold: 1
+    failureThreshold: 3
+
+  # Pod annotations (in addition to Dapr annotations)
+  podAnnotations: {}
+
+  # Pod security context
+  podSecurityContext: {}
+
+  # Container security context
+  securityContext: {}
+
+  # Node selector
+  nodeSelector: {}
+
+  # Tolerations
+  tolerations: []
+
+  # Affinity rules
+  affinity: {}
+
+# Autoscaling configuration (for worker)
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  # targetMemoryUtilizationPercentage: 80

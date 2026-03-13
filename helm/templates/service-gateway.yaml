@@ -1,0 +1,21 @@
+{{- if .Values.gateway.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "daprmq.fullname" . }}-gateway
+  labels:
+    {{- include "daprmq.gateway.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+  - port: {{ .Values.gateway.httpPort }}
+    targetPort: {{ .Values.gateway.httpPort }}
+    protocol: TCP
+    name: http
+  - port: {{ .Values.gateway.grpcPort }}
+    targetPort: {{ .Values.gateway.grpcPort }}
+    protocol: TCP
+    name: grpc
+  selector:
+    {{- include "daprmq.gateway.selectorLabels" . | nindent 4 }}
+{{- end }}
