@@ -179,6 +179,8 @@ services:
         condition: service_healthy
       placement:
         condition: service_started
+      scheduler-0:
+        condition: service_started
     healthcheck:
       test:
         ["CMD", "wget", "-q", "--spider", "http://localhost:3502/v1.0/healthz"]
@@ -226,6 +228,8 @@ services:
       postgres-db:
         condition: service_healthy
       placement:
+        condition: service_started
+      scheduler-0:
         condition: service_started
     healthcheck:
       test:
@@ -275,6 +279,8 @@ services:
         condition: service_healthy
       placement:
         condition: service_started
+      scheduler-0:
+        condition: service_started
     healthcheck:
       test:
         ["CMD", "wget", "-q", "--spider", "http://localhost:3502/v1.0/healthz"]
@@ -323,6 +329,8 @@ services:
         condition: service_healthy
       placement:
         condition: service_started
+      scheduler-0:
+        condition: service_started
     healthcheck:
       test:
         ["CMD", "wget", "-q", "--spider", "http://localhost:3502/v1.0/healthz"]
@@ -337,6 +345,7 @@ services:
   # Dapr Scheduler Service
   ############################
   scheduler-0:
+    container_name: scheduler-0
     image: "${DAPR_SCHEDULER_VERSION}"
     command:
       [
@@ -359,6 +368,18 @@ services:
     ports:
       - "50006:50006"
       - "2380:2380"
+    networks:
+      - daprmq-network
+
+  ############################
+  # Dashboard (Nginx)
+  ############################
+  dashboard:
+    image: nginx:alpine
+    volumes:
+      - ./dashboard:/usr/share/nginx/html:ro
+    ports:
+      - "9000:80"
     networks:
       - daprmq-network
 

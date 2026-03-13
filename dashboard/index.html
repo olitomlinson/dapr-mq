@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DaprMQ Dashboard</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(135deg, #0f0f1e 0%, #1a1a2e 50%, #16213e 100%);
+            color: #ffffff;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-right: 10px;
+        }
+
+        button:hover {
+            opacity: 0.9;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        pre {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 15px;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 10px 0;
+        }
+
+        /* Modal styles */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(5px);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.show {
+            display: flex;
+        }
+
+        .modal-content {
+            background: rgba(30, 30, 50, 0.95);
+            backdrop-filter: blur(20px);
+            border-radius: 16px;
+            padding: 30px;
+            max-width: 500px;
+            width: 90%;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .modal-title {
+            color: #f56565;
+            font-size: 24px;
+            font-weight: bold;
+        }
+
+        .modal-close {
+            background: none;
+            font-size: 24px;
+            padding: 0;
+            width: 32px;
+            height: 32px;
+            line-height: 32px;
+            text-align: center;
+        }
+
+        .modal-body {
+            margin-bottom: 20px;
+        }
+
+        .error-status {
+            font-size: 18px;
+            color: #a0aec0;
+            margin-bottom: 10px;
+        }
+
+        .error-message {
+            background: rgba(0, 0, 0, 0.4);
+            padding: 15px;
+            border-radius: 8px;
+            color: #ffffff;
+            font-family: monospace;
+            word-wrap: break-word;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+        const API_BASE = 'http://localhost:8002';
+
+        const generateQueueId = () => {
+            const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+            let id = 'queue-';
+            for (let i = 0; i < 6; i++) {
+                id += chars[Math.floor(Math.random() * chars.length)];
+            }
+            return id;
+        };
+
+        const generatePayload = () => ({
+            userId: Math.floor(Math.random() * 9000) + 1000,
+            action: ['login', 'logout', 'purchase', 'signup'][Math.floor(Math.random() * 4)],
+            timestamp: new Date().toISOString()
+        });
+
+        const ErrorModal = ({ error, onClose }) => {
+            if (!error) return null;
+
+            return (
+                <div className="modal show" onClick={(e) => e.target.className.includes('modal') && onClose()}>
+                    <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+                        <div className="modal-header">
+                            <div className="modal-title">Error</div>
+                            <button className="modal-close" onClick={onClose}>×</button>
+                        </div>
+                        <div className="modal-body">
+                            <div className="error-status">Status: {error.status}</div>
+                            <div className="error-message">
+                                {typeof error.data === 'string'
+                                    ? error.data
+                                    : JSON.stringify(error.data, null, 2)}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const Dashboard = () => {
+            const [queueId] = useState(() => generateQueueId());
+            const [currentPayload, setCurrentPayload] = useState(() => generatePayload());
+            const [messagesPushed, setMessagesPushed] = useState(0);
+            const [messagesPopped, setMessagesPopped] = useState(0);
+            const [showPopSection, setShowPopSection] = useState(false);
+            const [poppedMessages, setPoppedMessages] = useState([]);
+            const [isPushing, setIsPushing] = useState(false);
+            const [isPopping, setIsPopping] = useState(false);
+            const [error, setError] = useState(null);
+
+            const pushMessage = async (priority) => {
+                setIsPushing(true);
+                try {
+                    const response = await fetch(`${API_BASE}/queue/${queueId}/push`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ item: currentPayload, priority })
+                    });
+
+                    if (response.ok) {
+                        setMessagesPushed(prev => prev + 1);
+                        setCurrentPayload(generatePayload());
+                        setShowPopSection(true);
+                    } else {
+                        const errorData = await response.json().catch(() => ({ message: 'Unknown error' }));
+                        setError({ status: response.status, data: errorData });
+                    }
+                } catch (err) {
+                    setError({ status: 'Network Error', data: err.message });
+                } finally {
+                    setIsPushing(false);
+                }
+            };
+
+            const popMessage = async () => {
+                setIsPopping(true);
+                try {
+                    const response = await fetch(`${API_BASE}/queue/${queueId}/pop`, {
+                        method: 'POST'
+                    });
+
+                    if (response.status === 204) {
+                        alert('Queue is empty');
+                    } else if (response.ok) {
+                        const data = await response.json();
+                        setMessagesPopped(prev => prev + 1);
+                        setPoppedMessages(prev => [data.item, ...prev]);
+                    } else {
+                        const errorData = await response.json().catch(() => ({ message: 'Unknown error' }));
+                        setError({ status: response.status, data: errorData });
+                    }
+                } catch (err) {
+                    setError({ status: 'Network Error', data: err.message });
+                } finally {
+                    setIsPopping(false);
+                }
+            };
+
+            return (
+                <>
+                    <div className="container">
+                        <h1>DaprMQ Dashboard</h1>
+
+                        <div className="card">
+                            <h3>Queue: <span>{queueId}</span></h3>
+                            <p>Stats: <span>{messagesPushed} pushed | {messagesPopped} popped</span></p>
+                        </div>
+
+                        <div className="card">
+                            <h3>Current Payload</h3>
+                            <pre>{JSON.stringify(currentPayload, null, 2)}</pre>
+                            <button onClick={() => pushMessage(0)} disabled={isPushing}>
+                                {isPushing ? 'Pushing...' : 'Push with Priority 0'}
+                            </button>
+                            <button onClick={() => pushMessage(1)} disabled={isPushing}>
+                                {isPushing ? 'Pushing...' : 'Push with Priority 1'}
+                            </button>
+                        </div>
+
+                        {showPopSection && (
+                            <div className="card">
+                                <h3>Pop Messages</h3>
+                                <button onClick={popMessage} disabled={isPopping}>
+                                    {isPopping ? 'Popping...' : 'Pop from Queue'}
+                                </button>
+                            </div>
+                        )}
+
+                        {poppedMessages.length > 0 && (
+                            <div className="card">
+                                <h3>Popped Messages ({poppedMessages.length})</h3>
+                                {poppedMessages.map((msg, index) => (
+                                    <pre key={index} style={{ marginBottom: index < poppedMessages.length - 1 ? '10px' : '0' }}>
+                                        {JSON.stringify(msg, null, 2)}
+                                    </pre>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    <ErrorModal error={error} onClose={() => setError(null)} />
+                </>
+            );
+        };
+
+        ReactDOM.render(<Dashboard />, document.getElementById('root'));
+    </script>
+</body>
+</html>

@@ -44,6 +44,17 @@ builder.WebHost.UseKestrel(options =>
     });
 });
 
+// Add CORS support for dashboard
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowDashboard", policy =>
+    {
+        policy.AllowAnyOrigin()
+              .AllowAnyMethod()
+              .AllowAnyHeader();
+    });
+});
+
 // Add services to the container
 builder.Services.AddControllers().AddDapr();
 
@@ -115,6 +126,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseRouting();
+app.UseCors("AllowDashboard");
 app.UseAuthorization();
 
 // Map controllers
