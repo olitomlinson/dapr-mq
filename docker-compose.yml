@@ -372,12 +372,12 @@ services:
       - daprmq-network
 
   ############################
-  # Dashboard (Nginx)
+  # Dashboard (React + Nginx)
   ############################
   dashboard:
-    image: nginx:alpine
-    volumes:
-      - ./dashboard:/usr/share/nginx/html:ro
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
     ports:
       - "9000:80"
     networks:
