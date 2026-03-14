@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { queueApi, QueueApiError, createApiError } from '../services/queueApi';
 import { generatePayload } from '../utils/queueHelpers';
 import type { PoppedMessage, ApiError, QueuePayload } from '../types/queue';
@@ -11,6 +11,15 @@ export const useQueueOperations = (queueId: string) => {
   const [isPushing, setIsPushing] = useState(false);
   const [isPopping, setIsPopping] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
+
+  // Reset state when queue ID changes
+  useEffect(() => {
+    setMessagesPushed(0);
+    setMessagesPopped(0);
+    setPoppedMessages([]);
+    setCurrentPayload(generatePayload());
+    setError(null);
+  }, [queueId]);
 
   const pushMessage = async (priority: number) => {
     setIsPushing(true);

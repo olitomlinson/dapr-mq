@@ -16,6 +16,7 @@
 - `dotnet/src/DaprMQ.Interfaces/` - Interfaces and models (IQueueActor.cs, Models.cs)
 - `dotnet/src/DaprMQ.ApiServer/` - REST/gRPC API (Program.cs, Controllers/, Services/, Protos/)
 - `dotnet/tests/DaprMQ.Tests/` - Unit tests (QueueActorTests.cs, QueueControllerTests.cs, DaprMQGrpcServiceTests.cs)
+- `dashboard/` - React web UI (App.tsx, components/, services/, hooks/)
 - `docs/` - QUICKSTART.md, ARCHITECTURE.md, API_REFERENCE.md
 - `dapr/components/` - Dapr component configs (state store)
 - `dapr/config/` - Dapr runtime config
@@ -105,6 +106,130 @@ return new PopResponse {
 
 **Runtime:** C# 13, .NET 10.0 | **Framework:** ASP.NET Core (HTTP + gRPC) | **Dapr:** Dapr.Actors, Dapr.AspNetCore, Dapr.Client | **gRPC:** Grpc.AspNetCore 2.70.0, Protocol Buffers | **Testing:** xUnit, Moq
 
+## Dashboard (Web UI)
+
+The DaprMQ Dashboard is an interactive React-based web interface for testing and managing queue operations. It provides a visual way to interact with the API server without requiring CLI tools or gRPC clients.
+
+### Overview
+
+- **Purpose**: Interactive testing UI for queue management (push, pop, acknowledgement, dead letter routing)
+- **Technology**: React 18.2.0, TypeScript 5.2, Vite 5.0.8
+- **Styling**: CSS Modules with CSS Variables
+- **Deployment**: Nginx Alpine (production), Vite dev server (local)
+- **Communication**: REST API only (no gRPC in dashboard)
+
+### Key Features
+
+- **Queue Management**: Create/select queue instances by ID with URL persistence (`?queue_name=my-queue`)
+- **Message Publishing**: Push auto-generated test payloads with priority levels (0 = fast lane, 1+ = normal)
+- **Pop Modes**: Basic pop (immediate removal) or pop with acknowledgement (30s TTL lock)
+- **Lock Management**: Track locked messages with countdown, acknowledge or route to dead letter queue
+- **Dead Letter Support**: Visual indicators for DLQ queues (`{queueId}-deadletter`), one-click routing for failed items
+- **Real-time Stats**: Message count tracking per queue session
+- **Auto-Generated Payloads**: `{ userId, action: login|logout|purchase|signup, timestamp }`
+
+### Architecture
+
+**Data Flow:**
+```
+Dashboard UI (React on :3000)
+    ↓ (fetch REST API)
+API Server (:8002)
+    ↓ (IActorInvoker)
+QueueActor (Dapr)
+    ↓
+State Store (PostgreSQL/Redis)
+```
+
+**API Integration:**
+- Base URL: `VITE_API_BASE_URL` env var (default: `http://localhost:8002`)
+- Dev proxy: `/queue/*` routes to API server during development
+- Endpoints: `/queue/{id}/push`, `/queue/{id}/pop`, `/queue/{id}/acknowledge`, `/queue/{id}/deadletter`
+- Error handling: Modal displays HTTP errors with status codes (204→empty, 400, 404, 410, 423, 500)
+
+### Directory Structure
+
+```
+dashboard/
+├── src/
+│   ├── components/       # React components (CSS Modules)
+│   │   ├── QueueHeader.tsx     # Queue ID editor + stats
+│   │   ├── PushSection.tsx     # Priority-based push
+│   │   ├── PopSection.tsx      # Pop vs PopWithAck
+│   │   ├── MessagesList.tsx    # Message display list
+│   │   ├── MessageItem.tsx     # Individual message + lock info
+│   │   └── ErrorModal.tsx      # API error notifications
+│   ├── hooks/            # React hooks
+│   │   ├── useQueueOperations.ts  # Core state + API calls
+│   │   └── useQueueId.ts          # URL param management
+│   ├── services/
+│   │   └── queueApi.ts          # API client (fetch-based)
+│   ├── types/
+│   │   └── queue.ts             # TypeScript interfaces
+│   └── utils/
+│       └── queueHelpers.ts      # ID generation, validation
+├── vite.config.ts        # Build config + dev proxy
+├── tsconfig.json         # TypeScript config (strict mode)
+├── Dockerfile            # Multi-stage: Node → Nginx
+├── nginx.conf            # SPA routing + asset caching
+└── package.json          # Dependencies + scripts
+```
+
+### Key Files
+
+- **[dashboard/src/App.tsx](dashboard/src/App.tsx)**: Root component with queue ID management
+- **[dashboard/src/services/queueApi.ts](dashboard/src/services/queueApi.ts)**: API client with error handling
+- **[dashboard/src/hooks/useQueueOperations.ts](dashboard/src/hooks/useQueueOperations.ts)**: Core state management and API orchestration
+- **[dashboard/src/types/queue.ts](dashboard/src/types/queue.ts)**: TypeScript interfaces for API/UI models
+- **[dashboard/vite.config.ts](dashboard/vite.config.ts)**: Dev proxy configuration
+- **[dashboard/Dockerfile](dashboard/Dockerfile)**: Multi-stage build (Node build → Nginx serve)
+
+### Development Setup
+
+**Local Development:**
+```bash
+cd dashboard
+npm install
+npm run dev       # Runs on http://localhost:3000, proxies API to :8002
+npm run build     # Production build → dist/
+npm run preview   # Preview production build
+```
+
+**Docker:**
+```bash
+docker build -t daprmq-dashboard .
+docker run -p 80:3000 daprmq-dashboard
+```
+
+**Environment Configuration:**
+- `.env` - Development config
+- `.env.production` - Production config
+- `VITE_API_BASE_URL` - API server URL (replaced at build time)
+
+### Integration with API Server
+
+**Port Configuration:**
+- Dashboard Dev: `localhost:3000` → proxies to API Server `:8002`
+- Docker: Nginx serves static files, API server on `:8002`
+
+**Queue Naming Convention:**
+- Regular queues: Alphanumeric + `-_` (e.g., `user-events`, `task_queue_1`)
+- Dead letter queues: `{originalId}-deadletter` (e.g., `user-events-deadletter`)
+- Dashboard auto-appends `-deadletter` suffix when routing failed messages
+
+**TypeScript Configuration:**
+- Target: ES2020, Module: ESNext (tree-shaking)
+- JSX: React JSX (automatic runtime)
+- Strict mode enabled
+
+### Development Conventions
+
+- **Styling**: CSS Modules (`.module.css`) for component-scoped styles, CSS Variables for theming
+- **State Management**: React hooks (`useState`, `useEffect`) - no external state library
+- **Type Safety**: Full TypeScript with strict null checks
+- **Naming**: PascalCase for components, camelCase for utilities/hooks
+- **API Calls**: Encapsulated in `useQueueOperations` hook with loading/error states
+
 ## Common Commands
 
 ```bash
@@ -120,6 +245,13 @@ dotnet test                                           # Run all tests
 cd src/DaprMQ.ApiServer
 dapr run --app-id daprmq-api --app-port 5000 \
   --resources-path ../../dapr/components -- dotnet run
+
+# Dashboard
+cd dashboard
+npm install                                           # Install dependencies
+npm run dev                                           # Dev server (localhost:3000)
+npm run build                                         # Production build
+docker build -t daprmq-dashboard .                   # Build container
 
 # Docker
 docker-compose up                                     # Full stack
