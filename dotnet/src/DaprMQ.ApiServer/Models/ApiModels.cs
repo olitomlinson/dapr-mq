@@ -4,6 +4,10 @@ namespace DaprMQ.ApiServer.Models;
 
 // Request models
 public record ApiPushRequest(
+    List<ApiPushItem> Items
+);
+
+public record ApiPushItem(
     JsonElement Item,
     int Priority = 1
 );
@@ -20,7 +24,8 @@ public record ApiExtendLockRequest(
 // Response models
 public record ApiPushResponse(
     bool Success,
-    string Message
+    string Message,
+    int ItemsPushed
 );
 
 public record ApiPopResponse(

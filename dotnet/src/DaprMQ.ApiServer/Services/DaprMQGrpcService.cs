@@ -27,29 +27,56 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
     {
         try
         {
-            if (request.Priority < 0)
+            // Validate items array
+            if (request.Items == null || request.Items.Count == 0)
             {
-                throw new RpcException(new Status(StatusCode.InvalidArgument, "Priority must be non-negative"));
+                throw new RpcException(new Status(StatusCode.InvalidArgument, "Items array cannot be empty"));
             }
 
-            _logger.LogDebug($"gRPC Push request for queue {request.QueueId} with priority {request.Priority}");
+            if (request.Items.Count > 1000)
+            {
+                throw new RpcException(new Status(StatusCode.InvalidArgument, "Maximum 1000 items per push"));
+            }
+
+            // Validate priorities
+            foreach (var item in request.Items)
+            {
+                if (item.Priority < 0)
+                {
+                    throw new RpcException(new Status(StatusCode.InvalidArgument, "Priority must be non-negative"));
+                }
+            }
+
+            _logger.LogDebug($"gRPC Push request for queue {request.QueueId} with {request.Items.Count} items");
 
             var actorId = new ActorId(request.QueueId);
+
+            // Convert gRPC items to actor items
+            var actorItems = request.Items.Select(grpcItem => new ActorModels.PushItem
+            {
+                ItemJson = grpcItem.ItemJson,
+                Priority = grpcItem.Priority
+            }).ToList();
 
             var result = await _actorInvoker.InvokeMethodAsync<ActorModels.PushRequest, ActorModels.PushResponse>(
                 actorId,
                 ActorMethodNames.Push,
                 new ActorModels.PushRequest
                 {
-                    ItemJson = request.ItemJson,
-                    Priority = request.Priority
+                    Items = actorItems
                 },
                 context.CancellationToken);
+
+            if (!result.Success)
+            {
+                throw new RpcException(new Status(StatusCode.Internal, result.ErrorMessage ?? "Failed to push items"));
+            }
 
             return new PushResponse
             {
                 Success = result.Success,
-                Message = $"Item pushed to queue {request.QueueId} at priority {request.Priority}"
+                Message = $"Pushed {result.ItemsPushed} items to queue {request.QueueId}",
+                ItemsPushed = result.ItemsPushed
             };
         }
         catch (RpcException)
@@ -58,7 +85,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, $"Error pushing item to queue {request.QueueId}");
+            _logger.LogError(ex, $"Error pushing items to queue {request.QueueId}");
             throw new RpcException(new Status(StatusCode.Internal, $"Internal error: {ex.Message}"));
         }
     }

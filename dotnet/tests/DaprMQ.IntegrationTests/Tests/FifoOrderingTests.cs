@@ -18,7 +18,10 @@ public class FifoOrderingTests(DaprTestFixture fixture)
         for (int i = 0; i < 10; i++)
         {
             var itemElement = JsonSerializer.SerializeToElement(new { id = i, value = $"item-{i}" });
-            var pushRequest = new ApiPushRequest(itemElement, Priority: 1);
+            var pushRequest = new ApiPushRequest(new List<ApiPushItem>
+            {
+                new ApiPushItem(itemElement, Priority: 1)
+            });
 
             var response = await fixture.ApiClient.PostAsJsonAsync($"/queue/{fixture.QueueId}/push", pushRequest);
             var content = await response.Content.ReadAsStringAsync();
@@ -56,7 +59,10 @@ public class FifoOrderingTests(DaprTestFixture fixture)
         for (int i = 0; i < 100; i++)
         {
             var itemElement = JsonSerializer.SerializeToElement(new { id = i, value = $"item-{i}" });
-            var pushRequest = new ApiPushRequest(itemElement, Priority: 1);
+            var pushRequest = new ApiPushRequest(new List<ApiPushItem>
+            {
+                new ApiPushItem(itemElement, Priority: 1)
+            });
 
             var response = await fixture.ApiClient.PostAsJsonAsync($"/queue/{fixture.QueueId}/push", pushRequest);
             response.EnsureSuccessStatusCode();
@@ -108,7 +114,10 @@ public class FifoOrderingTests(DaprTestFixture fixture)
         var unique = Guid.NewGuid();
         // Arrange - Push 1 item
         var itemElement = JsonSerializer.SerializeToElement(new { id = 1, value = "single-item" });
-        var pushRequest = new ApiPushRequest(itemElement, Priority: 1);
+        var pushRequest = new ApiPushRequest(new List<ApiPushItem>
+        {
+            new ApiPushItem(itemElement, Priority: 1)
+        });
         var pushResponse = await fixture.ApiClient.PostAsJsonAsync($"/queue/{fixture.QueueId}-{unique}/push", pushRequest);
         pushResponse.EnsureSuccessStatusCode();
 
@@ -144,7 +153,10 @@ public class FifoOrderingTests(DaprTestFixture fixture)
         for (int i = 0; i < 300; i++)
         {
             var itemElement = JsonSerializer.SerializeToElement(new { id = i, value = $"item-{i}" });
-            var pushRequest = new ApiPushRequest(itemElement, Priority: 1);
+            var pushRequest = new ApiPushRequest(new List<ApiPushItem>
+            {
+                new ApiPushItem(itemElement, Priority: 1)
+            });
 
             var response = await fixture.ApiClient.PostAsJsonAsync($"/queue/{fixture.QueueId}/push", pushRequest);
             response.EnsureSuccessStatusCode();
@@ -199,7 +211,10 @@ public class FifoOrderingTests(DaprTestFixture fixture)
         for (int i = 0; i < 1000; i++)
         {
             var itemElement = JsonSerializer.SerializeToElement(new { id = i, value = $"item-{i}" });
-            var pushRequest = new ApiPushRequest(itemElement, Priority: 1);
+            var pushRequest = new ApiPushRequest(new List<ApiPushItem>
+            {
+                new ApiPushItem(itemElement, Priority: 1)
+            });
 
             var response = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/push", pushRequest);
             response.EnsureSuccessStatusCode();

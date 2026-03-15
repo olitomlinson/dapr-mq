@@ -33,17 +33,23 @@ service DaprMQ {
   rpc DeadLetter(DeadLetterRequest) returns (DeadLetterResponse);
 }
 
-// Request to push an item to a queue
+// Individual item in a push request
+message PushItem {
+  // Item data as JSON string
+  string item_json = 1;
+
+  // Priority level (0=fast lane, 1=default, 2+=lower priority)
+  // Lower numbers processed first
+  int32 priority = 2;
+}
+
+// Request to push items to a queue
 message PushRequest {
   // Queue identifier (actor ID)
   string queue_id = 1;
 
-  // Item data as JSON string
-  string item_json = 2;
-
-  // Priority level (0=fast lane, 1=default, 2+=lower priority)
-  // Lower numbers processed first
-  int32 priority = 3;
+  // Array of items to push (1-1000 items)
+  repeated PushItem items = 2;
 }
 
 // Response from push operation
@@ -53,6 +59,9 @@ message PushResponse {
 
   // Human-readable message
   string message = 2;
+
+  // Number of items successfully pushed
+  int32 items_pushed = 3;
 }
 
 // Request to pop an item without acknowledgment

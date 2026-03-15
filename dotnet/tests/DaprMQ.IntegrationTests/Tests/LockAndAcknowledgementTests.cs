@@ -15,7 +15,10 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
         // Arrange - Push an item
         var queueId = $"{fixture.QueueId}-lock-test-{Guid.NewGuid():N}";
         var itemElement = JsonSerializer.SerializeToElement(new { id = 1, value = "test-item" });
-        var pushRequest = new ApiPushRequest(itemElement, Priority: 1);
+        var pushRequest = new ApiPushRequest(new List<ApiPushItem>
+        {
+            new ApiPushItem(itemElement, Priority: 1)
+        });
         var pushResponse = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/push", pushRequest);
         pushResponse.EnsureSuccessStatusCode();
 
@@ -56,10 +59,10 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
         var queueId = $"{fixture.QueueId}-ack-test-{Guid.NewGuid():N}";
 
         var item1 = JsonSerializer.SerializeToElement(new { id = 1, value = "first-item" });
-        await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/push", new ApiPushRequest(item1, Priority: 1));
+        await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/push", new ApiPushRequest(new List<ApiPushItem> { new ApiPushItem(item1, Priority: 1) }));
 
         var item2 = JsonSerializer.SerializeToElement(new { id = 2, value = "second-item" });
-        await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/push", new ApiPushRequest(item2, Priority: 1));
+        await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/push", new ApiPushRequest(new List<ApiPushItem> { new ApiPushItem(item2, Priority: 1) }));
 
         // Act - Pop with acknowledgement
         var popWithAckRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
@@ -104,7 +107,10 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
         // Arrange - Push an item
         var queueId = $"{fixture.QueueId}-multi-block-test-{Guid.NewGuid():N}";
         var itemElement = JsonSerializer.SerializeToElement(new { id = 1, value = "test-item" });
-        var pushRequest = new ApiPushRequest(itemElement, Priority: 1);
+        var pushRequest = new ApiPushRequest(new List<ApiPushItem>
+        {
+            new ApiPushItem(itemElement, Priority: 1)
+        });
         var pushResponse = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/push", pushRequest);
         pushResponse.EnsureSuccessStatusCode();
 
@@ -145,7 +151,10 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
         // Arrange - Push an item
         var queueId = $"{fixture.QueueId}-expire-test-{Guid.NewGuid():N}";
         var itemElement = JsonSerializer.SerializeToElement(new { id = 1, value = "test-item" });
-        var pushRequest = new ApiPushRequest(itemElement, Priority: 1);
+        var pushRequest = new ApiPushRequest(new List<ApiPushItem>
+        {
+            new ApiPushItem(itemElement, Priority: 1)
+        });
         var pushResponse = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/push", pushRequest);
         pushResponse.EnsureSuccessStatusCode();
 
@@ -203,7 +212,10 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
         // Arrange - Push an item
         var queueId = $"{fixture.QueueId}-consistent-error-{Guid.NewGuid():N}";
         var itemElement = JsonSerializer.SerializeToElement(new { id = 1, value = "test-item" });
-        var pushRequest = new ApiPushRequest(itemElement, Priority: 1);
+        var pushRequest = new ApiPushRequest(new List<ApiPushItem>
+        {
+            new ApiPushItem(itemElement, Priority: 1)
+        });
         var pushResponse = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/push", pushRequest);
         pushResponse.EnsureSuccessStatusCode();
 
@@ -250,7 +262,10 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
         // Arrange - Push an item and create a lock
         var queueId = $"{fixture.QueueId}-extend-lock-test-{Guid.NewGuid():N}";
         var itemElement = JsonSerializer.SerializeToElement(new { id = 1, value = "test-item" });
-        var pushRequest = new ApiPushRequest(itemElement, Priority: 1);
+        var pushRequest = new ApiPushRequest(new List<ApiPushItem>
+        {
+            new ApiPushItem(itemElement, Priority: 1)
+        });
         var pushResponse = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/push", pushRequest);
         pushResponse.EnsureSuccessStatusCode();
 
@@ -300,7 +315,10 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
         // Arrange - Push an item
         var queueId = $"{fixture.QueueId}-extend-prevents-expiry-{Guid.NewGuid():N}";
         var itemElement = JsonSerializer.SerializeToElement(new { id = 1, value = "test-item" });
-        var pushRequest = new ApiPushRequest(itemElement, Priority: 1);
+        var pushRequest = new ApiPushRequest(new List<ApiPushItem>
+        {
+            new ApiPushItem(itemElement, Priority: 1)
+        });
         var pushResponse = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/push", pushRequest);
         pushResponse.EnsureSuccessStatusCode();
 
@@ -350,7 +368,10 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
         // Arrange - Push an item and create a lock
         var queueId = $"{fixture.QueueId}-extend-invalid-lock-{Guid.NewGuid():N}";
         var itemElement = JsonSerializer.SerializeToElement(new { id = 1, value = "test-item" });
-        var pushRequest = new ApiPushRequest(itemElement, Priority: 1);
+        var pushRequest = new ApiPushRequest(new List<ApiPushItem>
+        {
+            new ApiPushItem(itemElement, Priority: 1)
+        });
         var pushResponse = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/push", pushRequest);
         pushResponse.EnsureSuccessStatusCode();
 

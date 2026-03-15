@@ -24,7 +24,7 @@ export const useQueueOperations = (queueId: string) => {
   const pushMessage = async (priority: number) => {
     setIsPushing(true);
     try {
-      await queueApi.push(queueId, { item: currentPayload, priority });
+      await queueApi.push(queueId, { items: [{ item: currentPayload, priority }] });
       setMessagesPushed(prev => prev + 1);
       setCurrentPayload(generatePayload());
     } catch (err) {

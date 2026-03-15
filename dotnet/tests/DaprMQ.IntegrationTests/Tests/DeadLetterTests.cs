@@ -20,7 +20,10 @@ public class DeadLetterTests(DaprTestFixture fixture)
         // Arrange - Push an item and create a lock
         var queueId = $"{fixture.QueueId}-dlq-success-{Guid.NewGuid():N}";
         var itemElement = JsonSerializer.SerializeToElement(new { id = 1, value = "failed-item" });
-        var pushRequest = new ApiPushRequest(itemElement, Priority: 1);
+        var pushRequest = new ApiPushRequest(new List<ApiPushItem>
+        {
+            new ApiPushItem(itemElement, Priority: 1)
+        });
         await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/push", pushRequest);
 
         // Pop with acknowledgement (creates lock)
@@ -93,7 +96,7 @@ public class DeadLetterTests(DaprTestFixture fixture)
         // Arrange - Push item, create lock
         var queueId = $"{fixture.QueueId}-dlq-invalid-lock-{Guid.NewGuid():N}";
         var itemElement = JsonSerializer.SerializeToElement(new { id = 1, value = "test-item" });
-        await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/push", new ApiPushRequest(itemElement, Priority: 1));
+        await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/push", new ApiPushRequest(new List<ApiPushItem> { new ApiPushItem(itemElement, Priority: 1) }));
 
         var popWithAckRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
         popWithAckRequest.Headers.Add("require_ack", "true");
@@ -119,7 +122,7 @@ public class DeadLetterTests(DaprTestFixture fixture)
         // Arrange - Push item, create lock with short TTL
         var queueId = $"{fixture.QueueId}-dlq-expired-lock-{Guid.NewGuid():N}";
         var itemElement = JsonSerializer.SerializeToElement(new { id = 1, value = "test-item" });
-        await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/push", new ApiPushRequest(itemElement, Priority: 1));
+        await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/push", new ApiPushRequest(new List<ApiPushItem> { new ApiPushItem(itemElement, Priority: 1) }));
 
         var popWithAckRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
         popWithAckRequest.Headers.Add("require_ack", "true");
@@ -153,7 +156,7 @@ public class DeadLetterTests(DaprTestFixture fixture)
         // Arrange - Push priority 0 item (fast lane) and create lock
         var queueId = $"{fixture.QueueId}-dlq-priority-{Guid.NewGuid():N}";
         var itemElement = JsonSerializer.SerializeToElement(new { id = 1, value = "urgent-item" });
-        var pushRequest = new ApiPushRequest(itemElement, Priority: 0);
+        var pushRequest = new ApiPushRequest(new List<ApiPushItem> { new ApiPushItem(itemElement, Priority: 0) });
         await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/push", pushRequest);
 
         var popWithAckRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
@@ -169,7 +172,7 @@ public class DeadLetterTests(DaprTestFixture fixture)
 
         // Push priority 1 item to DLQ
         var lowPriorityItem = JsonSerializer.SerializeToElement(new { id = 2, value = "normal-item" });
-        await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}-deadletter/push", new ApiPushRequest(lowPriorityItem, Priority: 1));
+        await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}-deadletter/push", new ApiPushRequest(new List<ApiPushItem> { new ApiPushItem(lowPriorityItem, Priority: 1) }));
 
         // Assert - Pop from DLQ should return priority 0 item first
         var dlqPopRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}-deadletter/pop");
@@ -199,12 +202,13 @@ public class DeadLetterTests(DaprTestFixture fixture)
         var queueId = $"{fixture.QueueId}-grpc-dlq-{Guid.NewGuid():N}";
         var client = CreateGrpcClient();
 
-        await client.PushAsync(new PushRequest
+        var pushRequest = new PushRequest { QueueId = queueId };
+        pushRequest.Items.Add(new PushItem
         {
-            QueueId = queueId,
             ItemJson = "{\"test\":\"grpc-dlq-item\"}",
             Priority = 1
         });
+        await client.PushAsync(pushRequest);
 
         var popResponse = await client.PopWithAckAsync(new PopWithAckRequest
         {
@@ -252,12 +256,13 @@ public class DeadLetterTests(DaprTestFixture fixture)
         var queueId = $"{fixture.QueueId}-grpc-expired-{Guid.NewGuid():N}";
         var client = CreateGrpcClient();
 
-        await client.PushAsync(new PushRequest
+        var pushRequest2 = new PushRequest { QueueId = queueId };
+        pushRequest2.Items.Add(new PushItem
         {
-            QueueId = queueId,
             ItemJson = "{\"test\":\"item\"}",
             Priority = 1
         });
+        await client.PushAsync(pushRequest2);
 
         var popResponse = await client.PopWithAckAsync(new PopWithAckRequest
         {

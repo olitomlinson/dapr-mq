@@ -157,7 +157,7 @@ POST /queue/my-queue/deadletter {"lockId": "abc123"}
 # 1. Push message to queue
 curl -X POST http://localhost:5000/queue/orders/push \
   -H "Content-Type: application/json" \
-  -d '{"item": {"orderId": 123, "customer": "Alice"}, "priority": 1}'
+  -d '{"items": [{"item": {"orderId": 123, "customer": "Alice"}, "priority": 1}]}'
 
 # 2. Pop with acknowledgement
 curl -X POST http://localhost:5000/queue/orders/pop \
@@ -235,8 +235,14 @@ var client = new DaprMQ.DaprMQClient(channel);
 await client.PushAsync(new PushRequest
 {
     QueueId = "alerts",
-    ItemJson = "{\"severity\":\"critical\",\"alert\":\"disk full\"}",
-    Priority = 0  // Fast lane
+    Items =
+    {
+        new PushItem
+        {
+            ItemJson = "{\"severity\":\"critical\",\"alert\":\"disk full\"}",
+            Priority = 0  // Fast lane
+        }
+    }
 });
 
 // Pop with acknowledgement

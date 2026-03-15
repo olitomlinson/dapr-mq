@@ -1,7 +1,11 @@
 // API request/response types matching the DaprMQ API
-export interface PushRequest {
+export interface PushItem {
   item: unknown;
   priority: number;
+}
+
+export interface PushRequest {
+  items: PushItem[];
 }
 
 export interface PopResponse {

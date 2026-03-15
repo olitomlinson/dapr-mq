@@ -23,7 +23,7 @@ public class QueueController : ControllerBase
     }
 
     /// <summary>
-    /// Push an item to the queue with optional priority.
+    /// Push items to the queue with optional priority per item.
     /// </summary>
     [HttpPost("{queueId}/push")]
     public async Task<IActionResult> Push(
@@ -32,40 +32,59 @@ public class QueueController : ControllerBase
     {
         try
         {
-            if (request.Priority < 0)
+            // Validate items array
+            if (request.Items == null || request.Items.Count == 0)
             {
-                return BadRequest(new ApiErrorResponse("Priority must be non-negative"));
+                return BadRequest(new ApiErrorResponse("Items array cannot be empty"));
             }
 
-            _logger.LogDebug($"Push request for queue {queueId} with priority {request.Priority}");
+            if (request.Items.Count > 1000)
+            {
+                return BadRequest(new ApiErrorResponse("Maximum 1000 items per push"));
+            }
+
+            // Validate priorities
+            foreach (var item in request.Items)
+            {
+                if (item.Priority < 0)
+                {
+                    return BadRequest(new ApiErrorResponse("Priority must be non-negative"));
+                }
+            }
+
+            _logger.LogDebug($"Push request for queue {queueId} with {request.Items.Count} items");
 
             var actorId = new ActorId(queueId);
 
-            // Get raw JSON string from JsonElement (no unnecessary deserialization)
-            var itemJson = request.Item.GetRawText();
+            // Convert API items to actor items
+            var actorItems = request.Items.Select(apiItem => new PushItem
+            {
+                ItemJson = apiItem.Item.GetRawText(),
+                Priority = apiItem.Priority
+            }).ToList();
 
             var result = await _actorInvoker.InvokeMethodAsync<PushRequest, PushResponse>(
                 actorId,
                 ActorMethodNames.Push,
                 new PushRequest
                 {
-                    ItemJson = itemJson,
-                    Priority = request.Priority
+                    Items = actorItems
                 });
 
             if (result.Success)
             {
                 return Ok(new ApiPushResponse(
                     true,
-                    $"Item pushed to queue {queueId} at priority {request.Priority}"
+                    $"Pushed {result.ItemsPushed} items to queue {queueId}",
+                    result.ItemsPushed
                 ));
             }
 
-            return BadRequest(new ApiErrorResponse("Failed to push item"));
+            return BadRequest(new ApiErrorResponse(result.ErrorMessage ?? "Failed to push items"));
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, $"Error pushing item to queue {queueId}");
+            _logger.LogError(ex, $"Error pushing items to queue {queueId}");
             return StatusCode(500, new ApiErrorResponse($"Internal error: {ex.Message}"));
         }
     }

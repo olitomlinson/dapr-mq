@@ -47,7 +47,7 @@ Or manually test with curl:
 # Push an item
 curl -X POST http://localhost:8000/queue/my-queue/push \
   -H "Content-Type: application/json" \
-  -d '{"item": {"task": "hello", "priority": "high"}}'
+  -d '{"items": [{"item": {"task": "hello", "priority": "high"}, "priority": 1}]}'
 
 # Pop items
 curl -X POST "http://localhost:8000/queue/my-queue/pop"
@@ -104,8 +104,14 @@ var proxy = ActorProxy.Create<IQueueActor>(
 // Push items (type-safe)
 await proxy.Push(new PushRequest
 {
-    ItemJson = "{\"task\": \"send_email\"}",
-    Priority = 0
+    Items = new List<PushItem>
+    {
+        new PushItem
+        {
+            ItemJson = "{\"task\": \"send_email\"}",
+            Priority = 0
+        }
+    }
 });
 
 // Pop items (type-safe)
@@ -131,8 +137,14 @@ var pushResult = await proxy.InvokeMethodAsync<PushRequest, PushResponse>(
     "Push",
     new PushRequest
     {
-        ItemJson = "{\"task\": \"send_email\"}",
-        Priority = 0
+        Items = new List<PushItem>
+        {
+            new PushItem
+            {
+                ItemJson = "{\"task\": \"send_email\"}",
+                Priority = 0
+            }
+        }
     }
 );
 
@@ -253,10 +265,10 @@ Each actor ID is a separate queue:
 
 ```bash
 # Queue 1
-curl -X POST http://localhost:8000/queue/queue-1/push -d '{"item": {"data": 1}}'
+curl -X POST http://localhost:8000/queue/queue-1/push -d '{"items": [{"item": {"data": 1}, "priority": 1}]}'
 
 # Queue 2
-curl -X POST http://localhost:8000/queue/queue-2/push -d '{"item": {"data": 2}}'
+curl -X POST http://localhost:8000/queue/queue-2/push -d '{"items": [{"item": {"data": 2}, "priority": 1}]}'
 
 # They're independent
 curl -X POST "http://localhost:8000/queue/queue-1/pop0"  # Returns item 1 only
@@ -279,8 +291,14 @@ foreach (var task in tasks)
 {
     await proxy.Push(new PushRequest
     {
-        ItemJson = JsonSerializer.Serialize(new { task_id = task.Id, data = task.Data }),
-        Priority = 0
+        Items = new List<PushItem>
+        {
+            new PushItem
+            {
+                ItemJson = JsonSerializer.Serialize(new { task_id = task.Id, data = task.Data }),
+                Priority = 0
+            }
+        }
     });
 }
 

@@ -69,42 +69,67 @@ Task<PushResponse> Push(PushRequest request)
 
 **Parameters:**
 - `request` (PushRequest): Contains:
-  - `ItemJson` (string): JSON string to push onto the queue
-  - `Priority` (int, optional): Priority level (0 = highest priority, 1, 2, ...). Default: 1
+  - `Items` (List<PushItem>): Array of items to push (1-1000 items)
+    - Each PushItem contains:
+      - `ItemJson` (string): JSON string to push onto the queue
+      - `Priority` (int, optional): Priority level (0 = highest priority, 1, 2, ...). Default: 1
 
 **Returns:**
-- `PushResponse`: Contains `Success` (bool) - true if successful, false otherwise
+- `PushResponse`: Contains:
+  - `Success` (bool): true if successful, false otherwise
+  - `ItemsPushed` (int): Number of items successfully pushed
+  - `ErrorMessage` (string, optional): Error message if failed
 
 **Behavior:**
-1. Validates ItemJson is not empty
-2. Validates priority is non-negative integer (>= 0)
-3. Loads queue at `queue_{priority}_seg_{tailSegment}` (creates empty if doesn't exist)
-4. Appends item to end of segment (FIFO)
-5. Loads metadata map
-6. Increments count for priority
-7. Saves both segment and metadata map
+1. Validates items array (1-1000 items, non-empty ItemJson, priority >= 0 for each)
+2. Groups items by priority
+3. For each priority group:
+   - Loads queue at `queue_{priority}_seg_{tailSegment}` (creates empty if doesn't exist)
+   - Appends each item to end of segment (FIFO)
+   - If segment is full (100 items), allocates new segment
+   - Increments count for priority in metadata map
+4. Saves all segments and metadata map atomically with single SaveStateAsync()
+5. Returns success with ItemsPushed count or error
 
 **Example:**
 ```csharp
 // Push high priority item
 var response = await actor.Push(new PushRequest
 {
-    ItemJson = "{\"task\": \"critical_alert\"}",
-    Priority = 0
+    Items = new List<PushItem>
+    {
+        new PushItem
+        {
+            ItemJson = "{\"task\": \"critical_alert\"}",
+            Priority = 0
+        }
+    }
 });
 
 // Push low priority item
 response = await actor.Push(new PushRequest
 {
-    ItemJson = "{\"task\": \"cleanup_logs\"}",
-    Priority = 5
+    Items = new List<PushItem>
+    {
+        new PushItem
+        {
+            ItemJson = "{\"task\": \"cleanup_logs\"}",
+            Priority = 5
+        }
+    }
 });
 
 // Push with default priority (1)
 response = await actor.Push(new PushRequest
 {
-    ItemJson = "{\"task\": \"normal_task\"}"
-    // Priority not specified - defaults to 1
+    Items = new List<PushItem>
+    {
+        new PushItem
+        {
+            ItemJson = "{\"task\": \"normal_task\"}"
+            // Priority not specified - defaults to 1
+        }
+    }
 });
 ```
 
@@ -193,12 +218,12 @@ items = await actor.Pop(10)
 # Push high priority item
 curl -X POST http://localhost:8000/queue/my-queue/push \
   -H "Content-Type: application/json" \
-  -d '{"item": {"task": "urgent"}, "priority": 0}'
+  -d '{"items": [{"item": {"task": "urgent"}, "priority": 0}]}'
 
 # Push low priority item
 curl -X POST http://localhost:8000/queue/my-queue/push \
   -H "Content-Type: application/json" \
-  -d '{"item": {"task": "background"}, "priority": 5}'
+  -d '{"items": [{"item": {"task": "background"}, "priority": 5}]}'
 
 # Pop items - priority 0 returned first
 curl -X POST "http://localhost:8000/queue/my-queue/pop"

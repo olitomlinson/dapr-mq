@@ -6,6 +6,17 @@ namespace DaprMQ.Interfaces;
 public record PushRequest
 {
     /// <summary>
+    /// Array of items to push.
+    /// </summary>
+    public List<PushItem> Items { get; init; } = new();
+}
+
+/// <summary>
+/// Individual item in a Push request.
+/// </summary>
+public record PushItem
+{
+    /// <summary>
     /// The item to push (as JSON string).
     /// </summary>
     public string ItemJson { get; init; } = string.Empty;
@@ -25,6 +36,16 @@ public record PushResponse
     /// Whether the push was successful.
     /// </summary>
     public bool Success { get; init; }
+
+    /// <summary>
+    /// Number of items pushed.
+    /// </summary>
+    public int ItemsPushed { get; init; }
+
+    /// <summary>
+    /// Error message if not successful.
+    /// </summary>
+    public string? ErrorMessage { get; init; }
 }
 
 /// <summary>

@@ -23,24 +23,64 @@ public class GrpcEndpointTests(DaprTestFixture fixture)
     }
 
     [Fact]
-    public async Task Push_ValidItem_ReturnsSuccess()
+    public async Task Push_ValidSingleItem_ReturnsSuccess()
     {
         // Arrange
         var queueId = $"{fixture.QueueId}-{Guid.NewGuid()}";
         var client = CreateGrpcClient();
         var request = new PushRequest
         {
-            QueueId = queueId,
+            QueueId = queueId
+        };
+        request.Items.Add(new PushItem
+        {
             ItemJson = "{\"test\":\"data\"}",
             Priority = 1
-        };
+        });
 
         // Act
         var response = await client.PushAsync(request);
 
         // Assert
         Assert.True(response.Success);
+        Assert.Equal(1, response.ItemsPushed);
         Assert.NotEmpty(response.Message);
+    }
+
+    [Fact]
+    public async Task Push_ValidMultipleItems_ReturnsSuccess()
+    {
+        // Arrange
+        var queueId = $"{fixture.QueueId}-{Guid.NewGuid()}";
+        var client = CreateGrpcClient();
+        var request = new PushRequest
+        {
+            QueueId = queueId
+        };
+        request.Items.Add(new PushItem { ItemJson = "{\"id\":1}", Priority = 1 });
+        request.Items.Add(new PushItem { ItemJson = "{\"id\":2}", Priority = 0 });
+        request.Items.Add(new PushItem { ItemJson = "{\"id\":3}", Priority = 1 });
+
+        // Act
+        var response = await client.PushAsync(request);
+
+        // Assert
+        Assert.True(response.Success);
+        Assert.Equal(3, response.ItemsPushed);
+    }
+
+    [Fact]
+    public async Task Push_EmptyArray_ThrowsInvalidArgument()
+    {
+        // Arrange
+        var queueId = $"{fixture.QueueId}-{Guid.NewGuid()}";
+        var client = CreateGrpcClient();
+        var request = new PushRequest { QueueId = queueId };
+        // Don't add any items
+
+        // Act & Assert
+        var ex = await Assert.ThrowsAsync<RpcException>(async () => await client.PushAsync(request));
+        Assert.Equal(StatusCode.InvalidArgument, ex.StatusCode);
     }
 
     [Fact]
@@ -49,12 +89,12 @@ public class GrpcEndpointTests(DaprTestFixture fixture)
         // Arrange
         var queueId = $"{fixture.QueueId}-{Guid.NewGuid()}";
         var client = CreateGrpcClient();
-        var request = new PushRequest
+        var request = new PushRequest { QueueId = queueId };
+        request.Items.Add(new PushItem
         {
-            QueueId = queueId,
             ItemJson = "{\"test\":\"data\"}",
             Priority = -1
-        };
+        });
 
         // Act & Assert
         var ex = await Assert.ThrowsAsync<RpcException>(async () => await client.PushAsync(request));
@@ -103,12 +143,12 @@ public class GrpcEndpointTests(DaprTestFixture fixture)
         // Arrange
         var queueId = $"{fixture.QueueId}-{Guid.NewGuid()}";
         var client = CreateGrpcClient();
-        var pushRequest = new PushRequest
+        var pushRequest = new PushRequest { QueueId = queueId };
+        pushRequest.Items.Add(new PushItem
         {
-            QueueId = queueId,
             ItemJson = "{\"id\":42,\"name\":\"test-item\"}",
             Priority = 1
-        };
+        });
 
         // Act - Push
         var pushResponse = await client.PushAsync(pushRequest);
@@ -129,12 +169,12 @@ public class GrpcEndpointTests(DaprTestFixture fixture)
         // Arrange
         var queueId = $"{fixture.QueueId}-{Guid.NewGuid()}";
         var client = CreateGrpcClient();
-        var pushRequest = new PushRequest
+        var pushRequest = new PushRequest { QueueId = queueId };
+        pushRequest.Items.Add(new PushItem
         {
-            QueueId = queueId,
             ItemJson = "{\"test\":\"ack-flow\"}",
             Priority = 1
-        };
+        });
 
         // Act - Push
         await client.PushAsync(pushRequest);
@@ -159,12 +199,12 @@ public class GrpcEndpointTests(DaprTestFixture fixture)
         // Arrange
         var queueId = $"{fixture.QueueId}-{Guid.NewGuid()}";
         var client = CreateGrpcClient();
-        var pushRequest = new PushRequest
+        var pushRequest = new PushRequest { QueueId = queueId };
+        pushRequest.Items.Add(new PushItem
         {
-            QueueId = queueId,
             ItemJson = "{\"test\":\"acknowledge\"}",
             Priority = 1
-        };
+        });
 
         await client.PushAsync(pushRequest);
 
@@ -213,12 +253,12 @@ public class GrpcEndpointTests(DaprTestFixture fixture)
         // Arrange
         var queueId = $"{fixture.QueueId}-{Guid.NewGuid()}";
         var client = CreateGrpcClient();
-        var pushRequest = new PushRequest
+        var pushRequest = new PushRequest { QueueId = queueId };
+        pushRequest.Items.Add(new PushItem
         {
-            QueueId = queueId,
             ItemJson = "{\"test\":\"extend\"}",
             Priority = 1
-        };
+        });
 
         await client.PushAsync(pushRequest);
 

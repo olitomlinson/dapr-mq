@@ -17,12 +17,12 @@ docker-compose up
 # Push a message to the queue with priority 1
 curl -X POST http://localhost:8000/queue/my-queue/push \
   -H "Content-Type: application/json" \
-  -d '{ "item": { "task": "first" }, "priority": 1 }'
+  -d '{ "items": [{ "item": { "task": "first" }, "priority": 1 }] }'
 
 # Push a message to the same queue, with priority 0
 curl -X POST http://localhost:8000/queue/my-queue/push \
   -H "Content-Type: application/json" \
-  -d '{ "item": { "task": "second"}, "priority": 0 }'
+  -d '{ "items": [{ "item": { "task": "second"}, "priority": 0 }] }'
 
 # Pop a message...
 curl -X POST "http://localhost:8000/queue/my-queue/pop"

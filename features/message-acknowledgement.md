@@ -264,7 +264,7 @@ No acknowledgement required, items removed immediately.
 # Push an item
 curl -X POST "http://localhost:8000/queue/my-queue/push" \
   -H "Content-Type: application/json" \
-  -d '{"item": {"task_id": 123, "action": "send_email"}}'
+  -d '{"items": [{"item": {"task_id": 123, "action": "send_email"}, "priority": 1}]}'
 
 # Pop with acknowledgement
 curl -X POST "http://localhost:8000/queue/my-queue/pop" \
@@ -456,8 +456,14 @@ if (lockData.ContainsKey("items_json"))
         {
             await Push(new PushRequest
             {
-                ItemJson = jsonString,
-                Priority = originalPriority  // Restore original priority from lock metadata
+                Items = new List<PushItem>
+                {
+                    new PushItem
+                    {
+                        ItemJson = jsonString,
+                        Priority = originalPriority  // Restore original priority from lock metadata
+                    }
+                }
             });
         }
     }

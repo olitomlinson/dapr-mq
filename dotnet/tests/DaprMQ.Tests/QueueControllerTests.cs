@@ -24,7 +24,7 @@ public class QueueControllerTests
     }
 
     [Fact]
-    public async Task Push_ValidRequest_Returns200()
+    public async Task Push_ValidSingleItem_Returns200()
     {
         // Arrange
         var mockInvoker = new Mock<IActorInvoker>();
@@ -33,11 +33,14 @@ public class QueueControllerTests
                 It.IsAny<string>(),
                 It.IsAny<PushRequest>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new PushResponse { Success = true });
+            .ReturnsAsync(new PushResponse { Success = true, ItemsPushed = 1 });
 
         var controller = new QueueController(_mockLogger.Object, mockInvoker.Object);
         var itemElement = JsonSerializer.SerializeToElement(new { id = 1, value = "test" });
-        var request = new ApiPushRequest(itemElement, Priority: 1);
+        var request = new ApiPushRequest(new List<ApiPushItem>
+        {
+            new ApiPushItem(itemElement, Priority: 1)
+        });
 
         // Act
         var result = await controller.Push("test-queue", request);
@@ -46,16 +49,50 @@ public class QueueControllerTests
         var okResult = Assert.IsType<OkObjectResult>(result);
         var response = Assert.IsType<ApiPushResponse>(okResult.Value);
         Assert.True(response.Success);
+        Assert.Equal(1, response.ItemsPushed);
     }
 
     [Fact]
-    public async Task Push_NegativePriority_Returns400()
+    public async Task Push_ValidMultipleItems_Returns200()
     {
-        // Arrange - This test works because it validates BEFORE calling the actor
+        // Arrange
+        var mockInvoker = new Mock<IActorInvoker>();
+        mockInvoker.Setup(i => i.InvokeMethodAsync<PushRequest, PushResponse>(
+                It.IsAny<ActorId>(),
+                It.IsAny<string>(),
+                It.IsAny<PushRequest>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PushResponse { Success = true, ItemsPushed = 3 });
+
+        var controller = new QueueController(_mockLogger.Object, mockInvoker.Object);
+        var item1 = JsonSerializer.SerializeToElement(new { id = 1 });
+        var item2 = JsonSerializer.SerializeToElement(new { id = 2 });
+        var item3 = JsonSerializer.SerializeToElement(new { id = 3 });
+
+        var request = new ApiPushRequest(new List<ApiPushItem>
+        {
+            new ApiPushItem(item1, Priority: 1),
+            new ApiPushItem(item2, Priority: 0),
+            new ApiPushItem(item3, Priority: 1)
+        });
+
+        // Act
+        var result = await controller.Push("test-queue", request);
+
+        // Assert
+        var okResult = Assert.IsType<OkObjectResult>(result);
+        var response = Assert.IsType<ApiPushResponse>(okResult.Value);
+        Assert.True(response.Success);
+        Assert.Equal(3, response.ItemsPushed);
+    }
+
+    [Fact]
+    public async Task Push_EmptyArray_Returns400()
+    {
+        // Arrange
         var mockInvoker = new Mock<IActorInvoker>();
         var controller = new QueueController(_mockLogger.Object, mockInvoker.Object);
-        var itemElement = JsonSerializer.SerializeToElement(new { id = 1 });
-        var request = new ApiPushRequest(itemElement, Priority: -1);
+        var request = new ApiPushRequest(new List<ApiPushItem>());
 
         // Act
         var result = await controller.Push("test-queue", request);
@@ -63,7 +100,69 @@ public class QueueControllerTests
         // Assert
         var badRequestResult = Assert.IsType<BadRequestObjectResult>(result);
         var errorResponse = Assert.IsType<ApiErrorResponse>(badRequestResult.Value);
-        Assert.Equal("Priority must be non-negative", errorResponse.Message);
+        Assert.False(errorResponse.Success);
+    }
+
+    [Fact]
+    public async Task Push_NullItems_Returns400()
+    {
+        // Arrange
+        var mockInvoker = new Mock<IActorInvoker>();
+        var controller = new QueueController(_mockLogger.Object, mockInvoker.Object);
+        var request = new ApiPushRequest(null!);
+
+        // Act
+        var result = await controller.Push("test-queue", request);
+
+        // Assert
+        var badRequestResult = Assert.IsType<BadRequestObjectResult>(result);
+        var errorResponse = Assert.IsType<ApiErrorResponse>(badRequestResult.Value);
+        Assert.False(errorResponse.Success);
+    }
+
+    [Fact]
+    public async Task Push_NegativePriority_Returns400()
+    {
+        // Arrange
+        var mockInvoker = new Mock<IActorInvoker>();
+        var controller = new QueueController(_mockLogger.Object, mockInvoker.Object);
+        var itemElement = JsonSerializer.SerializeToElement(new { id = 1 });
+        var request = new ApiPushRequest(new List<ApiPushItem>
+        {
+            new ApiPushItem(itemElement, Priority: -1)
+        });
+
+        // Act
+        var result = await controller.Push("test-queue", request);
+
+        // Assert
+        var badRequestResult = Assert.IsType<BadRequestObjectResult>(result);
+        var errorResponse = Assert.IsType<ApiErrorResponse>(badRequestResult.Value);
+        Assert.False(errorResponse.Success);
+    }
+
+    [Fact]
+    public async Task Push_ExceedsMaxSize_Returns400()
+    {
+        // Arrange
+        var mockInvoker = new Mock<IActorInvoker>();
+        var controller = new QueueController(_mockLogger.Object, mockInvoker.Object);
+
+        var items = new List<ApiPushItem>();
+        for (int i = 0; i < 1001; i++)
+        {
+            var itemElement = JsonSerializer.SerializeToElement(new { id = i });
+            items.Add(new ApiPushItem(itemElement, Priority: 1));
+        }
+
+        var request = new ApiPushRequest(items);
+
+        // Act
+        var result = await controller.Push("test-queue", request);
+
+        // Assert
+        var badRequestResult = Assert.IsType<BadRequestObjectResult>(result);
+        var errorResponse = Assert.IsType<ApiErrorResponse>(badRequestResult.Value);
         Assert.False(errorResponse.Success);
     }
 

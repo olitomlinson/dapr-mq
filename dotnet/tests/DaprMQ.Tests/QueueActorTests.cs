@@ -122,50 +122,219 @@ public class QueueActorTests
     }
 
     [Fact]
-    public async Task PushAsync_WithValidItem_ReturnsTrue()
+    public async Task PushAsync_WithValidSingleItem_ReturnsSuccess()
     {
         // Arrange
         var mockStateManager = CreateMockStateManager();
         var actor = await CreateActorAsync(mockStateManager);
         var itemJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "test" });
-        var request = new Interfaces.PushRequest { ItemJson = itemJson, Priority = 0 };
+        var request = new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = itemJson, Priority = 0 }
+            }
+        };
 
         // Act
         var result = await actor.Push(request);
 
         // Assert
         Assert.True(result.Success);
+        Assert.Equal(1, result.ItemsPushed);
     }
 
     [Fact]
-    public async Task PushAsync_WithoutItem_ReturnsFalse()
+    public async Task PushAsync_WithMultipleItems_ReturnsSuccessWithCount()
     {
         // Arrange
         var mockStateManager = CreateMockStateManager();
         var actor = await CreateActorAsync(mockStateManager);
-        var request = new Interfaces.PushRequest { ItemJson = "", Priority = 0 };
+        var item1Json = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "test1" });
+        var item2Json = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "test2" });
+        var item3Json = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "test3" });
+
+        var request = new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = item1Json, Priority = 1 },
+                new Interfaces.PushItem { ItemJson = item2Json, Priority = 0 },
+                new Interfaces.PushItem { ItemJson = item3Json, Priority = 1 }
+            }
+        };
+
+        // Act
+        var result = await actor.Push(request);
+
+        // Assert
+        Assert.True(result.Success);
+        Assert.Equal(3, result.ItemsPushed);
+    }
+
+    [Fact]
+    public async Task PushAsync_WithEmptyArray_ReturnsFalure()
+    {
+        // Arrange
+        var mockStateManager = CreateMockStateManager();
+        var actor = await CreateActorAsync(mockStateManager);
+        var request = new Interfaces.PushRequest { Items = new List<Interfaces.PushItem>() };
 
         // Act
         var result = await actor.Push(request);
 
         // Assert
         Assert.False(result.Success);
+        Assert.Equal(0, result.ItemsPushed);
+        Assert.NotNull(result.ErrorMessage);
     }
 
     [Fact]
-    public async Task PushAsync_WithNegativePriority_ReturnsFalse()
+    public async Task PushAsync_WithEmptyItemJson_ReturnsFalure()
+    {
+        // Arrange
+        var mockStateManager = CreateMockStateManager();
+        var actor = await CreateActorAsync(mockStateManager);
+        var request = new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "", Priority = 0 }
+            }
+        };
+
+        // Act
+        var result = await actor.Push(request);
+
+        // Assert
+        Assert.False(result.Success);
+        Assert.Equal(0, result.ItemsPushed);
+    }
+
+    [Fact]
+    public async Task PushAsync_WithNegativePriority_ReturnsFalure()
     {
         // Arrange
         var mockStateManager = CreateMockStateManager();
         var actor = await CreateActorAsync(mockStateManager);
         var itemJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "test" });
-        var request = new Interfaces.PushRequest { ItemJson = itemJson, Priority = -1 };
+        var request = new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = itemJson, Priority = -1 }
+            }
+        };
 
         // Act
         var result = await actor.Push(request);
 
         // Assert
         Assert.False(result.Success);
+        Assert.Equal(0, result.ItemsPushed);
+    }
+
+    [Fact]
+    public async Task PushAsync_WithMixedPriorities_MaintainsFIFOPerPriority()
+    {
+        // Arrange
+        var mockStateManager = CreateMockStateManager();
+        var actor = await CreateActorAsync(mockStateManager);
+        var item1Json = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "priority1-first" });
+        var item2Json = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "priority0-urgent" });
+        var item3Json = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "priority1-second" });
+
+        var request = new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = item1Json, Priority = 1 },
+                new Interfaces.PushItem { ItemJson = item2Json, Priority = 0 },
+                new Interfaces.PushItem { ItemJson = item3Json, Priority = 1 }
+            }
+        };
+
+        // Act
+        var pushResult = await actor.Push(request);
+        var pop1 = await actor.Pop();
+        var pop2 = await actor.Pop();
+        var pop3 = await actor.Pop();
+
+        // Assert
+        Assert.True(pushResult.Success);
+        Assert.Equal(3, pushResult.ItemsPushed);
+
+        // Priority 0 should come first
+        Assert.Equal(item2Json, pop1.ItemJson);
+        Assert.Equal(0, pop1.Priority);
+
+        // Then priority 1 items in FIFO order
+        Assert.Equal(item1Json, pop2.ItemJson);
+        Assert.Equal(1, pop2.Priority);
+
+        Assert.Equal(item3Json, pop3.ItemJson);
+        Assert.Equal(1, pop3.Priority);
+    }
+
+    [Fact]
+    public async Task PushAsync_With101Items_AllocatesMultipleSegments()
+    {
+        // Arrange
+        var mockStateManager = CreateMockStateManager();
+        var actor = await CreateActorAsync(mockStateManager);
+
+        var items = new List<Interfaces.PushItem>();
+        for (int i = 0; i < 101; i++)
+        {
+            var itemJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["index"] = i });
+            items.Add(new Interfaces.PushItem { ItemJson = itemJson, Priority = 1 });
+        }
+
+        var request = new Interfaces.PushRequest { Items = items };
+
+        // Act
+        var result = await actor.Push(request);
+
+        // Assert
+        Assert.True(result.Success);
+        Assert.Equal(101, result.ItemsPushed);
+
+        // Verify items can be popped in order
+        for (int i = 0; i < 101; i++)
+        {
+            var popResult = await actor.Pop();
+            Assert.NotNull(popResult.ItemJson);
+        }
+    }
+
+    [Fact]
+    public async Task PushAsync_WithOneInvalidItem_ReturnsFailureWithZeroItemsPushed()
+    {
+        // Arrange
+        var mockStateManager = CreateMockStateManager();
+        var actor = await CreateActorAsync(mockStateManager);
+        var validItem = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "valid" });
+
+        var request = new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = validItem, Priority = 1 },
+                new Interfaces.PushItem { ItemJson = "", Priority = 1 }, // Invalid - empty
+                new Interfaces.PushItem { ItemJson = validItem, Priority = 1 }
+            }
+        };
+
+        // Act
+        var result = await actor.Push(request);
+
+        // Assert - all-or-nothing behavior
+        Assert.False(result.Success);
+        Assert.Equal(0, result.ItemsPushed);
+
+        // Verify nothing was actually pushed
+        var popResult = await actor.Pop();
+        Assert.Null(popResult.ItemJson);
     }
 
     [Fact]
@@ -190,7 +359,13 @@ public class QueueActorTests
         var mockStateManager = CreateMockStateManager();
         var actor = await CreateActorAsync(mockStateManager);
         var itemJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "test" });
-        var pushRequest = new Interfaces.PushRequest { ItemJson = itemJson, Priority = 0 };
+        var pushRequest = new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = itemJson, Priority = 0 }
+            }
+        };
 
         // Act
         await actor.Push(pushRequest);
@@ -214,18 +389,36 @@ public class QueueActorTests
         // Act - Push 3 items
         await actor.Push(new Interfaces.PushRequest
         {
-            ItemJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["id"] = 1 }),
-            Priority = 0
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem
+                {
+                    ItemJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["id"] = 1 }),
+                    Priority = 0
+                }
+            }
         });
         await actor.Push(new Interfaces.PushRequest
         {
-            ItemJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["id"] = 2 }),
-            Priority = 0
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem
+                {
+                    ItemJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["id"] = 2 }),
+                    Priority = 0
+                }
+            }
         });
         await actor.Push(new Interfaces.PushRequest
         {
-            ItemJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["id"] = 3 }),
-            Priority = 0
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem
+                {
+                    ItemJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["id"] = 3 }),
+                    Priority = 0
+                }
+            }
         });
 
         // Pop all items
@@ -253,7 +446,13 @@ public class QueueActorTests
         var mockStateManager = CreateMockStateManager();
         var actor = await CreateActorAsync(mockStateManager);
         var itemJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "test" });
-        await actor.Push(new Interfaces.PushRequest { ItemJson = itemJson, Priority = 0 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = itemJson, Priority = 0 }
+            }
+        });
 
         // Act
         var result = await actor.PopWithAck(new Interfaces.PopWithAckRequest { TtlSeconds = 30 });
@@ -272,7 +471,13 @@ public class QueueActorTests
         var mockStateManager = CreateMockStateManager();
         var actor = await CreateActorAsync(mockStateManager);
         var itemJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "test" });
-        await actor.Push(new Interfaces.PushRequest { ItemJson = itemJson, Priority = 0 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = itemJson, Priority = 0 }
+            }
+        });
 
         var popResult = await actor.PopWithAck(new Interfaces.PopWithAckRequest { TtlSeconds = 30 });
         var lockId = popResult.LockId!;
@@ -309,7 +514,13 @@ public class QueueActorTests
         var original = "{\"key\":\"value\",\"number\":42}";
 
         // Act
-        await actor.Push(new Interfaces.PushRequest { ItemJson = original, Priority = 0 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = original, Priority = 0 }
+            }
+        });
         var result = await actor.Pop();
 
         // Assert
@@ -324,7 +535,13 @@ public class QueueActorTests
         // Arrange
         var mockStateManager = CreateMockStateManager();
         var actor = await CreateActorAsync(mockStateManager);
-        var request = new Interfaces.PushRequest { ItemJson = "{\"test\":\"data\"}" };
+        var request = new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"test\":\"data\"}", Priority = 1 }
+            }
+        };
         // Priority not explicitly set - should default to 1
 
         // Act
@@ -352,8 +569,20 @@ public class QueueActorTests
         var mockStateManager = CreateMockStateManager();
         var actor = await CreateActorAsync(mockStateManager);
 
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":1}", Priority = 2 });
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":2}", Priority = 1 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":1}", Priority = 2 }
+            }
+        });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":2}", Priority = 1 }
+            }
+        });
 
         // PopWithAck with 1 second TTL (will pop priority 1 item first)
         var popResult = await actor.PopWithAck(new Interfaces.PopWithAckRequest { TtlSeconds = 1 });
@@ -387,7 +616,13 @@ public class QueueActorTests
         // Arrange - push single item
         var mockStateManager = CreateMockStateManager();
         var actor = await CreateActorAsync(mockStateManager);
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":1}", Priority = 1 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":1}", Priority = 1 }
+            }
+        });
 
         // Act - PopWithAck should commit lock atomically
         var result = await actor.PopWithAck(new Interfaces.PopWithAckRequest { TtlSeconds = 30 });
@@ -424,9 +659,27 @@ public class QueueActorTests
         var mockStateManager = CreateMockStateManager();
         var actor = await CreateActorAsync(mockStateManager);
 
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":\"A\"}", Priority = 1 });
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":\"B\"}", Priority = 1 });
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":\"C\"}", Priority = 1 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":\"A\"}", Priority = 1 }
+            }
+        });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":\"B\"}", Priority = 1 }
+            }
+        });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":\"C\"}", Priority = 1 }
+            }
+        });
 
         // Act - PopWithAck locks Item-A
         var popResult = await actor.PopWithAck(new Interfaces.PopWithAckRequest { TtlSeconds = 1 });
@@ -434,7 +687,13 @@ public class QueueActorTests
         Assert.Contains("\"id\":\"A\"", popResult.ItemJson);
 
         // Push Item-D while lock is active
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":\"D\"}", Priority = 1 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":\"D\"}", Priority = 1 }
+            }
+        });
 
         // Wait for lock to expire
         await Task.Delay(1100);
@@ -471,7 +730,13 @@ public class QueueActorTests
         var mockStateManager = CreateMockStateManager();
         var actor = await CreateActorAsync(mockStateManager);
 
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":\"test\"}", Priority = 1 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":\"test\"}", Priority = 1 }
+            }
+        });
 
         // Act - PopWithAck locks the item
         var popResult = await actor.PopWithAck(new Interfaces.PopWithAckRequest { TtlSeconds = 30 });
@@ -503,8 +768,20 @@ public class QueueActorTests
         var mockStateManager = CreateMockStateManager();
         var actor = await CreateActorAsync(mockStateManager);
 
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":1}", Priority = 1 });
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":2}", Priority = 1 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":1}", Priority = 1 }
+            }
+        });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":2}", Priority = 1 }
+            }
+        });
 
         // Act - PopWithAck first item
         var popResult = await actor.PopWithAck(new Interfaces.PopWithAckRequest { TtlSeconds = 30 });
@@ -535,8 +812,20 @@ public class QueueActorTests
         var mockStateManager = CreateMockStateManager();
         var actor = await CreateActorAsync(mockStateManager);
 
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":1}", Priority = 1 });
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":2}", Priority = 1 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":1}", Priority = 1 }
+            }
+        });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":2}", Priority = 1 }
+            }
+        });
 
         // Act - PopWithAck creates lock
         var popResult = await actor.PopWithAck(new Interfaces.PopWithAckRequest { TtlSeconds = 30 });
@@ -573,17 +862,47 @@ public class QueueActorTests
         var mockStateManager = CreateMockStateManager();
         var actor = await CreateActorAsync(mockStateManager);
 
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":\"P1-A\"}", Priority = 1 });
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":\"P1-B\"}", Priority = 1 });
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":\"P2-A\"}", Priority = 2 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":\"P1-A\"}", Priority = 1 }
+            }
+        });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":\"P1-B\"}", Priority = 1 }
+            }
+        });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":\"P2-A\"}", Priority = 2 }
+            }
+        });
 
         // Act - PopWithAck on priority 1 item
         var popResult = await actor.PopWithAck(new Interfaces.PopWithAckRequest { TtlSeconds = 1 });
         Assert.Contains("\"id\":\"P1-A\"", popResult.ItemJson!);
 
         // Push more items to priority 1 while lock is active
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":\"P1-C\"}", Priority = 1 });
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":\"P1-D\"}", Priority = 1 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":\"P1-C\"}", Priority = 1 }
+            }
+        });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":\"P1-D\"}", Priority = 1 }
+            }
+        });
 
         // Let lock expire
         await Task.Delay(1100);
@@ -635,7 +954,13 @@ public class QueueActorTests
 
         // Act & Assert - Push should throw
         var pushEx = await Assert.ThrowsAsync<InvalidOperationException>(
-            async () => await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"test\":\"data\"}", Priority = 0 })
+            async () => await actor.Push(new Interfaces.PushRequest
+            {
+                Items = new List<Interfaces.PushItem>
+                {
+                    new Interfaces.PushItem { ItemJson = "{\"test\":\"data\"}", Priority = 0 }
+                }
+            })
         );
         Assert.Contains("Queue corrupted", pushEx.Message);
         Assert.Contains("Test corruption error", pushEx.Message);
@@ -656,7 +981,13 @@ public class QueueActorTests
         var actor = await CreateActorAsync(mockStateManager);
 
         // Push an item
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":1}", Priority = 1 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":1}", Priority = 1 }
+            }
+        });
 
         // PopWithAck to create lock with 10s TTL
         var popWithAckResult = await actor.PopWithAck(new Interfaces.PopWithAckRequest { TtlSeconds = 10 });
@@ -685,7 +1016,13 @@ public class QueueActorTests
         var actor = await CreateActorAsync(mockStateManager);
 
         // Push an item and create lock
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":1}", Priority = 1 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":1}", Priority = 1 }
+            }
+        });
         var popWithAckResult = await actor.PopWithAck(new Interfaces.PopWithAckRequest { TtlSeconds = 10 });
         Assert.NotNull(popWithAckResult.LockId);
 
@@ -709,7 +1046,13 @@ public class QueueActorTests
         var actor = await CreateActorAsync(mockStateManager);
 
         // Push an item and create lock with 1s TTL
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":1}", Priority = 1 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":1}", Priority = 1 }
+            }
+        });
         var popWithAckResult = await actor.PopWithAck(new Interfaces.PopWithAckRequest { TtlSeconds = 1 });
         Assert.NotNull(popWithAckResult.LockId);
 
@@ -755,7 +1098,13 @@ public class QueueActorTests
         var actor = await CreateActorAsync(mockStateManager);
 
         // Push an item and create lock
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":1}", Priority = 1 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":1}", Priority = 1 }
+            }
+        });
         var popWithAckResult = await actor.PopWithAck(new Interfaces.PopWithAckRequest { TtlSeconds = 10 });
         Assert.NotNull(popWithAckResult.LockId);
 
@@ -779,7 +1128,13 @@ public class QueueActorTests
         var actor = await CreateActorAsync(mockStateManager);
 
         // Push an item and create lock with 10s TTL
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":1}", Priority = 1 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":1}", Priority = 1 }
+            }
+        });
         var popWithAckResult = await actor.PopWithAck(new Interfaces.PopWithAckRequest { TtlSeconds = 10 });
         Assert.NotNull(popWithAckResult.LockId);
         var originalExpiresAt = popWithAckResult.LockExpiresAt!.Value;
@@ -811,7 +1166,13 @@ public class QueueActorTests
         var actor = await CreateActorAsync(mockStateManager);
 
         // Push an item and create lock
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":1}", Priority = 1 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":1}", Priority = 1 }
+            }
+        });
         var popWithAckResult = await actor.PopWithAck(new Interfaces.PopWithAckRequest { TtlSeconds = 10 });
         Assert.NotNull(popWithAckResult.LockId);
 
@@ -851,7 +1212,13 @@ public class QueueActorTests
         var actor = await CreateActorAsync(mockStateManager);
 
         // Push an item and create lock
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":1,\"value\":\"test\"}", Priority = 1 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":1,\"value\":\"test\"}", Priority = 1 }
+            }
+        });
         var popWithAckResult = await actor.PopWithAck(new Interfaces.PopWithAckRequest { TtlSeconds = 30 });
         Assert.NotNull(popWithAckResult.LockId);
 
@@ -887,7 +1254,13 @@ public class QueueActorTests
         var actor = await CreateActorAsync(mockStateManager);
 
         // Push an item and create lock
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":1}", Priority = 1 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":1}", Priority = 1 }
+            }
+        });
         await actor.PopWithAck(new Interfaces.PopWithAckRequest { TtlSeconds = 30 });
 
         // Act - Try to deadletter with wrong lock ID
@@ -906,7 +1279,13 @@ public class QueueActorTests
         var actor = await CreateActorAsync(mockStateManager);
 
         // Push an item and create lock with negative expiry (already expired)
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":1}", Priority = 1 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":1}", Priority = 1 }
+            }
+        });
         var popWithAckResult = await actor.PopWithAck(new Interfaces.PopWithAckRequest { TtlSeconds = 30 });
         Assert.NotNull(popWithAckResult.LockId);
 
@@ -940,7 +1319,13 @@ public class QueueActorTests
         var actor = await CreateActorAsync(mockStateManager);
 
         // Push priority 0 item (fast lane)
-        await actor.Push(new Interfaces.PushRequest { ItemJson = "{\"id\":1,\"urgent\":true}", Priority = 0 });
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = "{\"id\":1,\"urgent\":true}", Priority = 0 }
+            }
+        });
         var popWithAckResult = await actor.PopWithAck(new Interfaces.PopWithAckRequest { TtlSeconds = 30 });
         Assert.NotNull(popWithAckResult.LockId);
 

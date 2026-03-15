@@ -35,21 +35,25 @@ public class DaprMQGrpcServiceTests
                 It.IsAny<string>(),
                 It.IsAny<ActorModels.PushRequest>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ActorModels.PushResponse { Success = true });
+            .ReturnsAsync(new ActorModels.PushResponse { Success = true, ItemsPushed = 1 });
 
         var service = new DaprMQGrpcService(_mockLogger.Object, mockInvoker.Object);
         var request = new ApiServer.Grpc.PushRequest
         {
-            QueueId = "test-queue",
+            QueueId = "test-queue"
+        };
+        request.Items.Add(new ApiServer.Grpc.PushItem
+        {
             ItemJson = "{\"id\":1,\"value\":\"test\"}",
             Priority = 1
-        };
+        });
 
         // Act
         var response = await service.Push(request, _mockContext.Object);
 
         // Assert
         Assert.True(response.Success);
+        Assert.Equal(1, response.ItemsPushed);
         Assert.NotEmpty(response.Message);
     }
 
@@ -61,10 +65,13 @@ public class DaprMQGrpcServiceTests
         var service = new DaprMQGrpcService(_mockLogger.Object, mockInvoker.Object);
         var request = new ApiServer.Grpc.PushRequest
         {
-            QueueId = "test-queue",
+            QueueId = "test-queue"
+        };
+        request.Items.Add(new ApiServer.Grpc.PushItem
+        {
             ItemJson = "{\"id\":1}",
             Priority = -1
-        };
+        });
 
         // Act & Assert
         var ex = await Assert.ThrowsAsync<RpcException>(async () =>

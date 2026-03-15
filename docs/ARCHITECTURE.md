@@ -109,13 +109,15 @@ Example state for actor "my-queue" with 250 items in priority 0:
 ### State Operations
 
 **Push Operation:**
-1. Extract item and priority from request (default priority: 1; priority 0 reserved for urgent items)
-2. Load metadata and get tail segment number for priority
-3. Load tail segment (e.g., `queue_0_seg_2`) from state store
-4. If segment is full (100 items), allocate new segment (increment tail pointer)
-5. Append new item to tail segment
-6. Update metadata (count, tail pointer)
-7. Save segment and metadata atomically
+1. Validate items array (1-1000 items, non-empty ItemJson, priority >= 0 for each)
+2. Group items by priority
+3. For each priority group, load metadata and get tail segment number
+4. For each item in group:
+   - Load tail segment (e.g., `queue_0_seg_2`) from state store
+   - If segment is full (100 items), allocate new segment (increment tail pointer)
+   - Append item to tail segment
+5. Update metadata (count, tail pointer) for each priority
+6. Save all segments and metadata atomically with single SaveStateAsync()
 
 **Pop Operation:**
 1. Load metadata to determine which priorities have items
@@ -305,7 +307,13 @@ using Dapr.Actors.Client;
 using DaprMQ.Interfaces;
 
 var proxy = ActorProxy.Create<IQueueActor>(new ActorId("my-queue"), "QueueActor");
-await proxy.Push(new PushRequest { ItemJson = itemJson, Priority = 0 });
+await proxy.Push(new PushRequest
+{
+    Items = new List<PushItem>
+    {
+        new PushItem { ItemJson = itemJson, Priority = 0 }
+    }
+});
 ```
 
 **Pros:**
@@ -327,7 +335,13 @@ using DaprMQ.Interfaces;  // Only for request/response models
 var proxy = ActorProxy.Create(new ActorId("my-queue"), "QueueActor");
 var result = await proxy.InvokeMethodAsync<PushRequest, PushResponse>(
     "Push",
-    new PushRequest { ItemJson = itemJson, Priority = 0 }
+    new PushRequest
+    {
+        Items = new List<PushItem>
+        {
+            new PushItem { ItemJson = itemJson, Priority = 0 }
+        }
+    }
 );
 ```
 

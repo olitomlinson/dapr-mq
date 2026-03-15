@@ -261,7 +261,7 @@ public class QueueActor : Actor, IQueueActor
     }
 
     /// <summary>
-    /// Push an item to the queue with optional priority.
+    /// Push items to the queue with optional priority per item.
     /// </summary>
     public async Task<PushResponse> Push(PushRequest request)
     {
@@ -276,23 +276,104 @@ public class QueueActor : Actor, IQueueActor
 
         try
         {
-            // Push and stage changes
-            bool success = await PushInternal(request.ItemJson, request.Priority);
-
-            if (!success)
+            // Validate items array
+            if (request.Items == null || request.Items.Count == 0)
             {
-                return new PushResponse { Success = false };
+                Logger.LogWarning("Push failed: Items array is empty or null");
+                return new PushResponse
+                {
+                    Success = false,
+                    ItemsPushed = 0,
+                    ErrorMessage = "Items array cannot be empty"
+                };
             }
 
-            Logger.LogDebug($"Pushed item to queue at priority {request.Priority}");
+            if (request.Items.Count > 1000)
+            {
+                Logger.LogWarning($"Push failed: Items count {request.Items.Count} exceeds maximum of 1000");
+                return new PushResponse
+                {
+                    Success = false,
+                    ItemsPushed = 0,
+                    ErrorMessage = "Maximum 1000 items per push"
+                };
+            }
 
-            // Check and offload segments if eligible (non-blocking, best-effort)
-            await CheckAndOffloadSegmentsAsync(request.Priority, metadata);
+            // Validate all items before processing (fail fast)
+            foreach (var item in request.Items)
+            {
+                if (string.IsNullOrEmpty(item.ItemJson))
+                {
+                    Logger.LogWarning("Push failed: Item JSON is empty");
+                    return new PushResponse
+                    {
+                        Success = false,
+                        ItemsPushed = 0,
+                        ErrorMessage = "Item JSON cannot be empty"
+                    };
+                }
 
-            // Commit staged changes atomically (push + any offload changes)
+                if (item.Priority < 0)
+                {
+                    Logger.LogWarning($"Push failed: Priority {item.Priority} must be >= 0");
+                    return new PushResponse
+                    {
+                        Success = false,
+                        ItemsPushed = 0,
+                        ErrorMessage = $"Priority must be >= 0, got {item.Priority}"
+                    };
+                }
+            }
+
+            // Group by priority and process in order
+            var groupedItems = request.Items
+                .GroupBy(item => item.Priority)
+                .OrderBy(g => g.Key);
+
+            int totalPushed = 0;
+            var processedPriorities = new HashSet<int>();
+
+            // Process each priority group
+            foreach (var group in groupedItems)
+            {
+                int priority = group.Key;
+                processedPriorities.Add(priority);
+
+                foreach (var item in group)
+                {
+                    // Push and stage changes (reuse existing PushInternal)
+                    bool success = await PushInternal(item.ItemJson, priority);
+
+                    if (!success)
+                    {
+                        // All-or-nothing: if any item fails, rollback not needed
+                        // because SaveStateAsync hasn't been called yet
+                        Logger.LogError($"Push failed for item at priority {priority}");
+                        return new PushResponse
+                        {
+                            Success = false,
+                            ItemsPushed = 0,
+                            ErrorMessage = "Failed to push item"
+                        };
+                    }
+
+                    totalPushed++;
+                }
+
+                // Check and offload segments for this priority (non-blocking, best-effort)
+                await CheckAndOffloadSegmentsAsync(priority, metadata);
+            }
+
+            // Commit all staged changes atomically (all items across all priorities)
             await StateManager.SaveStateAsync();
 
-            return new PushResponse { Success = true };
+            Logger.LogDebug($"Pushed {totalPushed} items across {processedPriorities.Count} priorities");
+
+            return new PushResponse
+            {
+                Success = true,
+                ItemsPushed = totalPushed
+            };
         }
         catch (InvalidOperationException)
         {
@@ -302,7 +383,12 @@ public class QueueActor : Actor, IQueueActor
         catch (Exception ex)
         {
             Logger.LogError(ex, "Error in Push");
-            return new PushResponse { Success = false };
+            return new PushResponse
+            {
+                Success = false,
+                ItemsPushed = 0,
+                ErrorMessage = ex.Message
+            };
         }
     }
 
@@ -1045,8 +1131,14 @@ public class QueueActor : Actor, IQueueActor
             string dlqActorId = $"{Id.GetId()}-deadletter";
             var pushRequest = new PushRequest
             {
-                ItemJson = itemJson,
-                Priority = lockData.Priority
+                Items = new List<PushItem>
+                {
+                    new PushItem
+                    {
+                        ItemJson = itemJson,
+                        Priority = lockData.Priority
+                    }
+                }
             };
 
             var pushResult = await _actorInvoker.InvokeMethodAsync<PushRequest, PushResponse>(
