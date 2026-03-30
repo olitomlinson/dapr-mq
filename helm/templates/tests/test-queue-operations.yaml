@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "daprmq.fullname" . }}-test-queue-ops
+  labels:
+    {{- include "daprmq.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  containers:
+  - name: test
+    image: curlimages/curl:latest
+    command:
+    - /bin/sh
+    - -c
+    - |
+      set -e
+      echo "Testing DaprMQ queue operations..."
+
+      # Wait for gateway pod to be ready
+      sleep 10
+
+      GATEWAY_URL="http://{{ include "daprmq.fullname" . }}-gateway:{{ .Values.gateway.httpPort }}"
+      QUEUE_ID="test-queue-$(date +%s)"
+
+      echo "Using queue ID: $QUEUE_ID"
+
+      # Test push operation
+      echo "Testing push operation..."
+      PUSH_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$GATEWAY_URL/queue/$QUEUE_ID/push" \
+        -H "Content-Type: application/json" \
+        -d '{"item":{"test":"data","timestamp":"2024-01-01"},"priority":1}')
+
+      PUSH_HTTP_CODE=$(echo "$PUSH_RESPONSE" | tail -n1)
+      PUSH_BODY=$(echo "$PUSH_RESPONSE" | sed '$d')
+
+      if [ "$PUSH_HTTP_CODE" != "200" ]; then
+        echo "Push failed with HTTP code: $PUSH_HTTP_CODE"
+        echo "Response: $PUSH_BODY"
+        exit 1
+      fi
+      echo "Push succeeded: $PUSH_BODY"
+
+      # Test pop operation
+      echo "Testing pop operation..."
+      POP_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$GATEWAY_URL/queue/$QUEUE_ID/pop")
+
+      POP_HTTP_CODE=$(echo "$POP_RESPONSE" | tail -n1)
+      POP_BODY=$(echo "$POP_RESPONSE" | sed '$d')
+
+      if [ "$POP_HTTP_CODE" != "200" ]; then
+        echo "Pop failed with HTTP code: $POP_HTTP_CODE"
+        echo "Response: $POP_BODY"
+        exit 1
+      fi
+      echo "Pop succeeded: $POP_BODY"
+
+      # Verify we got data back
+      if echo "$POP_BODY" | grep -q "test"; then
+        echo "Queue operations test passed!"
+        exit 0
+      else
+        echo "Pop response doesn't contain expected data"
+        exit 1
+      fi
+  restartPolicy: Never
