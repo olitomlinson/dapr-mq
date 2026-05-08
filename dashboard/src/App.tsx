@@ -121,9 +121,10 @@ function App() {
           {/* Right column - Sticky controls */}
           <div style={{ position: 'sticky', top: '2rem' }}>
             <PushSection
+              queueId={queueId}
               currentPayload={currentPayload}
               isPushing={isPushing}
-              onPush={pushMessage}
+              onPush={(priority, payload) => pushMessage(priority, payload)}
             />
 
             {showPopSection && (

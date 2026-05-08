@@ -4,6 +4,7 @@ using Dapr.Actors;
 using Dapr.Actors.Runtime;
 using Microsoft.Extensions.Logging;
 using DaprMQ.Interfaces;
+using System.Runtime.CompilerServices;
 
 namespace DaprMQ;
 
@@ -191,6 +192,16 @@ public class QueueActor : Actor, IQueueActor, IRemindable
         Logger.LogDebug($"Staged push to priority {priority}, count now {count}");
 
         return true;
+    }
+
+    public async Task TestUnsafeUnload(UnsafeUnloadRequest request)
+    {
+        var metadata = await GetMetadataAsync();
+        metadata = metadata with { Queues = new Dictionary<int, QueueMetadata>() };
+        await SetMetadataAsync(metadata);
+
+        // this should blow up as it is an unload of unsaved data
+        await this.StateManager.UnloadStateAsync("metadata", new UnloadStateOptions { AllowUnloadingWhenStateModified = true });
     }
 
     /// <summary>

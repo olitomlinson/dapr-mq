@@ -15,4 +15,6 @@ public static class ActorMethodNames
     public const string UninitializeHttpSink = "UninitializeHttpSink";
     public const string InitializeDaprPubSubSink = "InitializeDaprPubSubSink";
     public const string UninitializeDaprPubSubSink = "UninitializeDaprPubSubSink";
+
+    public const string TestUnsafeUnload = "TestUnsafeUnload";
 }

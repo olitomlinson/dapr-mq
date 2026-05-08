@@ -273,6 +273,14 @@ public record ExtendLockRequest
     public int AdditionalTtlSeconds { get; init; } = 30;
 }
 
+public record UnsafeUnloadRequest
+{
+    /// <summary>
+    /// Lock ID to extend.
+    /// </summary>
+    public string Lol { get; init; } = string.Empty;
+}
+
 /// <summary>
 /// Response model for ExtendLock operation.
 /// </summary>

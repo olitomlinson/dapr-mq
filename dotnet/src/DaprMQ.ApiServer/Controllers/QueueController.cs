@@ -333,6 +333,30 @@ public class QueueController : ControllerBase
         }
     }
 
+
+    /// <summary>
+    /// Extend an existing lock by adding additional TTL seconds.
+    /// </summary>
+    [HttpPost("{queueId}/test-unsafe-unload")]
+    public async Task<IActionResult> TestUnsafeUnload(
+        string queueId)
+    {
+
+        var actorId = new ActorId(queueId);
+
+        await _actorInvoker.InvokeMethodAsync<UnsafeUnloadRequest>(
+            actorId,
+            ActorMethodNames.TestUnsafeUnload,
+            new UnsafeUnloadRequest
+            {
+                Lol = "123"
+            });
+
+
+        return Ok();
+
+    }
+
     /// <summary>
     /// Move a locked item to the dead letter queue and void the lock.
     /// </summary>

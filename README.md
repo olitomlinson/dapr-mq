@@ -19,7 +19,8 @@ docker-compose up
 
 [http://localhost:9000](http://localhost:9000)
 
-![Alt text of the image](/docs/dash.png)
+![alt text](/docs/dash2.png)
+
 
 ### Call the Queue APIs directly
 

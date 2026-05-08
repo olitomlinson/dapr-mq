@@ -14,6 +14,8 @@ public interface IQueueActor : IActor
     /// <returns>Push response with success status</returns>
     Task<PushResponse> Push(PushRequest request);
 
+    Task TestUnsafeUnload(UnsafeUnloadRequest request);
+
     /// <summary>
     /// Pop one or more items from the queue (FIFO, lowest priority first).
     /// </summary>

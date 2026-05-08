@@ -28,10 +28,10 @@ export const useQueueOperations = (queueId: string) => {
     setWiremockLockStates({});
   }, [queueId]);
 
-  const pushMessage = async (priority: number) => {
+  const pushMessage = async (priority: number, payload: QueuePayload) => {
     setIsPushing(true);
     try {
-      await queueApi.push(queueId, { items: [{ item: currentPayload, priority }] });
+      await queueApi.push(queueId, { items: [{ item: payload, priority }] });
       setMessagesPushed(prev => prev + 1);
       setCurrentPayload(generatePayload());
     } catch (err) {
