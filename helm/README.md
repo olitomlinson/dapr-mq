@@ -413,3 +413,8 @@ kubectl delete namespace daprmq
 - GitHub: https://github.com/olitomlinson/dapr-mq
 - Issues: https://github.com/olitomlinson/dapr-mq/issues
 - Dapr Docs: https://docs.dapr.io/
+
+
+## Fast Development loop
+
+docker build -t daprmq:dev ./dotnet && helm upgrade --install daprmq ./helm --set image.tag=dev --set image.pullPolicy=Never --set dapr.stateStoreName=statestore
