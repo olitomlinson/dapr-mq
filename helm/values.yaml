@@ -97,12 +97,16 @@ worker:
 # Gateway configuration (REGISTER_ACTORS=false)
 gateway:
   enabled: true
-  replicaCount: 1
 
   # Container port (8080 for HTTP, 8081 for gRPC)
   # This is automatically set based on dapr.protocol
   httpPort: 8080
   grpcPort: 8081
+
+  # Host ports (for DaemonSet node-local access)
+  # Set to enable hostPort binding. Leave empty to disable.
+  httpHostPort: null
+  grpcHostPort: null
 
   # Resource limits and requests
   resources:

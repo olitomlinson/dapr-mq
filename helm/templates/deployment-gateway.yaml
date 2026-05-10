@@ -1,12 +1,11 @@
 {{- if .Values.gateway.enabled }}
 apiVersion: apps/v1
-kind: Deployment
+kind: DaemonSet
 metadata:
   name: {{ include "daprmq.fullname" . }}-gateway
   labels:
     {{- include "daprmq.gateway.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.gateway.replicaCount }}
   selector:
     matchLabels:
       {{- include "daprmq.gateway.selectorLabels" . | nindent 6 }}
@@ -38,9 +37,15 @@ spec:
         ports:
         - name: http
           containerPort: {{ .Values.gateway.httpPort }}
+          {{- if .Values.gateway.httpHostPort }}
+          hostPort: {{ .Values.gateway.httpHostPort }}
+          {{- end }}
           protocol: TCP
         - name: grpc
           containerPort: {{ .Values.gateway.grpcPort }}
+          {{- if .Values.gateway.grpcHostPort }}
+          hostPort: {{ .Values.gateway.grpcHostPort }}
+          {{- end }}
           protocol: TCP
         env:
         - name: ASPNETCORE_URLS

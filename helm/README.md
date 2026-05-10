@@ -418,3 +418,7 @@ kubectl delete namespace daprmq
 ## Fast Development loop
 
 docker build -t daprmq:dev ./dotnet && helm upgrade --install daprmq ./helm --set image.tag=dev --set image.pullPolicy=Never --set dapr.stateStoreName=statestore
+
+### with HostPort for daemonSet node-local gateways
+
+docker build -t daprmq:dev ./dotnet && helm upgrade --install daprmq ./helm --set image.tag=dev --set image.pullPolicy=Never --set dapr.stateStoreName=statestore --set gateway.httpHostPort=8091
