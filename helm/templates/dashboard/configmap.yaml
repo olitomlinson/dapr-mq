@@ -26,10 +26,10 @@ data:
             add_header Content-Type application/json;
         }
 
-        # Proxy API requests to DaprMQ gateway via hostPort
-        # ${NODE_IP} and ${GATEWAY_PORT} are substituted by nginx entrypoint at startup
+        # Proxy API requests to DaprMQ gateway via Service
+        # ${GATEWAY_SERVICE} and ${GATEWAY_PORT} are substituted by nginx entrypoint at startup
         location /queue/ {
-            proxy_pass http://${NODE_IP}:${GATEWAY_PORT}/queue/;
+            proxy_pass http://${GATEWAY_SERVICE}:${GATEWAY_PORT}/queue/;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

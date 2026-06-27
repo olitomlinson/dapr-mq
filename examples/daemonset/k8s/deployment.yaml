@@ -22,13 +22,12 @@ spec:
             - containerPort: 5000
               name: http
           env:
-            # Inject node IP via Kubernetes downward API
-            - name: NODE_IP
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.hostIP
+            # Connect to DaprMQ gateway service (uses internalTrafficPolicy: Local for node-local routing)
+            # Update this value to match your Helm release name: <release-name>-gateway
+            - name: GATEWAY_SERVICE
+              value: "my-daprmq-gateway"
             - name: GATEWAY_PORT
-              value: "8091"
+              value: "8080"
           resources:
             requests:
               cpu: 100m

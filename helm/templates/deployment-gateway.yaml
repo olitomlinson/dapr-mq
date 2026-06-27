@@ -37,15 +37,9 @@ spec:
         ports:
         - name: http
           containerPort: {{ .Values.gateway.httpPort }}
-          {{- if .Values.gateway.httpHostPort }}
-          hostPort: {{ .Values.gateway.httpHostPort }}
-          {{- end }}
           protocol: TCP
         - name: grpc
           containerPort: {{ .Values.gateway.grpcPort }}
-          {{- if .Values.gateway.grpcHostPort }}
-          hostPort: {{ .Values.gateway.grpcHostPort }}
-          {{- end }}
           protocol: TCP
         env:
         - name: ASPNETCORE_URLS

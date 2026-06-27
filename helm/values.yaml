@@ -103,11 +103,6 @@ gateway:
   httpPort: 8080
   grpcPort: 8081
 
-  # Host ports (for DaemonSet node-local access)
-  # Set to enable hostPort binding. Leave empty to disable.
-  httpHostPort: null
-  grpcHostPort: null
-
   # Resource limits and requests
   resources:
     requests:
@@ -176,9 +171,9 @@ dashboard:
     pullPolicy: IfNotPresent
 
   # Gateway connection settings
-  # IMPORTANT: Must match gateway.httpHostPort value
-  # If gateway.httpHostPort is null, dashboard cannot connect via hostPort
-  gatewayHostPort: 8091
+  # Service name to connect to (uses internalTrafficPolicy: Local for node-local routing)
+  gatewayServiceName: "{{ include \"daprmq.fullname\" . }}-gateway"
+  gatewayPort: 8080
 
   service:
     type: ClusterIP

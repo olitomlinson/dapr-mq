@@ -8,10 +8,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Get configuration from environment
-NODE_IP = os.environ.get('NODE_IP', 'localhost')
-GATEWAY_PORT = os.environ.get('GATEWAY_PORT', '8091')
+GATEWAY_SERVICE = os.environ.get('GATEWAY_SERVICE', 'daprmq-gateway')
+GATEWAY_PORT = os.environ.get('GATEWAY_PORT', '8080')
 QUEUE_ID = 'demo-queue'
-GATEWAY_URL = f"http://{NODE_IP}:{GATEWAY_PORT}"
+GATEWAY_URL = f"http://{GATEWAY_SERVICE}:{GATEWAY_PORT}"
 
 logger.info(f"Starting DaprMQ Example App")
 logger.info(f"Gateway URL: {GATEWAY_URL}")

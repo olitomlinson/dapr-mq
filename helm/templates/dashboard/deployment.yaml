@@ -28,14 +28,12 @@ spec:
           containerPort: 80
           protocol: TCP
         env:
-        # Inject node IP via downward API for proxy_pass to gateway hostPort
-        - name: NODE_IP
-          valueFrom:
-            fieldRef:
-              fieldPath: status.hostIP
-        # Inject gateway port from values (must match gateway.httpHostPort)
+        # Gateway service name for proxy_pass (uses internalTrafficPolicy: Local)
+        - name: GATEWAY_SERVICE
+          value: {{ tpl .Values.dashboard.gatewayServiceName . | quote }}
+        # Gateway port from values
         - name: GATEWAY_PORT
-          value: {{ .Values.dashboard.gatewayHostPort | quote }}
+          value: {{ .Values.dashboard.gatewayPort | quote }}
         livenessProbe:
           {{- toYaml .Values.dashboard.livenessProbe | nindent 10 }}
         readinessProbe:
