@@ -83,7 +83,7 @@ public class DaprTestEnvironment : IAsyncLifetime
 
         // 3. Start Dapr placement service
         _daprPlacementContainer = new ContainerBuilder()
-            .WithImage("daprio/dapr:1.17.2-rc.2")
+            .WithImage("daprio/dapr:1.18.1")
             .WithNetwork(_network)
             .WithNetworkAliases("dapr-placement")
             .WithCommand("./placement", "-port", "50005")
@@ -99,7 +99,7 @@ public class DaprTestEnvironment : IAsyncLifetime
         _schedulerTestDirectory = TestDirectoryManager.CreateTestDirectory("scheduler");
         // 4. Start Dapr scheduler service
         _daprSchedulerContainer = new ContainerBuilder()
-            .WithImage("daprio/dapr:1.17.2-rc.2")
+            .WithImage("daprio/dapr:1.18.1")
             .WithNetwork(_network)
             .WithNetworkAliases("dapr-scheduler")
             .WithBindMount(_schedulerTestDirectory, schedulerContainerDataDir, AccessMode.ReadWrite)
@@ -157,7 +157,7 @@ public class DaprTestEnvironment : IAsyncLifetime
         var componentsPath = Path.GetFullPath(Path.Combine(testProjectRoot, "dapr-components"));
 
         var daprSidecarBuilder = new ContainerBuilder()
-            .WithImage("daprio/daprd:1.17.2-rc.2")
+            .WithImage("daprio/daprd:1.18.1")
             .WithNetwork(_network)
             .WithNetworkAliases("dapr-sidecar")
             .WithCommand("./daprd",

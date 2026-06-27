@@ -8,7 +8,7 @@ Before installing this chart, ensure the following requirements are met:
 
 1. **Kubernetes cluster** (v1.24+)
 2. **Helm** (v3.0+)
-3. **Dapr control plane** installed in cluster (v1.17.0+)
+3. **Dapr control plane** installed in cluster (v1.18.1+)
    ```bash
    dapr init -k
    ```

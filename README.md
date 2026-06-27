@@ -241,7 +241,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for optimization strategies.
 
 ## Requirements
 
-- Dapr 1.17.0+
+- Dapr 1.18.1+
 - A Dapr-supported state store (PostgreSQL, Redis, Cosmos DB, etc.)
 - .NET 10.0+ (if using the Dapr Actor SDK for direct access)
 

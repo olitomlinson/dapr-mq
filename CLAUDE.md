@@ -1,6 +1,6 @@
 # DaprMQ - Behavior Instructions
 
-**Context:** C# Dapr actor library for FIFO queuing. Stack: C# 13, .NET 10, Dapr 1.17+
+**Context:** C# Dapr actor library for FIFO queuing. Stack: C# 13, .NET 10, Dapr 1.18.1+
 
 ## Output Rules
 
