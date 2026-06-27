@@ -81,6 +81,22 @@ app.kubernetes.io/component: gateway
 {{- end }}
 
 {{/*
+Dashboard labels
+*/}}
+{{- define "daprmq.dashboard.labels" -}}
+{{ include "daprmq.labels" . }}
+app.kubernetes.io/component: dashboard
+{{- end }}
+
+{{/*
+Dashboard selector labels
+*/}}
+{{- define "daprmq.dashboard.selectorLabels" -}}
+{{ include "daprmq.selectorLabels" . }}
+app.kubernetes.io/component: dashboard
+{{- end }}
+
+{{/*
 Create the image reference
 */}}
 {{- define "daprmq.image" -}}

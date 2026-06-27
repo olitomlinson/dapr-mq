@@ -1,0 +1,66 @@
+{{- if .Values.dashboard.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "daprmq.fullname" . }}-dashboard
+  labels:
+    {{- include "daprmq.dashboard.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.dashboard.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "daprmq.dashboard.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "daprmq.dashboard.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: nginx
+        image: "{{ .Values.dashboard.image.repository }}:{{ .Values.dashboard.image.tag }}"
+        imagePullPolicy: {{ .Values.dashboard.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: 80
+          protocol: TCP
+        env:
+        # Inject node IP via downward API for proxy_pass to gateway hostPort
+        - name: NODE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        # Inject gateway port from values (must match gateway.httpHostPort)
+        - name: GATEWAY_PORT
+          value: {{ .Values.dashboard.gatewayHostPort | quote }}
+        livenessProbe:
+          {{- toYaml .Values.dashboard.livenessProbe | nindent 10 }}
+        readinessProbe:
+          {{- toYaml .Values.dashboard.readinessProbe | nindent 10 }}
+        resources:
+          {{- toYaml .Values.dashboard.resources | nindent 10 }}
+        volumeMounts:
+        # Mount ConfigMap template - nginx entrypoint will process it automatically
+        - name: nginx-template
+          mountPath: /etc/nginx/templates
+          readOnly: true
+      volumes:
+      - name: nginx-template
+        configMap:
+          name: {{ include "daprmq.fullname" . }}-dashboard
+      {{- with .Values.dashboard.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.dashboard.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.dashboard.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

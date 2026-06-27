@@ -1,6 +1,6 @@
 # DaprMQ Python Example - DaemonSet Pattern
 
-This example demonstrates how to consume the DaprMQ HTTP API from a Python application running in Kubernetes. It showcases using the Kubernetes downward API to connect to DaprMQ gateway via hostPort on the same node.
+This example demonstrates how to consume the DaprMQ HTTP API from a Python application running in Kubernetes. It showcases using the Kubernetes downward API to connect to DaprMQ gateway via `hostPort` on the same node.
 
 ## What This Demonstrates
 

@@ -164,3 +164,70 @@ autoscaling:
   maxReplicas: 10
   targetCPUUtilizationPercentage: 70
   # targetMemoryUtilizationPercentage: 80
+
+# Dashboard configuration (React + Nginx)
+dashboard:
+  enabled: false  # Opt-in feature
+  replicaCount: 2
+
+  image:
+    repository: daprmq-dashboard
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+
+  # Gateway connection settings
+  # IMPORTANT: Must match gateway.httpHostPort value
+  # If gateway.httpHostPort is null, dashboard cannot connect via hostPort
+  gatewayHostPort: 8091
+
+  service:
+    type: ClusterIP
+    port: 80
+
+  ingress:
+    enabled: false
+    className: "nginx"
+    annotations: {}
+      # cert-manager.io/cluster-issuer: letsencrypt-prod
+      # nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    hosts:
+      - host: daprmq-dashboard.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+      # - secretName: daprmq-dashboard-tls
+      #   hosts:
+      #     - daprmq-dashboard.local
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 80
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 80
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    successThreshold: 1
+    failureThreshold: 3
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
