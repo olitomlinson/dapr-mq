@@ -281,7 +281,7 @@ If your use case falls outside the free usage terms, a commercial license is req
 
 ### 🧾 Summary
 
-| Use Case | अनुमति |
+| Use Case | Permission |
 |----------|--------|
 | Internal use (including production) | ✅ Free |
 | SaaS / hosted offering | ❌ Requires license |
