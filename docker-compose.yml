@@ -51,8 +51,10 @@ services:
   # Dapr Placement Service
   ############################
   placement:
+    container_name: placement
     image: "${DAPR_PLACEMENT_VERSION}"
     command: ["./placement", "-port", "50005", "-log-level", "info"]
+    restart: unless-stopped
     ports:
       - "50005:50005"
     networks:
@@ -352,6 +354,7 @@ services:
   scheduler-0:
     container_name: scheduler-0
     image: "${DAPR_SCHEDULER_VERSION}"
+    restart: unless-stopped
     command:
       [
         "./scheduler",
@@ -372,7 +375,6 @@ services:
       - ./dapr_scheduler:/var/run/dapr/scheduler
     ports:
       - "50006:50006"
-      - "2380:2380"
     networks:
       - daprmq-network
 
