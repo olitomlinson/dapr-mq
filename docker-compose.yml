@@ -53,10 +53,10 @@ services:
   placement:
     container_name: placement
     image: "${DAPR_PLACEMENT_VERSION}"
-    command: ["./placement", "-port", "50005", "-log-level", "info"]
+    command: ["./placement", "-port", "50015", "-log-level", "info"]
     restart: unless-stopped
     ports:
-      - "50005:50005"
+      - "50015:50015"
     networks:
       - daprmq-network
 
@@ -100,9 +100,9 @@ services:
         "-dapr-grpc-port",
         "50001",
         "-placement-host-address",
-        "placement:50005",
+        "placement:50015",
         "-scheduler-host-address",
-        "scheduler-0:50006",
+        "scheduler-0:50016",
         "-resources-path",
         "/components",
         "-config",
@@ -171,9 +171,9 @@ services:
         "-dapr-grpc-port",
         "50001",
         "-placement-host-address",
-        "placement:50005",
+        "placement:50015",
         "-scheduler-host-address",
-        "scheduler-0:50006",
+        "scheduler-0:50016",
         "-resources-path",
         "/components",
         "-config",
@@ -242,9 +242,9 @@ services:
         "-dapr-grpc-port",
         "50001",
         "-placement-host-address",
-        "placement:50005",
+        "placement:50015",
         "-scheduler-host-address",
-        "scheduler-0:50006",
+        "scheduler-0:50016",
         "-resources-path",
         "/components",
         "-config",
@@ -315,9 +315,9 @@ services:
         "-dapr-grpc-port",
         "50001",
         "-placement-host-address",
-        "placement:50005",
+        "placement:50015",
         "-scheduler-host-address",
-        "scheduler-0:50006",
+        "scheduler-0:50016",
         "-resources-path",
         "/components",
         "-config",
@@ -367,14 +367,14 @@ services:
         "--etcd-initial-cluster",
         "scheduler-0=http://scheduler-0:2380",
         "--port",
-        "50006",
+        "50016",
         "--override-broadcast-host-port",
-        "scheduler-0:50006",
+        "scheduler-0:50016",
       ]
     volumes:
       - ./dapr_scheduler:/var/run/dapr/scheduler
     ports:
-      - "50006:50006"
+      - "50016:50016"
     networks:
       - daprmq-network
 
