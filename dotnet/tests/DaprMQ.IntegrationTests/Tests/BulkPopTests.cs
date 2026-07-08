@@ -108,8 +108,8 @@ public class BulkPopTests(DaprTestFixture fixture)
         // Act - Bulk pop with acknowledgement
         var popRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
         popRequest.Headers.Add("count", "5");
-        popRequest.Headers.Add("require_ack", "true");
-        popRequest.Headers.Add("ttl_seconds", "30");
+        popRequest.Headers.Add("require-ack", "true");
+        popRequest.Headers.Add("ttl-seconds", "30");
         var popResponse = await fixture.ApiClient.SendAsync(popRequest);
 
         // Assert
@@ -145,8 +145,8 @@ public class BulkPopTests(DaprTestFixture fixture)
 
         var popRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
         popRequest.Headers.Add("count", "3");
-        popRequest.Headers.Add("require_ack", "true");
-        popRequest.Headers.Add("ttl_seconds", "30");
+        popRequest.Headers.Add("require-ack", "true");
+        popRequest.Headers.Add("ttl-seconds", "30");
         var popResponse = await fixture.ApiClient.SendAsync(popRequest);
         var popResult = await popResponse.Content.ReadFromJsonAsync<ApiPopWithAckResponse>();
 
@@ -328,9 +328,9 @@ public class BulkPopTests(DaprTestFixture fixture)
         {
             var popRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
             popRequest.Headers.Add("count", "100");
-            popRequest.Headers.Add("require_ack", "true");
-            popRequest.Headers.Add("ttl_seconds", "300");
-            popRequest.Headers.Add("allow_competing_consumers", "true");
+            popRequest.Headers.Add("require-ack", "true");
+            popRequest.Headers.Add("ttl-seconds", "300");
+            popRequest.Headers.Add("allow-competing-consumers", "true");
 
             var response = await fixture.ApiClient.SendAsync(popRequest);
 
@@ -402,9 +402,9 @@ public class BulkPopTests(DaprTestFixture fixture)
         {
             var popRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
             popRequest.Headers.Add("count", "100");
-            popRequest.Headers.Add("require_ack", "true");
-            popRequest.Headers.Add("ttl_seconds", "300");
-            popRequest.Headers.Add("allow_competing_consumers", "true");
+            popRequest.Headers.Add("require-ack", "true");
+            popRequest.Headers.Add("ttl-seconds", "300");
+            popRequest.Headers.Add("allow-competing-consumers", "true");
 
             var response = await fixture.ApiClient.SendAsync(popRequest);
 
@@ -481,9 +481,9 @@ public class BulkPopTests(DaprTestFixture fixture)
         {
             var popRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
             popRequest.Headers.Add("count", "100");
-            popRequest.Headers.Add("require_ack", "true");
-            popRequest.Headers.Add("ttl_seconds", "300");
-            popRequest.Headers.Add("allow_competing_consumers", "true");
+            popRequest.Headers.Add("require-ack", "true");
+            popRequest.Headers.Add("ttl-seconds", "300");
+            popRequest.Headers.Add("allow-competing-consumers", "true");
 
             var response = await fixture.ApiClient.SendAsync(popRequest);
 
@@ -574,9 +574,9 @@ public class BulkPopTests(DaprTestFixture fixture)
         // Act - Pop first batch of 100 with acknowledgement
         var popRequest1 = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
         popRequest1.Headers.Add("count", "100");
-        popRequest1.Headers.Add("require_ack", "true");
-        popRequest1.Headers.Add("ttl_seconds", "300");
-        popRequest1.Headers.Add("allow_competing_consumers", "true");
+        popRequest1.Headers.Add("require-ack", "true");
+        popRequest1.Headers.Add("ttl-seconds", "300");
+        popRequest1.Headers.Add("allow-competing-consumers", "true");
 
         var popResponse1 = await fixture.ApiClient.SendAsync(popRequest1);
         Assert.Equal(HttpStatusCode.OK, popResponse1.StatusCode);
@@ -589,9 +589,9 @@ public class BulkPopTests(DaprTestFixture fixture)
         // Pop second batch - should get 1 remaining item
         var popRequest2 = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
         popRequest2.Headers.Add("count", "100");
-        popRequest2.Headers.Add("require_ack", "true");
-        popRequest2.Headers.Add("ttl_seconds", "300");
-        popRequest2.Headers.Add("allow_competing_consumers", "true");
+        popRequest2.Headers.Add("require-ack", "true");
+        popRequest2.Headers.Add("ttl-seconds", "300");
+        popRequest2.Headers.Add("allow-competing-consumers", "true");
 
         var popResponse2 = await fixture.ApiClient.SendAsync(popRequest2);
 
@@ -663,9 +663,9 @@ public class BulkPopTests(DaprTestFixture fixture)
         // Act - Pop first batch of 50 with acknowledgement
         var popRequest1 = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
         popRequest1.Headers.Add("count", "50");
-        popRequest1.Headers.Add("require_ack", "true");
-        popRequest1.Headers.Add("ttl_seconds", "300");
-        popRequest1.Headers.Add("allow_competing_consumers", "true");
+        popRequest1.Headers.Add("require-ack", "true");
+        popRequest1.Headers.Add("ttl-seconds", "300");
+        popRequest1.Headers.Add("allow-competing-consumers", "true");
 
         var popResponse1 = await fixture.ApiClient.SendAsync(popRequest1);
         Assert.Equal(HttpStatusCode.OK, popResponse1.StatusCode);
@@ -678,9 +678,9 @@ public class BulkPopTests(DaprTestFixture fixture)
         // Pop second batch of 50 remaining items
         var popRequest2 = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
         popRequest2.Headers.Add("count", "50");
-        popRequest2.Headers.Add("require_ack", "true");
-        popRequest2.Headers.Add("ttl_seconds", "300");
-        popRequest2.Headers.Add("allow_competing_consumers", "true");
+        popRequest2.Headers.Add("require-ack", "true");
+        popRequest2.Headers.Add("ttl-seconds", "300");
+        popRequest2.Headers.Add("allow-competing-consumers", "true");
 
         var popResponse2 = await fixture.ApiClient.SendAsync(popRequest2);
         Assert.Equal(HttpStatusCode.OK, popResponse2.StatusCode);

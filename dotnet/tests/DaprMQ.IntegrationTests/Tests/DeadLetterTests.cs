@@ -28,8 +28,8 @@ public class DeadLetterTests(DaprTestFixture fixture)
 
         // Pop with acknowledgement (creates lock)
         var popWithAckRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        popWithAckRequest.Headers.Add("require_ack", "true");
-        popWithAckRequest.Headers.Add("ttl_seconds", "30");
+        popWithAckRequest.Headers.Add("require-ack", "true");
+        popWithAckRequest.Headers.Add("ttl-seconds", "30");
         var popWithAckResponse = await fixture.ApiClient.SendAsync(popWithAckRequest);
         popWithAckResponse.EnsureSuccessStatusCode();
 
@@ -53,13 +53,13 @@ public class DeadLetterTests(DaprTestFixture fixture)
 
         // Verify original queue is now unlocked and empty
         var popRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        popRequest.Headers.Add("require_ack", "false");
+        popRequest.Headers.Add("require-ack", "false");
         var popResponse = await fixture.ApiClient.SendAsync(popRequest);
         Assert.Equal(HttpStatusCode.NoContent, popResponse.StatusCode);
 
         // Verify item is in DLQ
         var dlqPopRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}-deadletter/pop");
-        dlqPopRequest.Headers.Add("require_ack", "false");
+        dlqPopRequest.Headers.Add("require-ack", "false");
         var dlqPopResponse = await fixture.ApiClient.SendAsync(dlqPopRequest);
         Assert.Equal(HttpStatusCode.OK, dlqPopResponse.StatusCode);
 
@@ -101,8 +101,8 @@ public class DeadLetterTests(DaprTestFixture fixture)
         await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/push", new ApiPushRequest(new List<ApiPushItem> { new ApiPushItem(itemElement, Priority: 1) }));
 
         var popWithAckRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        popWithAckRequest.Headers.Add("require_ack", "true");
-        popWithAckRequest.Headers.Add("ttl_seconds", "30");
+        popWithAckRequest.Headers.Add("require-ack", "true");
+        popWithAckRequest.Headers.Add("ttl-seconds", "30");
         await fixture.ApiClient.SendAsync(popWithAckRequest);
 
         // Act - Try to deadletter with wrong lock ID
@@ -127,8 +127,8 @@ public class DeadLetterTests(DaprTestFixture fixture)
         await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/push", new ApiPushRequest(new List<ApiPushItem> { new ApiPushItem(itemElement, Priority: 1) }));
 
         var popWithAckRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        popWithAckRequest.Headers.Add("require_ack", "true");
-        popWithAckRequest.Headers.Add("ttl_seconds", "2");
+        popWithAckRequest.Headers.Add("require-ack", "true");
+        popWithAckRequest.Headers.Add("ttl-seconds", "2");
         var popWithAckResponse = await fixture.ApiClient.SendAsync(popWithAckRequest);
         popWithAckResponse.EnsureSuccessStatusCode();
 
@@ -163,8 +163,8 @@ public class DeadLetterTests(DaprTestFixture fixture)
         await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/push", pushRequest);
 
         var popWithAckRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        popWithAckRequest.Headers.Add("require_ack", "true");
-        popWithAckRequest.Headers.Add("ttl_seconds", "30");
+        popWithAckRequest.Headers.Add("require-ack", "true");
+        popWithAckRequest.Headers.Add("ttl-seconds", "30");
         var popWithAckResponse = await fixture.ApiClient.SendAsync(popWithAckRequest);
         var popWithAckResult = await popWithAckResponse.Content.ReadFromJsonAsync<ApiPopWithAckResponse>();
         Assert.NotNull(popWithAckResult?.Items);
@@ -180,7 +180,7 @@ public class DeadLetterTests(DaprTestFixture fixture)
 
         // Assert - Pop from DLQ should return priority 0 item first
         var dlqPopRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}-deadletter/pop");
-        dlqPopRequest.Headers.Add("require_ack", "false");
+        dlqPopRequest.Headers.Add("require-ack", "false");
         var dlqPopResponse = await fixture.ApiClient.SendAsync(dlqPopRequest);
         var dlqPopResult = await dlqPopResponse.Content.ReadFromJsonAsync<ApiPopResponse>();
 

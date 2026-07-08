@@ -111,7 +111,7 @@ public class HttpSinkTests(DaprTestFixture fixture) : IAsyncLifetime
 
         // Verify queue is empty (items were auto-acknowledged)
         var popRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        popRequest.Headers.Add("require_ack", "false");
+        popRequest.Headers.Add("require-ack", "false");
         var popResponse = await fixture.ApiClient.SendAsync(popRequest);
 
         Assert.Equal(System.Net.HttpStatusCode.NoContent, popResponse.StatusCode);
@@ -209,9 +209,9 @@ public class HttpSinkTests(DaprTestFixture fixture) : IAsyncLifetime
         // Verify queue still has 2 locked items (NOT acknowledged by sink)
         // PopWithAck should return empty because items are locked
         var popRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        popRequest.Headers.Add("require_ack", "true");
-        popRequest.Headers.Add("ttl_seconds", "30");
-        popRequest.Headers.Add("allow_competing_consumers", "true");
+        popRequest.Headers.Add("require-ack", "true");
+        popRequest.Headers.Add("ttl-seconds", "30");
+        popRequest.Headers.Add("allow-competing-consumers", "true");
         var popResponse = await fixture.ApiClient.SendAsync(popRequest);
 
         // Should get 204 No Content (no items available - all locked)
@@ -257,7 +257,7 @@ public class HttpSinkTests(DaprTestFixture fixture) : IAsyncLifetime
 
         // Verify item reappears in queue (can be popped again)
         var popRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        popRequest.Headers.Add("require_ack", "false");
+        popRequest.Headers.Add("require-ack", "false");
         var popResponse = await fixture.ApiClient.SendAsync(popRequest);
 
         Assert.Equal(System.Net.HttpStatusCode.OK, popResponse.StatusCode);

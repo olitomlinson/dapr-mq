@@ -1,6 +1,7 @@
 import type {
   PushRequest,
   PopResponse,
+  PopWithAckResponse,
   AcknowledgeRequest,
   DeadLetterRequest,
   DeadLetterResponse,
@@ -54,13 +55,13 @@ export const queueApi = {
     return response.json();
   },
 
-  async popWithAck(queueId: string, count: number = 1, ttlSeconds: number = 30, allowCompeting: boolean = false): Promise<PopResponse | null> {
+  async popWithAck(queueId: string, count: number = 1, ttlSeconds: number = 30, allowCompeting: boolean = false): Promise<PopWithAckResponse | null> {
     const response = await fetch(`${API_BASE}/queue/${queueId}/pop`, {
       method: 'POST',
       headers: {
-        'require_ack': 'true',
-        'ttl_seconds': ttlSeconds.toString(),
-        'allow_competing_consumers': allowCompeting.toString(),
+        'require-ack': 'true',
+        'ttl-seconds': ttlSeconds.toString(),
+        'allow-competing-consumers': allowCompeting.toString(),
         'count': count.toString(),
       },
     });

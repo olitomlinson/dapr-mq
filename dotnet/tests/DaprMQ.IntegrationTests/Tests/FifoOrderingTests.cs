@@ -92,7 +92,7 @@ public class FifoOrderingTests(DaprTestFixture fixture)
 
         // Act - Try to pop from empty queue
         var request = new HttpRequestMessage(HttpMethod.Post, $"/queue/{fixture.QueueId}/pop");
-        request.Headers.Add("require_ack", "false");
+        request.Headers.Add("require-ack", "false");
         var response = await fixture.ApiClient.SendAsync(request);
 
         // Assert - Should return 204 No Content for empty queue
@@ -114,13 +114,13 @@ public class FifoOrderingTests(DaprTestFixture fixture)
 
         // Act - Pop twice
         var firstPopRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{fixture.QueueId}-{unique}/pop");
-        firstPopRequest.Headers.Add("require_ack", "false");
+        firstPopRequest.Headers.Add("require-ack", "false");
         var firstPop = await fixture.ApiClient.SendAsync(firstPopRequest);
         firstPop.EnsureSuccessStatusCode();
         var firstResult = await firstPop.Content.ReadFromJsonAsync<ApiPopResponse>();
 
         var secondPopRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{fixture.QueueId}-{unique}/pop");
-        secondPopRequest.Headers.Add("require_ack", "false");
+        secondPopRequest.Headers.Add("require-ack", "false");
         var secondPop = await fixture.ApiClient.SendAsync(secondPopRequest);
 
         // Assert

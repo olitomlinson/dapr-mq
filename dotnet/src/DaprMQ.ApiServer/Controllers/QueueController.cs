@@ -108,10 +108,10 @@ public class QueueController : ControllerBase
     [HttpPost("{queueId}/pop")]
     public async Task<IActionResult> Pop(
         string queueId,
-        [FromHeader] bool require_ack = false,
-        [FromHeader] int ttl_seconds = 30,
-        [FromHeader] bool allow_competing_consumers = false,
-        [FromHeader] int count = 1)
+        [FromHeader(Name = "require-ack")] bool require_ack = false,
+        [FromHeader(Name = "ttl-seconds")] int ttl_seconds = 30,
+        [FromHeader(Name = "allow-competing-consumers")] bool allow_competing_consumers = false,
+        [FromHeader(Name = "count")] int count = 1)
     {
         try
         {

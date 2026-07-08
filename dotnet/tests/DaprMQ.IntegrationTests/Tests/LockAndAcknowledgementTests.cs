@@ -24,8 +24,8 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
 
         // Act - Pop with acknowledgement (creates lock)
         var popWithAckRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        popWithAckRequest.Headers.Add("require_ack", "true");
-        popWithAckRequest.Headers.Add("ttl_seconds", "30");
+        popWithAckRequest.Headers.Add("require-ack", "true");
+        popWithAckRequest.Headers.Add("ttl-seconds", "30");
         var popWithAckResponse = await fixture.ApiClient.SendAsync(popWithAckRequest);
         popWithAckResponse.EnsureSuccessStatusCode();
 
@@ -39,7 +39,7 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
 
         // Attempt regular Pop - should be blocked with HTTP 423
         var blockedPopRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        blockedPopRequest.Headers.Add("require_ack", "false");
+        blockedPopRequest.Headers.Add("require-ack", "false");
         var blockedPopResponse = await fixture.ApiClient.SendAsync(blockedPopRequest);
 
         // Assert - Should return 423 Locked
@@ -65,8 +65,8 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
 
         // Act - Pop with acknowledgement
         var popWithAckRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        popWithAckRequest.Headers.Add("require_ack", "true");
-        popWithAckRequest.Headers.Add("ttl_seconds", "30");
+        popWithAckRequest.Headers.Add("require-ack", "true");
+        popWithAckRequest.Headers.Add("ttl-seconds", "30");
         var popWithAckResponse = await fixture.ApiClient.SendAsync(popWithAckRequest);
         popWithAckResponse.EnsureSuccessStatusCode();
 
@@ -87,7 +87,7 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
 
         // Now regular Pop should work
         var regularPopRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        regularPopRequest.Headers.Add("require_ack", "false");
+        regularPopRequest.Headers.Add("require-ack", "false");
         var regularPopResponse = await fixture.ApiClient.SendAsync(regularPopRequest);
 
         // Assert - Should return 200 OK with second item
@@ -117,8 +117,8 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
 
         // Act - Pop with acknowledgement (creates lock)
         var popWithAckRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        popWithAckRequest.Headers.Add("require_ack", "true");
-        popWithAckRequest.Headers.Add("ttl_seconds", "30");
+        popWithAckRequest.Headers.Add("require-ack", "true");
+        popWithAckRequest.Headers.Add("ttl-seconds", "30");
         var popWithAckResponse = await fixture.ApiClient.SendAsync(popWithAckRequest);
         popWithAckResponse.EnsureSuccessStatusCode();
 
@@ -126,7 +126,7 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
         for (int i = 0; i < 3; i++)
         {
             var blockedPopRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-            blockedPopRequest.Headers.Add("require_ack", "false");
+            blockedPopRequest.Headers.Add("require-ack", "false");
             var blockedPopResponse = await fixture.ApiClient.SendAsync(blockedPopRequest);
 
             // Assert - Each should return 423 Locked
@@ -139,7 +139,7 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
 
         // Attempt another PopWithAck - should also be blocked
         var blockedPopWithAckRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        blockedPopWithAckRequest.Headers.Add("require_ack", "true");
+        blockedPopWithAckRequest.Headers.Add("require-ack", "true");
         var blockedPopWithAckResponse = await fixture.ApiClient.SendAsync(blockedPopWithAckRequest);
 
         Assert.Equal(HttpStatusCode.Locked, blockedPopWithAckResponse.StatusCode);
@@ -160,8 +160,8 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
 
         // Act - Pop with acknowledgement with short TTL (2 seconds)
         var popWithAckRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        popWithAckRequest.Headers.Add("require_ack", "true");
-        popWithAckRequest.Headers.Add("ttl_seconds", "2");
+        popWithAckRequest.Headers.Add("require-ack", "true");
+        popWithAckRequest.Headers.Add("ttl-seconds", "2");
         var popWithAckResponse = await fixture.ApiClient.SendAsync(popWithAckRequest);
         popWithAckResponse.EnsureSuccessStatusCode();
 
@@ -175,7 +175,7 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
 
         // Now regular Pop should work (lock expired)
         var regularPopRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        regularPopRequest.Headers.Add("require_ack", "false");
+        regularPopRequest.Headers.Add("require-ack", "false");
         var regularPopResponse = await fixture.ApiClient.SendAsync(regularPopRequest);
 
         // Assert - Should return 200 OK with the item (restored after lock expiry)
@@ -198,7 +198,7 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
 
         // Act - Try to pop from empty queue
         var popRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        popRequest.Headers.Add("require_ack", "false");
+        popRequest.Headers.Add("require-ack", "false");
         var popResponse = await fixture.ApiClient.SendAsync(popRequest);
 
         // Assert - Should return 204 No Content (not 423) for empty queue
@@ -223,16 +223,16 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
 
         // Act - Pop with acknowledgement (creates lock) - explicitly disable competing consumers
         var popWithAckRequest1 = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        popWithAckRequest1.Headers.Add("require_ack", "true");
-        popWithAckRequest1.Headers.Add("ttl_seconds", "30");
-        popWithAckRequest1.Headers.Add("allow_competing_consumers", "false");
+        popWithAckRequest1.Headers.Add("require-ack", "true");
+        popWithAckRequest1.Headers.Add("ttl-seconds", "30");
+        popWithAckRequest1.Headers.Add("allow-competing-consumers", "false");
         var popWithAckResponse1 = await fixture.ApiClient.SendAsync(popWithAckRequest1);
         popWithAckResponse1.EnsureSuccessStatusCode();
 
         // Attempt regular Pop - blocked in legacy mode
         var blockedPopRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        blockedPopRequest.Headers.Add("require_ack", "false");
-        blockedPopRequest.Headers.Add("allow_competing_consumers", "false");
+        blockedPopRequest.Headers.Add("require-ack", "false");
+        blockedPopRequest.Headers.Add("allow-competing-consumers", "false");
         var blockedPopResponse = await fixture.ApiClient.SendAsync(blockedPopRequest);
 
         Assert.Equal(HttpStatusCode.Locked, blockedPopResponse.StatusCode);
@@ -240,8 +240,8 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
 
         // Attempt PopWithAck - also blocked in legacy mode
         var blockedPopWithAckRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        blockedPopWithAckRequest.Headers.Add("require_ack", "true");
-        blockedPopWithAckRequest.Headers.Add("allow_competing_consumers", "false");
+        blockedPopWithAckRequest.Headers.Add("require-ack", "true");
+        blockedPopWithAckRequest.Headers.Add("allow-competing-consumers", "false");
         var blockedPopWithAckResponse = await fixture.ApiClient.SendAsync(blockedPopWithAckRequest);
 
         Assert.Equal(HttpStatusCode.Locked, blockedPopWithAckResponse.StatusCode);
@@ -277,8 +277,8 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
 
         // Pop with acknowledgement (creates lock with 10s TTL)
         var popWithAckRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        popWithAckRequest.Headers.Add("require_ack", "true");
-        popWithAckRequest.Headers.Add("ttl_seconds", "10");
+        popWithAckRequest.Headers.Add("require-ack", "true");
+        popWithAckRequest.Headers.Add("ttl-seconds", "10");
         var popWithAckResponse = await fixture.ApiClient.SendAsync(popWithAckRequest);
         popWithAckResponse.EnsureSuccessStatusCode();
 
@@ -307,7 +307,7 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
 
         // Verify queue is still locked
         var blockedPopRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        blockedPopRequest.Headers.Add("require_ack", "false");
+        blockedPopRequest.Headers.Add("require-ack", "false");
         var blockedPopResponse = await fixture.ApiClient.SendAsync(blockedPopRequest);
         Assert.Equal(HttpStatusCode.Locked, blockedPopResponse.StatusCode);
     }
@@ -330,8 +330,8 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
 
         // Pop with acknowledgement (creates lock with 3s TTL)
         var popWithAckRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        popWithAckRequest.Headers.Add("require_ack", "true");
-        popWithAckRequest.Headers.Add("ttl_seconds", "3");
+        popWithAckRequest.Headers.Add("require-ack", "true");
+        popWithAckRequest.Headers.Add("ttl-seconds", "3");
         var popWithAckResponse = await fixture.ApiClient.SendAsync(popWithAckRequest);
         popWithAckResponse.EnsureSuccessStatusCode();
 
@@ -364,7 +364,7 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
 
         // Queue should now be empty
         var popRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        popRequest.Headers.Add("require_ack", "false");
+        popRequest.Headers.Add("require-ack", "false");
         var popResponse = await fixture.ApiClient.SendAsync(popRequest);
         Assert.Equal(HttpStatusCode.NoContent, popResponse.StatusCode);
     }
@@ -384,8 +384,8 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
 
         // Pop with acknowledgement (creates lock)
         var popWithAckRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-        popWithAckRequest.Headers.Add("require_ack", "true");
-        popWithAckRequest.Headers.Add("ttl_seconds", "10");
+        popWithAckRequest.Headers.Add("require-ack", "true");
+        popWithAckRequest.Headers.Add("ttl-seconds", "10");
         var popWithAckResponse = await fixture.ApiClient.SendAsync(popWithAckRequest);
         popWithAckResponse.EnsureSuccessStatusCode();
 

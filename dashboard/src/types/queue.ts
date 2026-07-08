@@ -21,6 +21,19 @@ export interface PopResponse {
   message?: string;
 }
 
+export interface PopWithAckResponseItem {
+  item: unknown;
+  priority: number;
+  lockId: string;
+  lockExpiresAt: number;
+}
+
+export interface PopWithAckResponse {
+  items: PopWithAckResponseItem[];
+  locked?: boolean;
+  message?: string;
+}
+
 export interface AcknowledgeRequest {
   lockId: string;
 }

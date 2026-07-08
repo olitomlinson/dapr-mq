@@ -83,7 +83,7 @@ export const useQueueOperations = (queueId: string) => {
         const newMessages = data.items.map((responseItem) => ({
           item: responseItem.item,
           priority: responseItem.priority,
-          locked: responseItem.lockId ? true : false,
+          locked: true,
           lockId: responseItem.lockId,
           lockExpiresAt: responseItem.lockExpiresAt,
         }));
