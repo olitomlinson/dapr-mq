@@ -7,8 +7,8 @@
 **Be extremely concise.** No explanations unless asked. Code only by default.
 
 **For changes:**
-1. Write test first (no exceptions)
-2. Run `dotnet test` immediately after code change
+1. Write or modify test first in /dotnet/tests/DaprMQ.Tests/ (no exceptions)
+2. Run `dotnet test` in /dotnet/tests/DaprMQ.Tests/ immediately after code change
 3. Only minimal implementation - no extra features
 4. Use file:line format for references (e.g., [QueueActor.cs:96](dotnet/src/DaprMQ/QueueActor.cs#L96))
 
@@ -20,11 +20,12 @@
 1. Integration test (HTTP contract) → make compile
 2. Controller test (mocked actor) → implement
 3. Actor test (mocked state) → implement
-4. Run Unit tests `dotnet test` - all must pass
+4. Run Unit tests `dotnet test` in /dotnet/tests/DaprMQ.Tests/ - all must pass
+5. **Before commit:** run integration test `./build-and-test.sh`
 
-**Bug fixes:** Failing test → Fix → `dotnet test`
+**Bug fixes:** Create a failing test → Fix → `dotnet test` in /dotnet/tests/DaprMQ.Tests/
 
-**Before commit:** run integration test `cd dotnet && docker build -t daprmq-api:test` then `./build-and-test.sh`
+**Before commit:** run integration test `./build-and-test.sh`
 
 ## Key Architecture Rules
 
@@ -43,7 +44,7 @@
 - Actor: [QueueActor.cs](dotnet/src/DaprMQ/QueueActor.cs)
 - Models: [Models.cs](dotnet/src/DaprMQ.Interfaces/Models.cs), [IQueueActor.cs](dotnet/src/DaprMQ.Interfaces/IQueueActor.cs)
 - API: [QueueController.cs](dotnet/src/DaprMQ.ApiServer/Controllers/QueueController.cs), [DaprMQGrpcService.cs](dotnet/src/DaprMQ.ApiServer/Services/DaprMQGrpcService.cs)
-- Tests: [QueueActorTests.cs](dotnet/tests/DaprMQ.Tests/QueueActorTests.cs)
+- Tests: [QueueActorTests.cs](dotnet/tests/DaprMQ.Tests/)
 - Dashboard: [useQueueOperations.ts](dashboard/src/hooks/useQueueOperations.ts)
 
 ## Domain Knowledge (Reference Only)

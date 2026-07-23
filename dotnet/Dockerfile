@@ -4,7 +4,7 @@ WORKDIR /src
 
 # Copy all source code
 COPY src/ ./src/
-COPY ../NuGet.config .
+COPY NuGet.config .
 
 # Restore and build
 WORKDIR /src/src/DaprMQ.ApiServer
