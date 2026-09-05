@@ -150,13 +150,14 @@ daprMQ takes a different approach:
 - [x] **Bulk Push**: Write many messages to a queue in one atomic operation.
 - [x] **Bulk Pop**: Pop many message from a queue in one atomic operation.
 - [x] **Competing Consumers**: Experimental project (requires Bulk Push and Bulk Pop as a pre-requisite)
+- [x] **Large message support**: large messages are already possible, but large messages can be optionally stored in a dedicated binary store and not in the transaction store of the queue. 
 
 ### To-do
 
 - [ ] **Multi-tenant API surface**: Ensure all queues operations can be scoped to a first-class `Tenant ID`. Stretch to JWT validation.
 - [ ] **Message Deduplication**: Messages with a non-unique Idempotency Key will be deuplicated within a time-window since first-occurence.
 - [ ] **Fan-Out Architecture**: When publishing to a single queue, it will be possible to fan-out to N other queues. This would form the underpinnings of a real Pub Sub system, whereby Publishers are unaware of Subscribers.
-- [ ] **Optimised large message support**: large messages are already possible, but ideally large messages should not be stored directly in the hot storage tier, but instead offloaded to a binary store (requires Dapr Binary store capability, or similar)
+- [ ] **Optimised large message support**: When Dapr releases the Binary Store component in 1.19, large messages will be streamed rather than buffered in memory.
 - [ ] **Queue Purge**: Remove all messages from a queue.
 - [ ] **Max Retries / Automatic Dead-lettering**: When calling Pop With Acknowledgements, if a message is popped N number of times without Acknowledgement, the message will be deemed poisonous, and automatically moved to the Deadletter queue.
 - [ ] **Dead-letter Forwarding**: Send a HTTP notification to any endpoint when a dead-letter message has been produced. Useful for alerting Operators, and triggering automated healing routines that sit external to the system.

@@ -104,6 +104,12 @@ public record PopItem
     /// Priority of the item.
     /// </summary>
     public required int Priority { get; init; }
+
+    /// <summary>
+    /// If the item's payload was offloaded to an object store, an opaque claim token to fetch it
+    /// via the object download endpoint. Null for normal inline items. Never a raw BlobReference.
+    /// </summary>
+    public string? ObjectClaimToken { get; init; }
 }
 
 /// <summary>
@@ -166,6 +172,19 @@ public record PopWithAckItem
     /// Optional sink configuration for this item.
     /// </summary>
     public SinkConfig? Sink { get; init; }
+
+    /// <summary>
+    /// If the item's payload was offloaded to an object store, an opaque claim token to fetch it
+    /// via the object download endpoint. Null for normal inline items. Never a raw BlobReference.
+    /// </summary>
+    public string? ObjectClaimToken { get; init; }
+
+    /// <summary>
+    /// Content type recorded at push-object time, if this item is a blob reference. Null for
+    /// normal inline items or if no content type was supplied. Also embedded inside the claim
+    /// token itself, but surfaced here too so callers don't need to decode the token to know it.
+    /// </summary>
+    public string? BlobContentType { get; init; }
 }
 
 /// <summary>
@@ -426,4 +445,37 @@ public record InitializeDaprPubSubSinkRequest
     /// Lock TTL in seconds for PopWithAck operations (1-300).
     /// </summary>
     public required int LockTtlSeconds { get; init; }
+}
+
+/// <summary>
+/// Request model for scheduling deletion of an offloaded blob on the BlobReaperActor.
+/// </summary>
+public record ScheduleDeletionRequest
+{
+    /// <summary>
+    /// The blob reference (object store key/URI) to delete.
+    /// </summary>
+    public required string BlobReference { get; init; }
+
+    /// <summary>
+    /// Delay in seconds before attempting deletion.
+    /// </summary>
+    public required int DelaySeconds { get; init; }
+}
+
+/// <summary>
+/// Request model for postponing a scheduled deletion on the BlobReaperActor.
+/// </summary>
+public record PostponeDeletionRequest
+{
+    /// <summary>
+    /// The blob reference (object store key/URI) whose deletion should be postponed.
+    /// </summary>
+    public required string BlobReference { get; init; }
+
+    /// <summary>
+    /// Delay in seconds from now to reschedule deletion to. Only applied if later than the
+    /// currently scheduled deletion time.
+    /// </summary>
+    public required int NewDelaySeconds { get; init; }
 }

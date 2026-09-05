@@ -18,6 +18,9 @@ spec:
         dapr.io/app-protocol: {{ .Values.dapr.protocol | quote }}
         dapr.io/config: {{ include "daprmq.fullname" . }}-dapr-config
         dapr.io/log-level: {{ .Values.dapr.logLevel | quote }}
+        {{- if .Values.blobStore.localStorage.enabled }}
+        dapr.io/volume-mounts: "blobstore:/blobstore"
+        {{- end }}
         {{- with .Values.gateway.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -52,6 +55,18 @@ spec:
           value: "{{ .Release.Name }}-daprmq-QueueActor"
         - name: HTTP_SINK_ACTOR_TYPE_NAME
           value: "{{ .Release.Name }}-daprmq-HttpSinkActor"
+        - name: BLOB_REAPER_ACTOR_TYPE_NAME
+          value: "{{ .Release.Name }}-daprmq-BlobReaperActor"
+        - name: DAPRMQ_BLOB_GLOBAL_PREFIX
+          value: {{ .Values.blobStore.globalPrefix | quote }}
+        - name: DAPRMQ_BLOB_BINDING_NAME
+          value: {{ .Values.blobStore.bindingName | quote }}
+        - name: DAPRMQ_OBJECT_CLAIM_SIGNING_KEY
+          value: {{ .Values.blobStore.signingKey | quote }}
+        - name: DAPRMQ_BLOB_REAP_BACKSTOP_SECONDS
+          value: {{ .Values.blobStore.reap.backstopSeconds | quote }}
+        - name: DAPRMQ_BLOB_REAP_POST_DOWNLOAD_SECONDS
+          value: {{ .Values.blobStore.reap.postDownloadSeconds | quote }}
         livenessProbe:
           {{- toYaml .Values.gateway.livenessProbe | nindent 10 }}
         readinessProbe:
@@ -60,6 +75,12 @@ spec:
           {{- toYaml .Values.gateway.resources | nindent 10 }}
         securityContext:
           {{- toYaml .Values.gateway.securityContext | nindent 10 }}
+      {{- if .Values.blobStore.localStorage.enabled }}
+      volumes:
+      - name: blobstore
+        persistentVolumeClaim:
+          claimName: {{ .Values.blobStore.localStorage.claimName }}
+      {{- end }}
       {{- with .Values.gateway.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

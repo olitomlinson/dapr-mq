@@ -44,3 +44,35 @@ export const updateQueueIdInUrl = (queueId: string): void => {
   url.searchParams.set('queue_name', queueId);
   window.history.pushState({}, '', url.toString());
 };
+
+export interface ObjectClaim {
+  objectClaimToken: string;
+  contentType?: string;
+}
+
+export const isObjectClaim = (item: unknown): item is ObjectClaim =>
+  typeof item === 'object' &&
+  item !== null &&
+  typeof (item as Record<string, unknown>).objectClaimToken === 'string';
+
+/** Truncates a long objectClaimToken for display, leaving the full value untouched for download URLs. */
+export const withTruncatedClaimToken = (item: unknown): unknown =>
+  isObjectClaim(item)
+    ? { ...item, objectClaimToken: `${item.objectClaimToken.slice(0, 24)}…` }
+    : item;
+
+/** Same as withTruncatedClaimToken, but recurses into arrays/objects for display of arbitrary parsed JSON (e.g. a raw request body containing a batch of items). */
+export const truncateClaimTokensDeep = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map(truncateClaimTokensDeep);
+  }
+  if (isObjectClaim(value)) {
+    return withTruncatedClaimToken(value);
+  }
+  if (typeof value === 'object' && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, val]) => [key, truncateClaimTokensDeep(val)])
+    );
+  }
+  return value;
+};

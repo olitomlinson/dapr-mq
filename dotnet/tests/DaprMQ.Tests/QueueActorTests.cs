@@ -101,7 +101,7 @@ public class QueueActorTests
         return mock;
     }
 
-    private async Task<QueueActor> CreateActorAsync(Mock<IActorStateManager> mockStateManager)
+    private async Task<QueueActor> CreateActorAsync(Mock<IActorStateManager> mockStateManager, Mock<IBlobReaperActorInvoker>? mockBlobReaperActorInvoker = null)
     {
         // Create mock timer manager that no-ops timer registration
         var mockTimerManager = new Mock<ActorTimerManager>();
@@ -122,8 +122,23 @@ public class QueueActorTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(new Interfaces.PushResponse { Success = true });
 
+        mockBlobReaperActorInvoker ??= new Mock<IBlobReaperActorInvoker>();
+        mockBlobReaperActorInvoker.Setup(i => i.InvokeMethodAsync<Interfaces.ScheduleDeletionRequest>(
+                It.IsAny<ActorId>(),
+                It.IsAny<string>(),
+                It.IsAny<Interfaces.ScheduleDeletionRequest>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var tokenIssuer = new ObjectClaimTokenIssuer(new ObjectClaimTokenConfig
+        {
+            SigningKey = "test-signing-key-that-is-long-enough-for-hmac-sha256"u8.ToArray(),
+            TokenTtl = TimeSpan.FromMinutes(5)
+        });
+        var blobReapConfig = new BlobReapConfig { BackstopSeconds = 86400, PostDownloadSeconds = 86400 };
+
         var actorHost = ActorHost.CreateForTest<QueueActor>(testOptions);
-        var actor = new QueueActor(actorHost, mockInvoker.Object);
+        var actor = new QueueActor(actorHost, mockInvoker.Object, mockBlobReaperActorInvoker.Object, tokenIssuer, blobReapConfig);
 
         // Use reflection to set the StateManager property
         var stateManagerProperty = typeof(Actor).GetProperty("StateManager");

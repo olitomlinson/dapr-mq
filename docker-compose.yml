@@ -107,11 +107,14 @@ services:
         "/components",
         "-config",
         "/dapr-config/config.yml",
+        "-max-body-size",
+        "16Mi",
         "-log-level",
         "info",
       ]
     volumes:
       - "./dapr/components:/components"
+      - "./dapr/blobstore-data:/blobstore"
       - "./dapr/config:/dapr-config"
     ports:
       - "3504:3500" # Dapr HTTP port for host access
@@ -183,6 +186,7 @@ services:
       ]
     volumes:
       - "./dapr/components:/components"
+      - "./dapr/blobstore-data:/blobstore"
       - "./dapr/config:/dapr-config"
     ports:
       - "3502:3500" # Dapr HTTP port for host access
@@ -254,6 +258,7 @@ services:
       ]
     volumes:
       - "./dapr/components:/components"
+      - "./dapr/blobstore-data:/blobstore"
       - "./dapr/config:/dapr-config"
     ports:
       - "3503:3500" # Dapr HTTP port for host access
@@ -327,6 +332,7 @@ services:
       ]
     volumes:
       - "./dapr/components:/components"
+      - "./dapr/blobstore-data:/blobstore"
       - "./dapr/config:/dapr-config"
     ports:
       - "3505:3500" # Dapr HTTP port for host access

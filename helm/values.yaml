@@ -152,6 +152,41 @@ gateway:
   # Affinity rules
   affinity: {}
 
+# Object store configuration for large object / binary offload support.
+# See dapr/helm-components/objectstore-k8s.yaml for the Component CR - deploy the appropriate
+# binding type for your environment (bindings.localstorage for single-node/dev, bindings.aws.s3
+# or bindings.azure.blobstorage for production) and name it to match blobStore.bindingName.
+blobStore:
+  # Operator-controlled prefix applied to every blob key (e.g. "prod", "team-a"). Never
+  # accepted from a request - callers only control the path segment beneath this.
+  globalPrefix: ""
+
+  # Name of the Dapr binding Component CR used for object storage.
+  bindingName: "daprmq-blobstore"
+
+  # bindings.localstorage requires every pod's Dapr sidecar to see the SAME directory, since the
+  # binding operates on local disk. This only works with a ReadWriteMany-capable volume (e.g. NFS,
+  # EFS, Azure Files) shared across gateway and worker pods - it does NOT work with a regular
+  # ReadWriteOnce PVC once you have more than one node. For production, prefer bindings.aws.s3 or
+  # bindings.azure.blobstorage instead (set localStorage.enabled: false) which need no shared volume.
+  localStorage:
+    enabled: false
+    claimName: "daprmq-blobstore-pvc"
+
+  # HMAC signing key for ObjectClaimTokens (opaque tokens issued in place of raw blob references
+  # when large-object items are popped). Must be set explicitly for any non-dev deployment - the
+  # application falls back to an insecure dev-only default if left empty.
+  signingKey: ""
+
+  # Reap schedule for offloaded blobs (two TTLs - see docs/API_REFERENCE.md):
+  # - backstopSeconds: scheduled at item finalization (plain pop, or acknowledge for pop-with-ack).
+  #   Covers the case where the issued ObjectClaimToken is never redeemed.
+  # - postDownloadSeconds: scheduled when the object is actually fetched via the claim-token
+  #   download endpoint. Only pushes the deletion time later, never earlier.
+  reap:
+    backstopSeconds: 86400
+    postDownloadSeconds: 86400
+
 # Autoscaling configuration (for worker)
 autoscaling:
   enabled: false

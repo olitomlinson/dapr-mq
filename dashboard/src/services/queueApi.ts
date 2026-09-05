@@ -12,7 +12,7 @@ import type {
   WiremockRequest,
 } from '../types/queue';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+export const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
 export class QueueApiError extends Error {
   constructor(public status: number | string, public data: unknown) {
