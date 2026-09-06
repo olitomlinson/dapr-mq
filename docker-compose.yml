@@ -74,6 +74,7 @@ services:
       - DAPR_GRPC_ENDPOINT=http://daprmq-gateway-1-dapr:50001
       - DAPR_HTTP_ENDPOINT=http://daprmq-gateway-1-dapr:3500
       - REGISTER_ACTORS=false
+      - DAPRMQ_BLOB_BINDING_NAME=${DAPRMQ_BLOB_BINDING_NAME:-daprmq-blobstore}
     ports:
       - "8002:8080" # REST HTTP/1.1
       - "8102:8081" # gRPC HTTP/2
@@ -149,6 +150,7 @@ services:
       - DAPR_GRPC_ENDPOINT=http://daprmq-host-1-dapr:50001
       - DAPR_HTTP_ENDPOINT=http://daprmq-host-1-dapr:3500
       - REGISTER_ACTORS=true
+      - DAPRMQ_BLOB_BINDING_NAME=${DAPRMQ_BLOB_BINDING_NAME:-daprmq-blobstore}
     ports:
       - "8000:8080" # REST HTTP/1.1
       - "8100:8081" # gRPC HTTP/2
@@ -221,6 +223,7 @@ services:
       - DAPR_GRPC_ENDPOINT=http://daprmq-host-2-dapr:50001
       - DAPR_HTTP_ENDPOINT=http://daprmq-host-2-dapr:3500
       - REGISTER_ACTORS=true
+      - DAPRMQ_BLOB_BINDING_NAME=${DAPRMQ_BLOB_BINDING_NAME:-daprmq-blobstore}
     ports:
       - "8001:8080" # REST HTTP/1.1
       - "8101:8081" # gRPC HTTP/2
@@ -294,6 +297,7 @@ services:
       - DAPR_GRPC_ENDPOINT=http://daprmq-host-3-dapr:50001
       - DAPR_HTTP_ENDPOINT=http://daprmq-host-3-dapr:3500
       - REGISTER_ACTORS=true
+      - DAPRMQ_BLOB_BINDING_NAME=${DAPRMQ_BLOB_BINDING_NAME:-daprmq-blobstore}
     ports:
       - "8003:8080" # REST HTTP/1.1
       - "8103:8081" # gRPC HTTP/2
@@ -465,6 +469,19 @@ services:
       KAFKA_CLUSTERS_0_AUDIT_CONSOLEAUDITENABLED: "true"
       LOGGING_LEVEL_ROOT: "error"
       LOGGING_LEVEL_COM_PROVECTUS: "error"
+    networks:
+      - daprmq-network
+
+  ############################
+  # Azurite (Azure Blob Storage Emulator)
+  ############################
+  azurite:
+    container_name: azurite
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    command: ["azurite-blob", "--blobHost", "0.0.0.0", "--blobPort", "10000"]
+    restart: unless-stopped
+    ports:
+      - "10000:10000"
     networks:
       - daprmq-network
 
