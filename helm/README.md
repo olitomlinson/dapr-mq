@@ -250,14 +250,15 @@ kubectl logs -n <namespace> -l app.kubernetes.io/component=worker -c daprd
 
 ### Components
 
-- **Worker** (`{release-name}-daprmq-worker`): Deployment with `REGISTER_ACTORS=true`
+- **Worker** (`{release-name}-daprmq-worker`): Deployment with `REGISTER_ACTORS=true`, `ENABLE_API=false`
   - Hosts the actual queue actors
+  - Does not expose the REST/gRPC API - only the gateway serves external requests
   - All replicas share the same Dapr app-id (derived from release name) for actor distribution
   - Scalable via HorizontalPodAutoscaler
   - Default: 2 replicas
   - Example: Release `my-app` creates app-id `my-app-daprmq-worker`
 
-- **Gateway** (`{release-name}-daprmq-gateway`): Deployment with `REGISTER_ACTORS=false`
+- **Gateway** (`{release-name}-daprmq-gateway`): Deployment with `REGISTER_ACTORS=false`, `ENABLE_API=true`
   - Entry point for external requests
   - Separate Dapr app-id from worker (derived from release name)
   - Routes requests to worker via Dapr service invocation

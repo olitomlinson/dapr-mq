@@ -153,6 +153,10 @@ builder.Services.AddSwaggerGen(c =>
     c.SwaggerDoc("v1", new() { Title = "DaprMQ API (.NET)", Version = "v1" });
 });
 
+// Controls whether this instance exposes the public REST/gRPC API surface.
+// Disabled on actor-hosting instances so only the gateway serves external requests.
+var enableApi = builder.Configuration.GetValue<bool>("ENABLE_API", true);
+
 // Register actors (conditionally based on environment variable)
 var registerActors = builder.Configuration.GetValue<bool>("REGISTER_ACTORS", true);
 if (registerActors)
@@ -189,14 +193,13 @@ app.UseRouting();
 app.UseCors("AllowDashboard");
 app.UseAuthorization();
 
-// Map controllers
-app.MapControllers();
-
-// Map gRPC service
-app.MapGrpcService<DaprMQGrpcService>();
-
-// Map gRPC reflection service (enables service introspection)
-app.MapGrpcReflectionService();
+// Map the public REST/gRPC API surface (only needed on instances serving external requests)
+if (enableApi)
+{
+    app.MapControllers();
+    app.MapGrpcService<DaprMQGrpcService>();
+    app.MapGrpcReflectionService();
+}
 
 // Map Dapr actor endpoints (only needed when hosting actors)
 if (registerActors)

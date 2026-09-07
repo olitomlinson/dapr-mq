@@ -216,17 +216,17 @@ items = await actor.Pop(10)
 
 ```bash
 # Push high priority item
-curl -X POST http://localhost:8000/queue/my-queue/push \
+curl -X POST http://localhost:8002/queue/my-queue/push \
   -H "Content-Type: application/json" \
   -d '{"items": [{"item": {"task": "urgent"}, "priority": 0}]}'
 
 # Push low priority item
-curl -X POST http://localhost:8000/queue/my-queue/push \
+curl -X POST http://localhost:8002/queue/my-queue/push \
   -H "Content-Type: application/json" \
   -d '{"items": [{"item": {"task": "background"}, "priority": 5}]}'
 
 # Pop items - priority 0 returned first
-curl -X POST "http://localhost:8000/queue/my-queue/pop"
+curl -X POST "http://localhost:8002/queue/my-queue/pop"
 ```
 
 ## Edge Cases

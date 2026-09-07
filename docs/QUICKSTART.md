@@ -45,12 +45,12 @@ Or manually test with curl:
 
 ```bash
 # Push an item
-curl -X POST http://localhost:8000/queue/my-queue/push \
+curl -X POST http://localhost:8002/queue/my-queue/push \
   -H "Content-Type: application/json" \
   -d '{"items": [{"item": {"task": "hello", "priority": "high"}, "priority": 1}]}'
 
 # Pop items
-curl -X POST "http://localhost:8000/queue/my-queue/pop"
+curl -X POST "http://localhost:8002/queue/my-queue/pop"
 ```
 
 ## Quick Start as Library
@@ -190,7 +190,7 @@ dapr run \
 ### 4. Test API
 
 ```bash
-curl http://localhost:8000/health
+curl http://localhost:8002/health
 ```
 
 ## Verify Installation
@@ -265,13 +265,13 @@ Each actor ID is a separate queue:
 
 ```bash
 # Queue 1
-curl -X POST http://localhost:8000/queue/queue-1/push -d '{"items": [{"item": {"data": 1}, "priority": 1}]}'
+curl -X POST http://localhost:8002/queue/queue-1/push -d '{"items": [{"item": {"data": 1}, "priority": 1}]}'
 
 # Queue 2
-curl -X POST http://localhost:8000/queue/queue-2/push -d '{"items": [{"item": {"data": 2}, "priority": 1}]}'
+curl -X POST http://localhost:8002/queue/queue-2/push -d '{"items": [{"item": {"data": 2}, "priority": 1}]}'
 
 # They're independent
-curl -X POST "http://localhost:8000/queue/queue-1/pop0"  # Returns item 1 only
+curl -X POST "http://localhost:8002/queue/queue-1/pop0"  # Returns item 1 only
 ```
 
 ### Batch Processing
@@ -280,7 +280,7 @@ Pop multiple items at once:
 
 ```bash
 # Pop up to 50 items
-curl -X POST "http://localhost:8000/queue/batch-queue/pop"
+curl -X POST "http://localhost:8002/queue/batch-queue/pop"
 ```
 
 ### Task Queue Pattern

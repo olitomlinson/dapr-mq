@@ -38,7 +38,7 @@ public class DaprBindingObjectStore : IObjectStore
         {
             Data = data
         };
-        request.Metadata["fileName"] = key;
+        SetKeyMetadata(request, key);
 
         await _daprClient.InvokeBindingAsync(request, cancellationToken);
 
@@ -48,7 +48,7 @@ public class DaprBindingObjectStore : IObjectStore
     public async Task<Stream> DownloadAsync(string blobReference, CancellationToken cancellationToken = default)
     {
         var request = new BindingRequest(_config.BindingName, "get");
-        request.Metadata["fileName"] = blobReference;
+        SetKeyMetadata(request, blobReference);
 
         var response = await _daprClient.InvokeBindingAsync(request, cancellationToken);
         return new MemoryStream(response.Data.ToArray());
@@ -57,9 +57,20 @@ public class DaprBindingObjectStore : IObjectStore
     public async Task DeleteAsync(string blobReference, CancellationToken cancellationToken = default)
     {
         var request = new BindingRequest(_config.BindingName, "delete");
-        request.Metadata["fileName"] = blobReference;
+        SetKeyMetadata(request, blobReference);
 
         await _daprClient.InvokeBindingAsync(request, cancellationToken);
+    }
+
+    // Each supported binding type expects the object key under a different metadata key
+    // (bindings.localstorage: fileName, bindings.azure.blobstorage: blobName, bindings.aws.s3: key).
+    // Setting all three is harmless - every binding implementation only reads the key it recognizes
+    // and ignores the rest - and lets the same code work across binding types with no per-environment branching.
+    private static void SetKeyMetadata(BindingRequest request, string key)
+    {
+        request.Metadata["fileName"] = key;
+        request.Metadata["blobName"] = key;
+        request.Metadata["key"] = key;
     }
 
     private string BuildKey(string userPrefix, string objectId)

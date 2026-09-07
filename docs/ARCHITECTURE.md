@@ -360,7 +360,7 @@ var result = await proxy.InvokeMethodAsync<PushRequest, PushResponse>(
 ### 2. REST API
 
 ```bash
-curl -X POST http://localhost:8000/queue/queue-1/push
+curl -X POST http://localhost:8002/queue/queue-1/push
 ```
 
 **Pros:**

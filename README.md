@@ -28,17 +28,17 @@ This is as simple as it gets. Use `push` to add a message to the Queue. Use `pop
 
 ```bash
 # Push a message to the queue with priority 1
-curl -X POST http://localhost:8000/queue/my-queue/push \
+curl -X POST http://localhost:8002/queue/my-queue/push \
   -H "Content-Type: application/json" \
   -d '{ "items": [{ "item": { "task": "first" }, "priority": 1 }] }'
 
 # Push a message to the same queue, with priority 0
-curl -X POST http://localhost:8000/queue/my-queue/push \
+curl -X POST http://localhost:8002/queue/my-queue/push \
   -H "Content-Type: application/json" \
   -d '{ "items": [{ "item": { "task": "second"}, "priority": 0 }] }'
 
 # Pop a message...
-curl -X POST "http://localhost:8000/queue/my-queue/pop"
+curl -X POST "http://localhost:8002/queue/my-queue/pop"
 # {
 #  "items": [
 #    {
@@ -51,7 +51,7 @@ curl -X POST "http://localhost:8000/queue/my-queue/pop"
 # }
 
 # Pop a message...
-curl -X POST "http://localhost:8000/queue/my-queue/pop"
+curl -X POST "http://localhost:8002/queue/my-queue/pop"
 # {
 #  "items": [
 #    {
@@ -71,7 +71,7 @@ If you don't require a specialist control loop to pull messages from the Queue, 
 The HTTP Sink will obey several configurable parameters, such as Lock TTL, Polling Interval, and Max Concurrency, allowing you to fine-tune the throughput and latency.
 
 ```bash
-curl -X POST 'http://localhost:8000/queue/my-queue/sink/http/register' \
+curl -X POST 'http://localhost:8002/queue/my-queue/sink/http/register' \
   -H 'Content-Type: application/json' \
   -d '{
         "url": "http://my-wiremock-container:8090/api/message-reciever",

@@ -1,6 +1,6 @@
 # API Reference
 
-Complete reference for the DaprMQ REST API, exposed by the ApiServer at `http://localhost:8000` (adjust host/port for your deployment).
+Complete reference for the DaprMQ REST API, exposed by the ApiServer at `http://localhost:8002` (adjust host/port for your deployment).
 
 All endpoints are scoped to a queue via `{queueId}` in the path — each distinct `queueId` maps to its own `QueueActor` instance.
 
@@ -49,7 +49,7 @@ Content-Type: application/json
 **Example**
 
 ```bash
-curl -X POST http://localhost:8000/queue/my-queue/push \
+curl -X POST http://localhost:8002/queue/my-queue/push \
   -H "Content-Type: application/json" \
   -d '{"items": [{"item": {"task": "send_email"}, "priority": 0}]}'
 ```
@@ -83,7 +83,7 @@ Unlike `push`, the request **body is the raw object content** (not JSON) — sen
 **Example — push a file**
 
 ```bash
-curl -X POST http://localhost:8000/queue/my-queue/push-object \
+curl -X POST http://localhost:8002/queue/my-queue/push-object \
   -H "content-type: application/pdf" \
   -H "priority: 0" \
   --data-binary @report.pdf
@@ -92,7 +92,7 @@ curl -X POST http://localhost:8000/queue/my-queue/push-object \
 **Example — push with a custom storage prefix**
 
 ```bash
-curl -X POST http://localhost:8000/queue/my-queue/push-object \
+curl -X POST http://localhost:8002/queue/my-queue/push-object \
   -H "prefix: store-b" \
   --data-binary @large-image.png
 ```
@@ -114,10 +114,10 @@ GET /object/{token}
 **Example — pop, then download the object**
 
 ```bash
-RESPONSE=$(curl -s -X POST http://localhost:8000/queue/my-queue/pop -H "require-ack: false")
+RESPONSE=$(curl -s -X POST http://localhost:8002/queue/my-queue/pop -H "require-ack: false")
 TOKEN=$(echo "$RESPONSE" | jq -r '.items[0].item.objectClaimToken')
 
-curl -o downloaded-report.pdf "http://localhost:8000/object/$TOKEN"
+curl -o downloaded-report.pdf "http://localhost:8002/object/$TOKEN"
 ```
 
 **Response — `200 OK`** — raw object bytes, with `Content-Type` set from the value recorded at push time (falls back to `application/octet-stream` if none was given).
@@ -137,13 +137,13 @@ The claim token is self-contained (it encodes the blob reference, content type, 
 `require-ack: true` still returns the lock id in the normal JSON item shape, just like inline items:
 
 ```bash
-curl -X POST http://localhost:8000/queue/my-queue/pop \
+curl -X POST http://localhost:8002/queue/my-queue/pop \
   -H "require-ack: true" \
   -H "ttl-seconds: 60"
 
 # {"items":[{"item":{"objectClaimToken":"...","contentType":"application/pdf"},"priority":0,"lockId":"aB3xQ9k2LmZ","lockExpiresAt":1780000123.45}]}
 
-curl -X POST http://localhost:8000/queue/my-queue/acknowledge \
+curl -X POST http://localhost:8002/queue/my-queue/acknowledge \
   -H "Content-Type: application/json" \
   -d '{"lockId": "aB3xQ9k2LmZ"}'
 ```
@@ -189,7 +189,7 @@ POST /queue/{queueId}/pop
 **Example**
 
 ```bash
-curl -X POST http://localhost:8000/queue/my-queue/pop \
+curl -X POST http://localhost:8002/queue/my-queue/pop \
   -H "require-ack: true" \
   -H "ttl-seconds: 60" \
   -H "count: 10"
@@ -223,7 +223,7 @@ Content-Type: application/json
 **Example**
 
 ```bash
-curl -X POST http://localhost:8000/queue/my-queue/acknowledge \
+curl -X POST http://localhost:8002/queue/my-queue/acknowledge \
   -H "Content-Type: application/json" \
   -d '{"lockId": "aB3xQ9k2LmZ"}'
 ```
@@ -358,7 +358,7 @@ GET /object/{token}
 **Example**
 
 ```bash
-curl -o report.pdf http://localhost:8000/object/eyJhbGciOiJIUzI1NiIs...
+curl -o report.pdf http://localhost:8002/object/eyJhbGciOiJIUzI1NiIs...
 ```
 
 **Response — `200 OK`** — raw object bytes, with `Content-Type` set from the value recorded at push time (falls back to `application/octet-stream` if none was given).
