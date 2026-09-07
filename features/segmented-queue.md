@@ -687,7 +687,7 @@ docker-compose up
 
 # Push 200 items
 for i in {1..200}; do
-  curl -X POST http://localhost:8000/queue/test/push \
+  curl -X POST http://localhost:8002/queue/test/push \
     -H "Content-Type: application/json" \
     -d "{\"item\": {\"id\": $i}}"
 done
@@ -698,7 +698,7 @@ curl http://localhost:3500/v1.0/actors/QueueActor/test/state/queue_0_seg_1
 
 # Pop all items
 for i in {1..200}; do
-  curl -X POST http://localhost:8000/queue/test/pop
+  curl -X POST http://localhost:8002/queue/test/pop
 done
 ```
 

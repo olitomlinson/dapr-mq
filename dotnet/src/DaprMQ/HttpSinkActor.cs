@@ -160,13 +160,20 @@ public class HttpSinkActor : Actor, IHttpSinkActor, IRemindable
             httpClient.Timeout = TimeSpan.FromSeconds(30);
 
             // Deserialize ItemJson strings into actual JSON objects to avoid double-encoding
-            // while preserving metadata (priority, lockId, lockExpiresAt)
+            // while preserving metadata (priority, lockId, lockExpiresAt). Items whose payload
+            // was offloaded to an object store are NOT dereferenced here - sending the actual
+            // bytes over this POST would reintroduce the memory/bandwidth cost per poll that
+            // offloading exists to avoid, and gets worse as batch size or object size grows.
+            // Instead we send an opaque claim token; the endpoint fetches the content itself via
+            // GET /object/{token} while the token remains valid.
             //TODO : I don't love this as its not fully type safe, must refactor
 
             var result = popResult.Items.Select(item =>
                         new
                         {
-                            item = JsonDocument.Parse(item.ItemJson).RootElement,
+                            item = item.ObjectClaimToken != null
+                                ? (object)new { objectClaimToken = item.ObjectClaimToken, contentType = item.BlobContentType }
+                                : JsonDocument.Parse(item.ItemJson).RootElement,
                             item.Priority,
                             item.LockId,
                             item.LockExpiresAt
@@ -177,8 +184,13 @@ public class HttpSinkActor : Actor, IHttpSinkActor, IRemindable
 
             if (response.StatusCode == System.Net.HttpStatusCode.OK)
             {
-                // 200 OK - Acknowledge all locks
-                Logger.LogInformation("HttpSinkActor {ActorId} received 200 OK, acknowledging {Count} locks",
+                // 200 OK confirms the endpoint received the delivery payload, so every item in
+                // the batch is acknowledged immediately - including blob-reference items. The
+                // blob itself is not at risk: the backstop reap TTL (scheduled on Acknowledge)
+                // gives the endpoint a window to fetch the object via GET /object/{token} before
+                // the reaper deletes it, and a successful download extends that window further.
+                Logger.LogInformation(
+                    "HttpSinkActor {ActorId} received 200 OK, acknowledging {Count} locks",
                     Id.GetId(), popResult.Items.Count);
 
                 foreach (var item in popResult.Items)

@@ -36,7 +36,14 @@ public class DaprTestEnvironment : IAsyncLifetime
     public HttpClient ApiClient { get; private set; } = null!;
     public HttpClient DaprSidecarClient { get; private set; } = null!;
 
+    /// <summary>
+    /// Host-side directory bind-mounted into the Dapr sidecar's bindings.localstorage rootPath.
+    /// Tests can inspect this directory to verify blob upload/deletion.
+    /// </summary>
+    public string BlobStoreDirectory => _blobStoreTestDirectory;
+
     private string _schedulerTestDirectory;
+    private string _blobStoreTestDirectory;
 
 
     public async Task InitializeAsync()
@@ -97,6 +104,7 @@ public class DaprTestEnvironment : IAsyncLifetime
 
         const string schedulerContainerDataDir = "/data/dapr-scheduler";
         _schedulerTestDirectory = TestDirectoryManager.CreateTestDirectory("scheduler");
+        _blobStoreTestDirectory = TestDirectoryManager.CreateTestDirectory("blobstore");
         // 4. Start Dapr scheduler service
         _daprSchedulerContainer = new ContainerBuilder()
             .WithImage("daprio/dapr:1.18.2")
@@ -131,7 +139,10 @@ public class DaprTestEnvironment : IAsyncLifetime
             .WithEnvironment("Logging__LogLevel__Microsoft.AspNetCore", "Warning")
             // Allow optional override of actor type name via environment variable
             .WithEnvironment("QUEUE_ACTOR_TYPE_NAME", Environment.GetEnvironmentVariable("QUEUE_ACTOR_TYPE_NAME") ?? "QueueActor")
-            .WithEnvironment("HTTP_SINK_ACTOR_TYPE_NAME", Environment.GetEnvironmentVariable("HTTP_SINK_ACTOR_TYPE_NAME") ?? "HttpSinkActor");
+            .WithEnvironment("HTTP_SINK_ACTOR_TYPE_NAME", Environment.GetEnvironmentVariable("HTTP_SINK_ACTOR_TYPE_NAME") ?? "HttpSinkActor")
+            // Short reap TTLs so LargeObjectTests can observe deletion within a reasonable test timeout
+            .WithEnvironment("DAPRMQ_BLOB_REAP_BACKSTOP_SECONDS", "30")
+            .WithEnvironment("DAPRMQ_BLOB_REAP_POST_DOWNLOAD_SECONDS", "30");
 
         // Conditionally redirect container logs to console
         if (enableContainerLogs)
@@ -171,6 +182,7 @@ public class DaprTestEnvironment : IAsyncLifetime
                 "--resources-path", "/tmp/dapr-components",
                 "--log-level", "info")  // Enable debug logging for Dapr
             .WithBindMount(componentsPath, "/tmp/dapr-components")
+            .WithBindMount(_blobStoreTestDirectory, "/tmp/blobstore")
             .WithPortBinding(3500, true)
             .WithPortBinding(50001, true);
 
@@ -211,6 +223,7 @@ public class DaprTestEnvironment : IAsyncLifetime
         if (_daprSidecarContainer != null)
         {
             await _daprSidecarContainer.DisposeAsync();
+            TestDirectoryManager.CleanUpDirectory(_blobStoreTestDirectory);
         }
 
         if (_daprPlacementContainer != null)

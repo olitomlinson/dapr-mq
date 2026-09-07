@@ -64,27 +64,29 @@ services:
   # Gateway + Dapr Sidecar
   ############################
 
-  daprmq-gateway-1:
-    container_name: daprmq-gateway-1
+  gateway-1:
+    container_name: gateway-1
     build:
       context: ./dotnet
       dockerfile: Dockerfile
     environment:
       - ASPNETCORE_URLS=http://+:8080
-      - DAPR_GRPC_ENDPOINT=http://daprmq-gateway-1-dapr:50001
-      - DAPR_HTTP_ENDPOINT=http://daprmq-gateway-1-dapr:3500
+      - DAPR_GRPC_ENDPOINT=http://gateway-1-dapr:50001
+      - DAPR_HTTP_ENDPOINT=http://gateway-1-dapr:3500
       - REGISTER_ACTORS=false
+      - ENABLE_API=true
+      - DAPRMQ_BLOB_BINDING_NAME=${DAPRMQ_BLOB_BINDING_NAME:-daprmq-blobstore}
     ports:
       - "8002:8080" # REST HTTP/1.1
       - "8102:8081" # gRPC HTTP/2
     depends_on:
-      daprmq-gateway-1-dapr:
+      gateway-1-dapr:
         condition: service_started
     networks:
       - daprmq-network
 
-  daprmq-gateway-1-dapr:
-    container_name: daprmq-gateway-1-dapr
+  gateway-1-dapr:
+    container_name: gateway-1-dapr
     image: "${DAPR_RUNTIME_VERSION}"
     command:
       [
@@ -92,7 +94,7 @@ services:
         "-app-id",
         "daprmq-service",
         "-app-channel-address",
-        "daprmq-gateway-1",
+        "gateway-1",
         "-app-port",
         "8080",
         "-dapr-http-port",
@@ -107,11 +109,14 @@ services:
         "/components",
         "-config",
         "/dapr-config/config.yml",
+        "-max-body-size",
+        "16Mi",
         "-log-level",
         "info",
       ]
     volumes:
       - "./dapr/components:/components"
+      - "./dapr/blobstore-data:/blobstore"
       - "./dapr/config:/dapr-config"
     ports:
       - "3504:3500" # Dapr HTTP port for host access
@@ -136,26 +141,25 @@ services:
   ############################
   # Host 1 + Dapr Sidecar
   ############################
-  daprmq-host-1:
-    container_name: daprmq-host-1
+  worker-1:
+    container_name: worker-1
     build:
       context: ./dotnet
       dockerfile: Dockerfile
     environment:
       - ASPNETCORE_URLS=http://+:8080
-      - DAPR_GRPC_ENDPOINT=http://daprmq-host-1-dapr:50001
-      - DAPR_HTTP_ENDPOINT=http://daprmq-host-1-dapr:3500
+      - DAPR_GRPC_ENDPOINT=http://worker-1-dapr:50001
+      - DAPR_HTTP_ENDPOINT=http://worker-1-dapr:3500
       - REGISTER_ACTORS=true
-    ports:
-      - "8000:8080" # REST HTTP/1.1
-      - "8100:8081" # gRPC HTTP/2
+      - ENABLE_API=false
+      - DAPRMQ_BLOB_BINDING_NAME=${DAPRMQ_BLOB_BINDING_NAME:-daprmq-blobstore}
     depends_on:
-      daprmq-host-1-dapr:
+      worker-1-dapr:
         condition: service_started
     networks:
       - daprmq-network
-  daprmq-host-1-dapr:
-    container_name: daprmq-host-1-dapr
+  worker-1-dapr:
+    container_name: worker-1-dapr
     image: "${DAPR_RUNTIME_VERSION}"
     command:
       [
@@ -163,7 +167,7 @@ services:
         "-app-id",
         "daprmq-service",
         "-app-channel-address",
-        "daprmq-host-1",
+        "worker-1",
         "-app-port",
         "8080",
         "-dapr-http-port",
@@ -183,6 +187,7 @@ services:
       ]
     volumes:
       - "./dapr/components:/components"
+      - "./dapr/blobstore-data:/blobstore"
       - "./dapr/config:/dapr-config"
     ports:
       - "3502:3500" # Dapr HTTP port for host access
@@ -207,26 +212,25 @@ services:
   ############################
   # Host 2 + Dapr Sidecar
   ############################
-  daprmq-host-2:
-    container_name: daprmq-host-2
+  worker-2:
+    container_name: worker-2
     build:
       context: ./dotnet
       dockerfile: Dockerfile
     environment:
       - ASPNETCORE_URLS=http://+:8080
-      - DAPR_GRPC_ENDPOINT=http://daprmq-host-2-dapr:50001
-      - DAPR_HTTP_ENDPOINT=http://daprmq-host-2-dapr:3500
+      - DAPR_GRPC_ENDPOINT=http://worker-2-dapr:50001
+      - DAPR_HTTP_ENDPOINT=http://worker-2-dapr:3500
       - REGISTER_ACTORS=true
-    ports:
-      - "8001:8080" # REST HTTP/1.1
-      - "8101:8081" # gRPC HTTP/2
+      - ENABLE_API=false
+      - DAPRMQ_BLOB_BINDING_NAME=${DAPRMQ_BLOB_BINDING_NAME:-daprmq-blobstore}
     depends_on:
-      daprmq-host-2-dapr:
+      worker-2-dapr:
         condition: service_started
     networks:
       - daprmq-network
-  daprmq-host-2-dapr:
-    container_name: daprmq-host-2-dapr
+  worker-2-dapr:
+    container_name: worker-2-dapr
     image: "${DAPR_RUNTIME_VERSION}"
     command:
       [
@@ -234,7 +238,7 @@ services:
         "-app-id",
         "daprmq-service",
         "-app-channel-address",
-        "daprmq-host-2",
+        "worker-2",
         "-app-port",
         "8080",
         "-dapr-http-port",
@@ -254,6 +258,7 @@ services:
       ]
     volumes:
       - "./dapr/components:/components"
+      - "./dapr/blobstore-data:/blobstore"
       - "./dapr/config:/dapr-config"
     ports:
       - "3503:3500" # Dapr HTTP port for host access
@@ -279,27 +284,26 @@ services:
   # Host 3 + Dapr Sidecar
   ############################
 
-  daprmq-host-3:
-    container_name: daprmq-host-3
+  worker-3:
+    container_name: worker-3
     build:
       context: ./dotnet
       dockerfile: Dockerfile
     environment:
       - ASPNETCORE_URLS=http://+:8080
-      - DAPR_GRPC_ENDPOINT=http://daprmq-host-3-dapr:50001
-      - DAPR_HTTP_ENDPOINT=http://daprmq-host-3-dapr:3500
+      - DAPR_GRPC_ENDPOINT=http://worker-3-dapr:50001
+      - DAPR_HTTP_ENDPOINT=http://worker-3-dapr:3500
       - REGISTER_ACTORS=true
-    ports:
-      - "8003:8080" # REST HTTP/1.1
-      - "8103:8081" # gRPC HTTP/2
+      - ENABLE_API=false
+      - DAPRMQ_BLOB_BINDING_NAME=${DAPRMQ_BLOB_BINDING_NAME:-daprmq-blobstore}
     depends_on:
-      daprmq-host-3-dapr:
+      worker-3-dapr:
         condition: service_started
     networks:
       - daprmq-network
 
-  daprmq-host-3-dapr:
-    container_name: daprmq-host-3-dapr
+  worker-3-dapr:
+    container_name: worker-3-dapr
     image: "${DAPR_RUNTIME_VERSION}"
     command:
       [
@@ -307,7 +311,7 @@ services:
         "-app-id",
         "daprmq-service",
         "-app-channel-address",
-        "daprmq-host-3",
+        "worker-3",
         "-app-port",
         "8080",
         "-dapr-http-port",
@@ -327,6 +331,7 @@ services:
       ]
     volumes:
       - "./dapr/components:/components"
+      - "./dapr/blobstore-data:/blobstore"
       - "./dapr/config:/dapr-config"
     ports:
       - "3505:3500" # Dapr HTTP port for host access
@@ -459,6 +464,19 @@ services:
       KAFKA_CLUSTERS_0_AUDIT_CONSOLEAUDITENABLED: "true"
       LOGGING_LEVEL_ROOT: "error"
       LOGGING_LEVEL_COM_PROVECTUS: "error"
+    networks:
+      - daprmq-network
+
+  ############################
+  # Azurite (Azure Blob Storage Emulator)
+  ############################
+  azurite:
+    container_name: azurite
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    command: ["azurite-blob", "--blobHost", "0.0.0.0", "--blobPort", "10000"]
+    restart: unless-stopped
+    ports:
+      - "10000:10000"
     networks:
       - daprmq-network
 

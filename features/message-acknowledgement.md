@@ -262,19 +262,19 @@ No acknowledgement required, items removed immediately.
 
 ```bash
 # Push an item
-curl -X POST "http://localhost:8000/queue/my-queue/push" \
+curl -X POST "http://localhost:8002/queue/my-queue/push" \
   -H "Content-Type: application/json" \
   -d '{"items": [{"item": {"task_id": 123, "action": "send_email"}, "priority": 1}]}'
 
 # Pop with acknowledgement
-curl -X POST "http://localhost:8000/queue/my-queue/pop" \
+curl -X POST "http://localhost:8002/queue/my-queue/pop" \
   -H "require_ack: true"
 # Response: {"items": [...], "lock_id": "abc123def456", ...}
 
 # Process the item...
 
 # Acknowledge completion
-curl -X POST "http://localhost:8000/queue/my-queue/acknowledge" \
+curl -X POST "http://localhost:8002/queue/my-queue/acknowledge" \
   -H "Content-Type: application/json" \
   -d '{"lock_id": "abc123def456"}'
 # Response: {"success": true, "items_acknowledged": 1}
@@ -284,12 +284,12 @@ curl -X POST "http://localhost:8000/queue/my-queue/acknowledge" \
 
 ```bash
 # First pop with ack
-curl -X POST "http://localhost:8000/queue/test/pop" \
+curl -X POST "http://localhost:8002/queue/test/pop" \
   -H "require_ack: true"
 # Response: {"locked": true, "lock_id": "xyz789", ...}
 
 # Second pop attempt (while locked)
-curl -X POST "http://localhost:8000/queue/test/pop" \
+curl -X POST "http://localhost:8002/queue/test/pop" \
   -H "require_ack: false"
 # Response (HTTP 423): {"message": "Queue is locked...", "lock_expires_at": ...}
 ```
@@ -298,7 +298,7 @@ curl -X POST "http://localhost:8000/queue/test/pop" \
 
 ```bash
 # Pop with short TTL
-curl -X POST "http://localhost:8000/queue/test/pop" \
+curl -X POST "http://localhost:8002/queue/test/pop" \
   -H "require_ack: true" \
   -H "ttl_seconds: 5"
 # Response: {"lock_id": "short123", "lock_expires_at": 1709139220.0}
@@ -306,13 +306,13 @@ curl -X POST "http://localhost:8000/queue/test/pop" \
 # Wait 6 seconds...
 
 # Try to acknowledge (too late)
-curl -X POST "http://localhost:8000/queue/test/acknowledge" \
+curl -X POST "http://localhost:8002/queue/test/acknowledge" \
   -H "Content-Type: application/json" \
   -d '{"lock_id": "short123"}'
 # Response (HTTP 410): {"success": false, "error_code": "LOCK_EXPIRED"}
 
 # Next pop returns the item again
-curl -X POST "http://localhost:8000/queue/test/pop" \
+curl -X POST "http://localhost:8002/queue/test/pop" \
   -H "require_ack: true"
 # Response: {"items": [...]}  # Original item returned
 ```
@@ -321,7 +321,7 @@ curl -X POST "http://localhost:8000/queue/test/pop" \
 
 ```bash
 # Regular pop (no acknowledgement)
-curl -X POST "http://localhost:8000/queue/test/pop" \
+curl -X POST "http://localhost:8002/queue/test/pop" \
   -H "require_ack: false"
 # Response: {"items": [...], "count": 5}
 # Items immediately removed, no lock created

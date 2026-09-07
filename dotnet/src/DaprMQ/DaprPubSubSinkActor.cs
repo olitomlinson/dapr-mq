@@ -224,10 +224,16 @@ public class DaprPubSubSinkActor : Actor, IDaprPubSubSinkActor, IRemindable
             {
                 try
                 {
-                    // Build message body with item, priority, lockId, lockExpiresAt
+                    // Build message body with item, priority, lockId, lockExpiresAt. Items whose
+                    // payload was offloaded to an object store are represented by an opaque claim
+                    // token rather than their raw ItemJson envelope, so the underlying blob
+                    // reference is never published - the endpoint fetches content itself via
+                    // GET /object/{token}.
                     var messageBody = new
                     {
-                        item = JsonDocument.Parse(item.ItemJson).RootElement,
+                        item = item.ObjectClaimToken != null
+                            ? (object)new { objectClaimToken = item.ObjectClaimToken, contentType = item.BlobContentType }
+                            : JsonDocument.Parse(item.ItemJson).RootElement,
                         item.Priority,
                         item.LockId,
                         item.LockExpiresAt

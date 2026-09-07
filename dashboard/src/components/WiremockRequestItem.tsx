@@ -1,6 +1,8 @@
 import type { WiremockRequest } from '../types/queue';
 import { PriorityBadge } from './PriorityBadge';
 import { LockInfo } from './LockInfo';
+import { API_BASE } from '../services/queueApi';
+import { isObjectClaim, withTruncatedClaimToken, truncateClaimTokensDeep } from '../utils/queueHelpers';
 import styles from './WiremockRequestItem.module.css';
 
 interface WiremockRequestItemProps {
@@ -17,14 +19,16 @@ export const WiremockRequestItem = ({ request, onAcknowledge, onDeadLetter, lock
   const formatBody = (body: string): string => {
     try {
       const parsed = JSON.parse(body);
-      return JSON.stringify(parsed, null, 2);
+      return JSON.stringify(truncateClaimTokensDeep(parsed), null, 2);
     } catch {
       return body;
     }
   };
 
-  // Check if this is a 202 response with parsed items (HTTP sink scenario)
-  const is202WithItems = request.response.status === 202 && request.parsedItems && request.parsedItems.length > 0;
+  // Show each item with lock/download controls whenever the request body parsed into items
+  // (HTTP sink scenario) - regardless of response status (200 auto-acknowledges, 202 defers ack,
+  // but both deliver the same item shape and both may include a downloadable object claim).
+  const hasParsedItems = request.parsedItems && request.parsedItems.length > 0;
 
   return (
     <div className={styles.requestItem}>
@@ -41,17 +45,23 @@ export const WiremockRequestItem = ({ request, onAcknowledge, onDeadLetter, lock
         </span>
       </div>
 
-      {/* For 202 responses with parsed items, show each item with lock controls */}
-      {is202WithItems ? (
+      {/* When the request body parsed into items, show each item with lock/download controls */}
+      {hasParsedItems ? (
         request.parsedItems!.map((parsedItem, index) => {
           // Merge lockStates with parsedItem data
           const lockState = parsedItem.lockId ? lockStates?.[parsedItem.lockId] : undefined;
+          const claim = isObjectClaim(parsedItem.item) ? parsedItem.item : null;
+          const downloadUrl = claim ? `${API_BASE}/object/${claim.objectClaimToken}` : undefined;
+          // A 200 OK response auto-acknowledges every delivered item server-side (see
+          // HttpSinkActor), so its lock is already gone - render as already-acknowledged rather
+          // than offering Acknowledge/Dead Letter buttons that would fail against a stale lock.
+          const isAutoAcknowledged = request.response.status === 200;
 
           return (
             <div key={index} style={{ marginTop: index > 0 ? '12px' : '8px' }}>
               {parsedItem.priority !== undefined && <PriorityBadge priority={parsedItem.priority} />}
               <pre className={styles.requestBody}>
-                {JSON.stringify(parsedItem.item, null, 2)}
+                {JSON.stringify(withTruncatedClaimToken(parsedItem.item), null, 2)}
               </pre>
               {parsedItem.lockId && (
                 <LockInfo
@@ -61,12 +71,13 @@ export const WiremockRequestItem = ({ request, onAcknowledge, onDeadLetter, lock
                     locked: true,
                     lockId: parsedItem.lockId,
                     lockExpiresAt: parsedItem.lockExpiresAt,
-                    acknowledged: lockState?.acknowledged,
+                    acknowledged: isAutoAcknowledged || lockState?.acknowledged,
                     deadLettered: lockState?.deadLettered,
                     dlqId: lockState?.dlqId,
                   }}
                   onAcknowledge={() => onAcknowledge?.(parsedItem.lockId!)}
                   onDeadLetter={() => onDeadLetter?.(parsedItem.lockId!)}
+                  downloadUrl={downloadUrl}
                 />
               )}
             </div>

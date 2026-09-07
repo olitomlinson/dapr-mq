@@ -11,6 +11,7 @@ public class DaprTestFixture : IAsyncLifetime
     public DaprTestEnvironment Environment { get; private set; } = null!;
     public HttpClient ApiClient => Environment.ApiClient;
     public HttpClient DaprSidecarClient => Environment.DaprSidecarClient;
+    public string BlobStoreDirectory => Environment.BlobStoreDirectory;
     public QueueActorHttpClient QueueActorHttpClient { get; private set; } = null!;
 
     /// <summary>

@@ -72,6 +72,9 @@ public record LockState
 public class QueueActor : Actor, IQueueActor, IRemindable
 {
     private readonly IQueueActorInvoker _actorInvoker;
+    private readonly IBlobReaperActorInvoker _blobReaperActorInvoker;
+    private readonly IObjectClaimTokenIssuer _objectClaimTokenIssuer;
+    private readonly BlobReapConfig _blobReapConfig;
 
     private const int MaxSegmentSize = 100;
     private const int MinLockTtlSeconds = 1;
@@ -81,9 +84,59 @@ public class QueueActor : Actor, IQueueActor, IRemindable
     private static bool IsQueueCorrupted(ActorMetadata metadata) =>
         !string.IsNullOrEmpty(metadata.ErrorMessage);
 
-    public QueueActor(ActorHost host, IQueueActorInvoker queueActorInvoker) : base(host)
+    public QueueActor(
+        ActorHost host,
+        IQueueActorInvoker queueActorInvoker,
+        IBlobReaperActorInvoker blobReaperActorInvoker,
+        IObjectClaimTokenIssuer objectClaimTokenIssuer,
+        BlobReapConfig blobReapConfig) : base(host)
     {
         _actorInvoker = queueActorInvoker ?? throw new ArgumentNullException(nameof(queueActorInvoker));
+        _blobReaperActorInvoker = blobReaperActorInvoker ?? throw new ArgumentNullException(nameof(blobReaperActorInvoker));
+        _objectClaimTokenIssuer = objectClaimTokenIssuer ?? throw new ArgumentNullException(nameof(objectClaimTokenIssuer));
+        _blobReapConfig = blobReapConfig ?? throw new ArgumentNullException(nameof(blobReapConfig));
+    }
+
+    /// <summary>
+    /// If itemJson is a blob-reference envelope, schedules deletion of the underlying blob on
+    /// BlobReaperActor using the configurable backstop TTL. Called at whichever point the item
+    /// becomes irrecoverably removed from queue state: immediately after dequeue for plain Pop,
+    /// or on Acknowledge for PopWithAck. This is a backstop only - if the issued ObjectClaimToken
+    /// is redeemed via the download endpoint, deletion gets postponed further from that point.
+    /// </summary>
+    private async Task ScheduleBlobReapingIfNeeded(string? itemJson)
+    {
+        if (itemJson == null || !BlobReferenceEnvelope.TryParse(itemJson, out var blobReference))
+        {
+            return;
+        }
+
+        // Blob references contain '/' (e.g. "prefix/objectId"), which breaks Dapr's actor HTTP
+        // routing if used directly as an ActorId (the id is embedded as a URL path segment).
+        // Derive a stable, slash-free id instead, so repeated calls for the same blob target the
+        // same reaper actor instance rather than fanning out unboundedly.
+        var reaperActorId = new ActorId(HashBlobReference(blobReference!));
+        try
+        {
+            await _blobReaperActorInvoker.InvokeMethodAsync<ScheduleDeletionRequest>(
+                reaperActorId,
+                "ScheduleDeletion",
+                new ScheduleDeletionRequest
+                {
+                    BlobReference = blobReference!,
+                    DelaySeconds = _blobReapConfig.BackstopSeconds
+                });
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to schedule blob reaping for {BlobReference}", blobReference);
+        }
+    }
+
+    private static string HashBlobReference(string blobReference)
+    {
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(blobReference));
+        return Convert.ToHexString(hash);
     }
 
     /// <summary>
@@ -395,11 +448,22 @@ public class QueueActor : Actor, IQueueActor, IRemindable
             }
 
             // Add the popped item
+            var isBlobRef = BlobReferenceEnvelope.TryParseEnvelope(itemJson!, out var envelope);
             items.Add(new PopItem
             {
                 ItemJson = itemJson!,
-                Priority = priority
+                Priority = priority,
+                ObjectClaimToken = isBlobRef ? _objectClaimTokenIssuer.Issue(envelope!.BlobReference, envelope.ContentType) : null
             });
+
+            // Plain Pop has no lock/ack step - this is the sole finalization point for the item,
+            // so schedule the backstop blob reap immediately rather than leaking the offloaded
+            // object. The claim token issued above lets the caller redeem it later, which
+            // postpones deletion further out from the download endpoint.
+            if (isBlobRef)
+            {
+                await ScheduleBlobReapingIfNeeded(itemJson);
+            }
         }
 
         // Commit all changes atomically
@@ -750,13 +814,18 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                 newLockIds.Add(lockId);
 
                 // Add to response items
+                // Note: unlike plain Pop, blob reaping is NOT scheduled here - the item is
+                // recoverable via lock expiry/redelivery until Acknowledge finalizes it.
+                var isItemBlobRef = BlobReferenceEnvelope.TryParseEnvelope(itemJson, out var blobEnvelope);
                 lockedItems.Add(new PopWithAckItem
                 {
                     ItemJson = itemJson,
                     Priority = priority,
                     LockId = lockId,
                     LockExpiresAt = lockExpiresAt,
-                    Sink = sink
+                    Sink = sink,
+                    ObjectClaimToken = isItemBlobRef ? _objectClaimTokenIssuer.Issue(blobEnvelope!.BlobReference, blobEnvelope.ContentType) : null,
+                    BlobContentType = isItemBlobRef ? blobEnvelope!.ContentType : null
                 });
 
                 Logger.LogDebug("Created lock {LockId} ({Index}/{Count}) with TTL {TtlSeconds}s", lockId, i + 1, count, ttlSeconds);
@@ -873,6 +942,10 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                 // Reminder might not exist or scheduler unavailable - this is OK
                 Logger.LogDebug(ex, "Failed to unregister reminder for lock {LockId}", lockId);
             }
+
+            // Acknowledge is the finalization point for PopWithAck items - if the item's payload
+            // was offloaded to an object store, schedule deletion of the underlying blob.
+            await ScheduleBlobReapingIfNeeded(lockState.Value.ItemJson);
 
             Logger.LogDebug($"Acknowledged lock {lockId}, 1 item processed");
 

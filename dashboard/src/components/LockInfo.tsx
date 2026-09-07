@@ -5,9 +5,10 @@ interface LockInfoProps {
   message: PoppedMessage;
   onAcknowledge: () => void;
   onDeadLetter: () => void;
+  downloadUrl?: string;
 }
 
-export const LockInfo = ({ message, onAcknowledge, onDeadLetter }: LockInfoProps) => {
+export const LockInfo = ({ message, onAcknowledge, onDeadLetter, downloadUrl }: LockInfoProps) => {
   const { lockId, lockExpiresAt, acknowledged, deadLettered, dlqId } = message;
 
   if (!lockId) return null;
@@ -18,22 +19,34 @@ export const LockInfo = ({ message, onAcknowledge, onDeadLetter }: LockInfoProps
     ? `${styles.lockInfo} ${styles.deadlettered}`
     : styles.lockInfo;
 
+  const downloadLink = downloadUrl && (
+    <a href={downloadUrl} title={downloadUrl} download className={styles.downloadBtn}>
+      ⬇ Download
+    </a>
+  );
+
   return (
     <div className={lockInfoClass}>
       {acknowledged ? (
-        <div>✓ <strong>Message acknowledged successfully</strong></div>
+        <>
+          <div>✓ <strong>Message acknowledged successfully</strong></div>
+          {downloadLink && <div className={styles.lockActions}>{downloadLink}</div>}
+        </>
       ) : deadLettered ? (
-        <div>
-          ✕ <strong>Message moved to dead-letter queue </strong>
-          <a
-            href={`?queue_name=${dlqId}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className={styles.dlqLink}
-          >
-            ({dlqId})
-          </a>
-        </div>
+        <>
+          <div>
+            ✕ <strong>Message moved to dead-letter queue </strong>
+            <a
+              href={`?queue_name=${dlqId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={styles.dlqLink}
+            >
+              ({dlqId})
+            </a>
+          </div>
+          {downloadLink && <div className={styles.lockActions}>{downloadLink}</div>}
+        </>
       ) : (
         <>
           🔒 <strong>Locked</strong> - Requires acknowledgement
@@ -42,6 +55,7 @@ export const LockInfo = ({ message, onAcknowledge, onDeadLetter }: LockInfoProps
             <div>Expires: {new Date(lockExpiresAt * 1000).toLocaleString()}</div>
           )}
           <div className={styles.lockActions}>
+            {downloadLink}
             <button className={styles.ackBtn} onClick={onAcknowledge}>
               ✓ Acknowledge
             </button>
