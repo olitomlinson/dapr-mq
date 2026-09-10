@@ -38,9 +38,10 @@
       <div class="peel-flap"></div>
     </div>
     <div class="container">
-      <h1>A Lightweight, Priority-Aware<br><span class="gradient-text">Message Queue</span> — Powered by Dapr
+      <h1>An Open Source<br><span class="gradient-text">Distributed Message Queue</span> — Powered by
+        <img src="assets/logowhite.webp" alt="Dapr" class="hero-dapr-logo">
       </h1>
-      <p class="lead">Runs anywhere
+      <p class="lead">DaprMQ Runs anywhere
         Dapr runs: any Kubernetes cluster, VM, or local Docker Compose setup with a Dapr 1.18+ installation. Two API
         endpoints, no
         noisy neighbours, priority lanes, and dead-lettering built in.</p>
@@ -67,7 +68,7 @@
         <div class="feature-card glass">
           <div class="icon">&#128225;</div>
           <h3>HTTP and gRPC API Surface</h3>
-          <p>Call daprMQ over HTTP or gRPC, or go direct via the Dapr Actor SDK in JavaScript, Python, Java, .NET, or Go.</p>
+          <p>Call daprMQ over simple HTTP or gRPC interfaces</p>
         </div>
         <div class="feature-card glass">
           <div class="icon">&#128220;</div>
@@ -107,13 +108,14 @@
         </div>
         <div class="feature-card glass">
           <div class="icon">&#128193;</div>
-          <h3>Segmented Storage</h3>
-          <p>Large queues split into fixed-size segments so memory and network usage stay bounded.</p>
+          <h3>Optimised Memory Strategy</h3>
+          <p>Queues split into fixed-size segments so memory and network usage stay bounded.</p>
         </div>
         <div class="feature-card glass">
           <div class="icon">&#128206;</div>
           <h3>Large Object Support</h3>
-          <p>Push oversized payloads to external object storage and pop lightweight claim tokens — queue state never
+          <p>Push oversized payloads to external object storage (S3, Azure Blob Storage) and pop lightweight claim
+            tokens — queue state never
             carries the bytes.</p>
         </div>
         <div class="feature-card glass">
@@ -149,28 +151,33 @@
         <table class="compare-table">
           <tr>
             <th>Dimension</th>
-            <th>Kafka</th>
             <th class="highlight">daprMQ</th>
+            <th>Kafka</th>
           </tr>
           <tr>
             <td>Ordering</td>
-            <td>Per partition</td>
             <td class="highlight">Per queue</td>
+            <td>Per partition</td>
           </tr>
           <tr>
             <td>Priority</td>
+            <td class="highlight">Built-in</td>
             <td>No native support</td>
-            <td class="highlight">Built-in</td>
           </tr>
           <tr>
-            <td>Dead-letter</td>
+            <td>Dead-lettering</td>
+            <td class="highlight">Built-in</td>
             <td>Application managed</td>
-            <td class="highlight">Built-in</td>
           </tr>
           <tr>
-            <td>Multi-tenant isolation</td>
-            <td>Partition sharing</td>
-            <td class="highlight">Per-tenant queue</td>
+            <td>Hosting model</td>
+            <td class="highlight">Just Dapr + your state store</td>
+            <td>Dedicated broker cluster to run &amp; patch</td>
+          </tr>
+          <tr>
+            <td>Portability</td>
+            <td class="highlight">Any Dapr-supported state store</td>
+            <td>Self-hosted or vendor-managed Kafka</td>
           </tr>
         </table>
       </div>
@@ -179,28 +186,33 @@
         <table class="compare-table">
           <tr>
             <th>Dimension</th>
-            <th>RabbitMQ</th>
             <th class="highlight">daprMQ</th>
+            <th>RabbitMQ</th>
           </tr>
           <tr>
             <td>Ordering</td>
-            <td>Per-queue FIFO</td>
             <td class="highlight">Per-queue FIFO</td>
+            <td>Per-queue FIFO</td>
           </tr>
           <tr>
             <td>Priority</td>
-            <td>Plugin-based priority queues</td>
             <td class="highlight">Native, unbounded priority lanes</td>
+            <td>Plugin-based priority queues</td>
+          </tr>
+          <tr>
+            <td>Dead-lettering</td>
+            <td class="highlight">Built-in</td>
+            <td>Manual exchange/queue wiring</td>
           </tr>
           <tr>
             <td>Hosting model</td>
+            <td class="highlight">Just Dapr + your state store</td>
             <td>Dedicated broker cluster to run &amp; patch</td>
-            <td class="highlight">Just dapr + a dapr state store</td>
           </tr>
           <tr>
-            <td>Horizontal scaling</td>
-            <td>Clustering / quorum queues</td>
-            <td class="highlight">Automatic via Dapr actor placement</td>
+            <td>Portability</td>
+            <td class="highlight">Any Dapr-supported state store</td>
+            <td>Self-hosted or vendor-managed RabbitMQ</td>
           </tr>
         </table>
       </div>
@@ -209,28 +221,33 @@
         <table class="compare-table">
           <tr>
             <th>Dimension</th>
-            <th>AWS SQS/SNS</th>
             <th class="highlight">daprMQ</th>
+            <th>AWS SQS/SNS</th>
           </tr>
           <tr>
             <td>Ordering</td>
-            <td>FIFO capped per message-group without batching</td>
             <td class="highlight">Bound only by your state store</td>
+            <td>FIFO capped per message-group without batching</td>
           </tr>
           <tr>
             <td>Priority</td>
-            <td>No native support</td>
             <td class="highlight">Built-in</td>
+            <td>No native support</td>
           </tr>
           <tr>
-            <td>Dead-letter</td>
-            <td>Separate queue + redrive policy</td>
+            <td>Dead-lettering</td>
             <td class="highlight">Built-in</td>
+            <td>Separate queue + redrive policy</td>
+          </tr>
+          <tr>
+            <td>Hosting model</td>
+            <td class="highlight">Just Dapr + your state store</td>
+            <td>Fully managed AWS service</td>
           </tr>
           <tr>
             <td>Portability</td>
-            <td>Locked to AWS</td>
             <td class="highlight">Any Dapr-supported state store</td>
+            <td>Locked to AWS</td>
           </tr>
         </table>
       </div>
@@ -239,28 +256,33 @@
         <table class="compare-table">
           <tr>
             <th>Dimension</th>
-            <th>Azure Service Bus</th>
             <th class="highlight">daprMQ</th>
+            <th>Azure Service Bus</th>
           </tr>
           <tr>
             <td>Ordering</td>
-            <td>Requires sessions for guaranteed FIFO</td>
             <td class="highlight">FIFO by default, per queue</td>
+            <td>Requires sessions for guaranteed FIFO</td>
           </tr>
           <tr>
             <td>Priority</td>
-            <td>No native support</td>
             <td class="highlight">Built-in</td>
+            <td>No native support</td>
           </tr>
           <tr>
-            <td>Cost model</td>
-            <td>Namespace + tier pricing</td>
-            <td class="highlight">Just your existing state store cost</td>
+            <td>Dead-lettering</td>
+            <td class="highlight">Built-in</td>
+            <td>Built-in</td>
+          </tr>
+          <tr>
+            <td>Hosting model</td>
+            <td class="highlight">Just Dapr + your state store</td>
+            <td>Namespace + tier pricing, fully managed</td>
           </tr>
           <tr>
             <td>Portability</td>
+            <td class="highlight">Any Dapr-supported state store</td>
             <td>Azure only</td>
-            <td class="highlight">Cloud-agnostic via Dapr</td>
           </tr>
         </table>
       </div>
@@ -304,6 +326,10 @@
       <h2 class="section-title">Built on Dapr Virtual Actors</h2>
       <p class="section-sub">Each queue is a Dapr Actor — giving it horizontal scaling, single-threaded consistency, and
         persistence for free.</p>
+      <div class="showcase-frame glass" style="margin-bottom: var(--spacing-3xl);">
+        <img src="assets/architecture-diagram.png"
+          alt="daprMQ architecture diagram showing producer and consumer apps talking to daprMQ over HTTP/gRPC, backed by a Dapr state store such as PostgreSQL, Redis, or Cosmos DB">
+      </div>
       <div class="flow">
         <div class="flow-step glass">
           <div class="n">1</div>
