@@ -17,4 +17,12 @@ public static class ActorMethodNames
     public const string UninitializeDaprPubSubSink = "UninitializeDaprPubSubSink";
 
     public const string TestUnsafeUnload = "TestUnsafeUnload";
+
+    public const string Publish = "Publish";
+    public const string Subscribe = "Subscribe";
+    public const string Unsubscribe = "Unsubscribe";
+    public const string ListSubscribers = "ListSubscribers";
+    public const string GetPublishStatus = "GetPublishStatus";
+    public const string ResetCircuitBreaker = "ResetCircuitBreaker";
+    public const string GetCircuitBreakerStatus = "GetCircuitBreakerStatus";
 }

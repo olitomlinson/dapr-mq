@@ -7,10 +7,14 @@ import { PopSection } from './components/PopSection';
 import { MessagesList } from './components/MessagesList';
 import { ErrorModal } from './components/ErrorModal';
 import { RegisterSinkModal } from './components/RegisterSinkModal';
+import TopicApp from './TopicApp';
 import { generateQueueId } from './utils/queueHelpers';
+import { getInitialMode, updateModeInUrl, type DashboardMode } from './utils/modeHelpers';
 import './styles/global.css';
 
 function App() {
+  const [mode, setMode] = useState<DashboardMode>(getInitialMode);
+
   const [queueId, setQueueId] = useState(() => {
     const params = new URLSearchParams(window.location.search);
     return params.get('queue_name') || generateQueueId();
@@ -58,6 +62,11 @@ function App() {
     setQueueId(newQueueId);
   };
 
+  const handleModeChange = (newMode: DashboardMode) => {
+    setMode(newMode);
+    updateModeInUrl(newMode);
+  };
+
   const handleRegisterSinkClick = () => {
     setIsEditMode(false);
     setShowSinkModal(true);
@@ -76,8 +85,25 @@ function App() {
 
   const showPopSection = messagesPushed > 0;
 
+  const modeToggle = (
+    <div style={{ maxWidth: '1400px', margin: '0 auto 1rem', display: 'flex', gap: '0.5rem' }}>
+      <button onClick={() => handleModeChange('queue')} disabled={mode === 'queue'}>Queue</button>
+      <button onClick={() => handleModeChange('topic')} disabled={mode === 'topic'}>Topic</button>
+    </div>
+  );
+
+  if (mode === 'topic') {
+    return (
+      <>
+        {modeToggle}
+        <TopicApp />
+      </>
+    );
+  }
+
   return (
     <>
+      {modeToggle}
       <div className="container">
         <h1>DaprMQ Dashboard</h1>
 

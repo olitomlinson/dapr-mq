@@ -2,7 +2,7 @@
 
 Complete reference for the DaprMQ REST API, exposed by the ApiServer at `http://localhost:8002` (adjust host/port for your deployment).
 
-All endpoints are scoped to a queue via `{queueId}` in the path — each distinct `queueId` maps to its own `QueueActor` instance.
+Most endpoints are scoped to a queue via `{queueId}` in the path — each distinct `queueId` maps to its own `QueueActor` instance. Topic endpoints are scoped to `{topicId}`, mapping to a `TopicActor` instance that fans out to per-subscriber queues (see [Topics](#topics)).
 
 ## Table of Contents
 
@@ -13,6 +13,7 @@ All endpoints are scoped to a queue via `{queueId}` in the path — each distinc
 - [Extend Lock](#extend-lock)
 - [Dead Letter](#dead-letter)
 - [HTTP Sink](#http-sink)
+- [Topics](#topics)
 - [Error Codes](#error-codes)
 
 ---
@@ -376,6 +377,116 @@ curl -o report.pdf http://localhost:8002/object/eyJhbGciOiJIUzI1NiIs...
 A `200 OK` response acknowledges blob-reference items the same as inline ones — the sink doesn't wait for you to download the object first. That means the underlying blob's cleanup clock (the backstop reap TTL, scheduled at `Acknowledge`) starts ticking as soon as the sink acknowledges, not when you fetch it. Download promptly via `GET /object/{token}`; a successful download extends the deletion window further (see [cleanup lifecycle](#cleanup-lifecycle)) but a very slow or never-attempted fetch risks the object having already been reaped.
 
 If you need more processing time before committing to acknowledgement, use `202 Accepted` instead of `200 OK` — that defers the ack entirely (see the table above), giving you the full `lockTtlSeconds` window to fetch the object and call `acknowledge` yourself. `extend-lock`/`deadletter` also work against the same `lockId` in that case.
+
+---
+
+## Topics
+
+Fan-out pub/sub: publishing to a topic delivers the item to every subscriber's own queue. Each subscriber gets full FIFO/lock/DLQ semantics via the existing queue API (Pop/PopWithAck/Acknowledge/ExtendLock), unmodified — `Subscribe` just tells you which `queueId` was provisioned for you. See [ARCHITECTURE.md](ARCHITECTURE.md#topics-pubsub) for the fan-out design.
+
+Push delivery is HTTP-sink only (Dapr-pubsub sinks are deprecated and not supported for topic subscriptions) — either pass `httpSink` to `Subscribe` to register it in the same call, or register one afterwards against the returned `queueActorId` via the existing [HTTP Sink](#http-sink) endpoints.
+
+**Topics are created on demand — there is no separate create-topic call.** `{topicId}` maps to a Dapr virtual actor: the first request against a given `{topicId}` (`Subscribe` or `Publish`) activates it automatically, initializing empty topic state if it doesn't already exist. Same behavior as `{queueId}` for the queue endpoints above - just start calling `Subscribe`/`Publish` with the id you want.
+
+### Publish
+
+```
+POST /topic/{topicId}/publish
+Content-Type: application/json
+```
+
+```json
+{ "items": [{ "item": { "task": "send_email" }, "priority": 0 }] }
+```
+
+Async accept — relay to subscribers happens out of band. Not a delivery receipt.
+
+**Response — `202 Accepted`**
+
+```json
+{ "accepted": true, "publishId": "3f9a...", "sequence": 0 }
+```
+
+### Subscribe
+
+```
+POST /topic/{topicId}/subscribers/{subscriberId}
+Content-Type: application/json
+```
+
+Registers a subscriber and provisions its queue (`{topicId}-sub-{subscriberId}`). Only receives items published after this call — not a replay log.
+
+**Body** — optional; omit entirely for a pull-only subscription.
+
+```json
+{ "httpSink": { "url": "https://example.com/webhook", "maxConcurrency": 10, "lockTtlSeconds": 30 } }
+```
+
+`httpSink` registers push delivery on the provisioned queue in the same call — same fields and validation as [HTTP Sink Register](#register), `maxConcurrency`/`lockTtlSeconds` default to `5`/`30` if omitted. If sink registration itself fails after the subscription is created (e.g. the sink actor is transiently unreachable), `Subscribe` still succeeds — the subscription is valid either way, and a sink can always be registered afterwards via `POST /queue/{queueActorId}/sink/http/register`.
+
+**Response — `201 Created`**
+
+```json
+{ "success": true, "queueActorId": "my-topic-sub-worker-1" }
+```
+
+`400 Bad Request` if `httpSink` is present but invalid (bad URL, `maxConcurrency`/`lockTtlSeconds` out of range). `409 Conflict` if `subscriberId` is already subscribed.
+
+### Unsubscribe
+
+```
+DELETE /topic/{topicId}/subscribers/{subscriberId}
+```
+
+Removes the subscriber from future publishes. Does **not** delete the subscriber's provisioned queue or its contents.
+
+**Response — `200 OK`** — `{ "success": true }`. `404 Not Found` if not currently subscribed.
+
+### List Subscribers
+
+```
+GET /topic/{topicId}/subscribers
+```
+
+**Response — `200 OK`** — `{ "subscriberIds": ["worker-1", "worker-2"] }`
+
+### Publish Status
+
+```
+GET /topic/{topicId}/publish/{publishId}
+```
+
+Observability aid for in-flight relay, not a permanent audit log — becomes `404` once the publish's items have been fully delivered and reaped from the topic's internal log.
+
+**Response — `200 OK`**
+
+```json
+{ "complete": false, "targetSubscriberIds": ["worker-1", "worker-2"], "deliveredSubscriberIds": ["worker-1"] }
+```
+
+### Reset Circuit Breaker
+
+```
+POST /topic/{topicId}/subscribers/{subscriberId}/reset-circuit-breaker
+```
+
+A subscriber whose queue `Push` fails continuously for an hour is blacklisted and stops consuming relay resources. This is the only way to bring it back — no automatic recovery. Safe to call on a healthy subscriber (no-op).
+
+**Response — `200 OK`** — `{ "success": true }`. `404 Not Found` if `subscriberId` isn't currently subscribed.
+
+### Circuit Breaker Status
+
+```
+GET /topic/{topicId}/subscribers/{subscriberId}/circuit-breaker
+```
+
+**Response — `200 OK`**
+
+```json
+{ "consecutiveFailures": 3, "firstFailureAt": 1780000000.0, "nextRetryAt": 1780000008.0, "blacklisted": false }
+```
+
+`404 Not Found` if the subscriber currently has no circuit breaker state (i.e. it's healthy).
 
 ---
 

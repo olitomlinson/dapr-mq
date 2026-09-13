@@ -3,11 +3,36 @@ import { queueApi, QueueApiError, createApiError } from '../services/queueApi';
 import { generatePayload } from '../utils/queueHelpers';
 import type { PoppedMessage, ApiError, QueuePayload, SinkConfig, RegisterSinkRequest } from '../types/queue';
 
+interface StoredPoppedState {
+  poppedMessages: PoppedMessage[];
+  messagesPopped: number;
+}
+
+const poppedMessagesStorageKey = (queueId: string) => `daprmq:poppedMessages:${queueId}`;
+
+/** Popped messages are kept in localStorage per queueId, so switching away and back (e.g.
+ * clicking between a topic's subscribers) or reloading the page doesn't lose them - they were
+ * already removed from the real queue, so the dashboard is the only place they still exist. */
+const loadStoredPoppedState = (queueId: string): StoredPoppedState => {
+  if (!queueId) return { poppedMessages: [], messagesPopped: 0 };
+  try {
+    const raw = localStorage.getItem(poppedMessagesStorageKey(queueId));
+    if (!raw) return { poppedMessages: [], messagesPopped: 0 };
+    const parsed = JSON.parse(raw);
+    return {
+      poppedMessages: Array.isArray(parsed.poppedMessages) ? parsed.poppedMessages : [],
+      messagesPopped: typeof parsed.messagesPopped === 'number' ? parsed.messagesPopped : 0,
+    };
+  } catch {
+    return { poppedMessages: [], messagesPopped: 0 };
+  }
+};
+
 export const useQueueOperations = (queueId: string) => {
   const [currentPayload, setCurrentPayload] = useState<QueuePayload>(() => generatePayload());
   const [messagesPushed, setMessagesPushed] = useState(0);
-  const [messagesPopped, setMessagesPopped] = useState(0);
-  const [poppedMessages, setPoppedMessages] = useState<PoppedMessage[]>([]);
+  const [messagesPopped, setMessagesPopped] = useState(() => loadStoredPoppedState(queueId).messagesPopped);
+  const [poppedMessages, setPoppedMessages] = useState<PoppedMessage[]>(() => loadStoredPoppedState(queueId).poppedMessages);
   const [isPushing, setIsPushing] = useState(false);
   const [isPopping, setIsPopping] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
@@ -16,17 +41,29 @@ export const useQueueOperations = (queueId: string) => {
   const [isRegisteringSink, setIsRegisteringSink] = useState(false);
   const [wiremockLockStates, setWiremockLockStates] = useState<Record<string, { acknowledged?: boolean; deadLettered?: boolean; dlqId?: string }>>({});
 
-  // Reset state when queue ID changes
+  // Reset state when queue ID changes - popped messages/count are restored from localStorage
+  // instead of cleared, so switching queues doesn't lose what was already popped from each.
   useEffect(() => {
+    const stored = loadStoredPoppedState(queueId);
     setMessagesPushed(0);
-    setMessagesPopped(0);
-    setPoppedMessages([]);
+    setMessagesPopped(stored.messagesPopped);
+    setPoppedMessages(stored.poppedMessages);
     setCurrentPayload(generatePayload());
     setError(null);
     setSinkRegistered(false);
     setSinkConfig(null);
     setWiremockLockStates({});
   }, [queueId]);
+
+  // Persist on every change so acknowledge/dead-letter updates are kept too.
+  useEffect(() => {
+    if (!queueId) return;
+    try {
+      localStorage.setItem(poppedMessagesStorageKey(queueId), JSON.stringify({ poppedMessages, messagesPopped }));
+    } catch {
+      // best-effort - private browsing, storage disabled, or quota exceeded are all fine to ignore
+    }
+  }, [queueId, poppedMessages, messagesPopped]);
 
   const pushMessage = async (priority: number, payload: QueuePayload) => {
     setIsPushing(true);

@@ -89,7 +89,8 @@ var actorConfig = new
     QueueActorTypeName = builder.Configuration.GetValue("QUEUE_ACTOR_TYPE_NAME", "QueueActor"),
     HttpSinkActorTypeName = builder.Configuration.GetValue("HTTP_SINK_ACTOR_TYPE_NAME", "HttpSinkActor"),
     DaprPubSubSinkActorTypeName = builder.Configuration.GetValue("DAPR_PUBSUB_SINK_ACTOR_TYPE_NAME", "DaprPubSubSinkActor"),
-    BlobReaperActorTypeName = builder.Configuration.GetValue("BLOB_REAPER_ACTOR_TYPE_NAME", "BlobReaperActor")
+    BlobReaperActorTypeName = builder.Configuration.GetValue("BLOB_REAPER_ACTOR_TYPE_NAME", "BlobReaperActor"),
+    TopicActorTypeName = builder.Configuration.GetValue("TOPIC_ACTOR_TYPE_NAME", "TopicActor")
 };
 
 // builder.Services.AddSingleton(actorConfig);
@@ -117,6 +118,15 @@ builder.Services.AddSingleton<IBlobReaperActorInvoker>(sp =>
     new BlobReaperActorInvoker(
         sp.GetRequiredService<Dapr.Actors.Client.IActorProxyFactory>(),
         actorConfig.BlobReaperActorTypeName));
+
+// Register TopicActor invoker (dedicated invoker for TopicActor operations)
+builder.Services.AddSingleton<ITopicActorInvoker>(sp =>
+    new TopicActorInvoker(
+        sp.GetRequiredService<Dapr.Actors.Client.IActorProxyFactory>(),
+        actorConfig.TopicActorTypeName));
+
+// Register TopicActor tunables (global defaults - see TopicActorConfig)
+builder.Services.AddSingleton(new TopicActorConfig());
 
 // Register object store used to offload large item payloads (backed by a Dapr output binding)
 var objectStoreConfig = new ObjectStoreConfig
@@ -167,6 +177,7 @@ if (registerActors)
         options.Actors.RegisterActor<DaprMQ.HttpSinkActor>(actorConfig.HttpSinkActorTypeName);
         options.Actors.RegisterActor<DaprMQ.DaprPubSubSinkActor>(actorConfig.DaprPubSubSinkActorTypeName);
         options.Actors.RegisterActor<DaprMQ.BlobReaperActor>(actorConfig.BlobReaperActorTypeName);
+        options.Actors.RegisterActor<DaprMQ.TopicActor>(actorConfig.TopicActorTypeName);
 
         // Configure actor runtime settings
         options.ActorIdleTimeout = TimeSpan.FromSeconds(60);

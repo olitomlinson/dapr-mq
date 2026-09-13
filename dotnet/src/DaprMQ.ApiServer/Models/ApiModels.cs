@@ -128,3 +128,49 @@ public record ApiSinkConfig(
 public record ApiDaprPubSubSinkConfig(
     Dictionary<string, string>? Metadata
 );
+
+// Topic (pub/sub) models
+
+public record ApiPublishRequest(
+    List<ApiPushItem> Items
+);
+
+public record ApiPublishResponse(
+    bool Accepted,
+    string PublishId,
+    long Sequence
+);
+
+public record ApiSubscribeRequest(
+    ApiRegisterHttpSinkRequest? HttpSink = null
+);
+
+public record ApiSubscribeResponse(
+    bool Success,
+    string QueueActorId
+);
+
+public record ApiUnsubscribeResponse(
+    bool Success
+);
+
+public record ApiListSubscribersResponse(
+    List<string> SubscriberIds
+);
+
+public record ApiPublishStatusResponse(
+    bool Complete,
+    List<string> TargetSubscriberIds,
+    List<string> DeliveredSubscriberIds
+);
+
+public record ApiResetCircuitBreakerResponse(
+    bool Success
+);
+
+public record ApiCircuitBreakerStatusResponse(
+    int ConsecutiveFailures,
+    double? FirstFailureAt,
+    double? NextRetryAt,
+    bool Blacklisted
+);

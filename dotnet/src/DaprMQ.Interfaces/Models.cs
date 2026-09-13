@@ -479,3 +479,138 @@ public record PostponeDeletionRequest
     /// </summary>
     public required int NewDelaySeconds { get; init; }
 }
+
+/// <summary>
+/// Request model for publishing items to a topic.
+/// </summary>
+public record PublishRequest
+{
+    public List<PushItem> Items { get; init; } = new();
+}
+
+/// <summary>
+/// Response model for a Publish operation. Async accept, not a delivery receipt.
+/// </summary>
+public record PublishResponse
+{
+    public bool Accepted { get; init; }
+    public required string PublishId { get; init; }
+    public required long Sequence { get; init; }
+    public string? ErrorMessage { get; init; }
+}
+
+/// <summary>
+/// Request model for subscribing to a topic. Optionally registers a push (HTTP sink) delivery
+/// on the subscriber's provisioned queue in the same call - equivalent to calling Subscribe then
+/// separately registering a sink via the existing queue sink endpoints.
+/// </summary>
+public record SubscribeRequest
+{
+    public required string SubscriberId { get; init; }
+    public TopicHttpSinkConfig? HttpSink { get; init; }
+}
+
+/// <summary>
+/// HTTP sink configuration for a topic subscription. Mirrors InitializeHttpSinkRequest, minus
+/// QueueActorId - TopicActor supplies that itself from the subscription it just provisioned.
+/// </summary>
+public record TopicHttpSinkConfig
+{
+    public required string Url { get; init; }
+    public int MaxConcurrency { get; init; } = 5;
+    public int LockTtlSeconds { get; init; } = 30;
+}
+
+/// <summary>
+/// Response model for a Subscribe operation.
+/// </summary>
+public record SubscribeResponse
+{
+    public bool Success { get; init; }
+    public required string QueueActorId { get; init; }
+    public string? ErrorCode { get; init; }
+    public string? ErrorMessage { get; init; }
+}
+
+/// <summary>
+/// Request model for unsubscribing from a topic.
+/// </summary>
+public record UnsubscribeRequest
+{
+    public required string SubscriberId { get; init; }
+}
+
+/// <summary>
+/// Response model for an Unsubscribe operation.
+/// </summary>
+public record UnsubscribeResponse
+{
+    public bool Success { get; init; }
+    public string? ErrorCode { get; init; }
+    public string? ErrorMessage { get; init; }
+}
+
+/// <summary>
+/// Response model listing a topic's current subscribers.
+/// </summary>
+public record ListSubscribersResponse
+{
+    public List<string> SubscriberIds { get; init; } = new();
+}
+
+/// <summary>
+/// Request model for reading a publish's relay status.
+/// </summary>
+public record GetPublishStatusRequest
+{
+    public required string PublishId { get; init; }
+}
+
+/// <summary>
+/// Response model describing a publish's relay status across its target subscribers.
+/// </summary>
+public record PublishStatusResponse
+{
+    public bool Found { get; init; }
+    public bool Complete { get; init; }
+    public List<string> TargetSubscriberIds { get; init; } = new();
+    public List<string> DeliveredSubscriberIds { get; init; } = new();
+}
+
+/// <summary>
+/// Request model for resetting a subscriber's circuit breaker.
+/// </summary>
+public record ResetCircuitBreakerRequest
+{
+    public required string SubscriberId { get; init; }
+}
+
+/// <summary>
+/// Response model for a ResetCircuitBreaker operation.
+/// </summary>
+public record ResetCircuitBreakerResponse
+{
+    public bool Success { get; init; }
+    public string? ErrorCode { get; init; }
+    public string? ErrorMessage { get; init; }
+}
+
+/// <summary>
+/// Request model for reading a subscriber's circuit breaker status.
+/// </summary>
+public record GetCircuitBreakerStatusRequest
+{
+    public required string SubscriberId { get; init; }
+}
+
+/// <summary>
+/// Response model describing a subscriber's circuit breaker status.
+/// </summary>
+public record CircuitBreakerStatusResponse
+{
+    public bool Found { get; init; }
+    public int ConsecutiveFailures { get; init; }
+    public double? FirstFailureAt { get; init; }
+    public double? NextRetryAt { get; init; }
+    public bool Blacklisted { get; init; }
+}

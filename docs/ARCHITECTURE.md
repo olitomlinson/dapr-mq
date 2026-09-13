@@ -372,6 +372,38 @@ curl -X POST http://localhost:8002/queue/queue-1/push
 - HTTP overhead
 - Requires API server
 
+## Topics (Pub/Sub)
+
+`TopicActor` adds fan-out on top of `QueueActor` delegation: publishing to a topic makes an item
+available to every subscriber, and each subscriber is backed by its own independent `QueueActor`
+instance - so every consumer group gets full FIFO/lock/DLQ semantics for free, with no new
+queue-storage logic. Delivery is both:
+
+- **Pull** - consumers call the existing Pop/PopWithAck/Acknowledge/ExtendLock API against their
+  subscriber queue, unchanged.
+- **Push** - a subscription's provisioned queue can optionally have an HTTP or Dapr-pubsub sink
+  registered on it via the existing sink endpoints, reused as-is.
+
+**Storage model**: each published item is written once, keyed by a monotonic sequence number, in
+the topic's own state (a shared item log, not a per-subscriber copy). Each subscriber owns only a
+cursor into that log. Subscriber-set membership is versioned by generation rather than stamped
+onto every item, so a subscription change costs one new generation snapshot, not a rewrite of
+every published item.
+
+**Relay**: a single `relay` reminder per topic (never one per subscriber) reads each eligible
+subscriber's next batch and pushes them concurrently via `Task.WhenAll`, so one slow or
+unreachable subscriber cannot delay delivery to any other. A per-subscriber circuit breaker
+(exponential backoff, then blacklist after a sustained failure streak) keeps a permanently-broken
+subscriber from consuming relay resources; recovery is manual only, via `ResetCircuitBreaker`.
+
+**Cleanup**: a `reap-items` reminder deletes items once every subscriber's cursor has passed them;
+a per-generation `reap-generation-{id}` reminder deletes a superseded subscriber-set snapshot after
+a retention window. Both are bounded by subscriber/generation count, never by total items
+published.
+
+See `PUBSUB-PLAN.md` in the repo root for the full design rationale, including alternatives that
+were considered and rejected.
+
 ## Failure Handling
 
 ### State Store Failures
@@ -480,7 +512,7 @@ metadata:
 
 ## Limitations
 
-- **Not a Message Broker**: No pub/sub, routing, or dead letter queues
+- **Not a Full Message Broker**: No content-based routing or topic exchanges - fan-out is one topic to N subscriber queues (see [Topics](#topics-pubsub)); dead-letter queues are supported via `DeadLetter`
 - **Segmented Storage**: Max 100 items per segment (hardcoded in MaxSegmentSize constant)
 - **Memory Optimization**: With offloading enabled (v4.1+), only head, buffer, and tail segments kept in memory
 - **Priority-Based Ordering**: Items are FIFO within each priority level (0 = highest priority)
