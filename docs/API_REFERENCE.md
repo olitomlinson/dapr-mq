@@ -384,7 +384,7 @@ If you need more processing time before committing to acknowledgement, use `202 
 
 Fan-out pub/sub: publishing to a topic delivers the item to every subscriber's own queue. Each subscriber gets full FIFO/lock/DLQ semantics via the existing queue API (Pop/PopWithAck/Acknowledge/ExtendLock), unmodified — `Subscribe` just tells you which `queueId` was provisioned for you. See [ARCHITECTURE.md](ARCHITECTURE.md#topics-pubsub) for the fan-out design.
 
-Push delivery is HTTP-sink only (Dapr-pubsub sinks are deprecated and not supported for topic subscriptions) — either pass `httpSink` to `Subscribe` to register it in the same call, or register one afterwards against the returned `queueActorId` via the existing [HTTP Sink](#http-sink) endpoints.
+Push delivery is HTTP-sink only — either pass `httpSink` to `Subscribe` to register it in the same call, or register one afterwards against the returned `queueActorId` via the existing [HTTP Sink](#http-sink) endpoints.
 
 **Topics are created on demand — there is no separate create-topic call.** `{topicId}` maps to a Dapr virtual actor: the first request against a given `{topicId}` (`Subscribe` or `Publish`) activates it automatically, initializing empty topic state if it doesn't already exist. Same behavior as `{queueId}` for the queue endpoints above - just start calling `Subscribe`/`Publish` with the id you want.
 

@@ -381,7 +381,7 @@ queue-storage logic. Delivery is both:
 
 - **Pull** - consumers call the existing Pop/PopWithAck/Acknowledge/ExtendLock API against their
   subscriber queue, unchanged.
-- **Push** - a subscription's provisioned queue can optionally have an HTTP or Dapr-pubsub sink
+- **Push** - a subscription's provisioned queue can optionally have an HTTP sink
   registered on it via the existing sink endpoints, reused as-is.
 
 **Storage model**: each published item is written once, keyed by a monotonic sequence number, in

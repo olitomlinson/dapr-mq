@@ -415,59 +415,6 @@ services:
   #     - zookeeper_logs:/var/lib/zookeeper/log
   #     - zookeeper_data:/var/lib/zookeeper/data
   ############################
-  # Kafka
-  ############################
-  kafka:
-    image: confluentinc/cp-kafka:latest
-    networks:
-      - daprmq-network
-    restart: unless-stopped
-    healthcheck:
-      test: nc -z localhost 9092 || exit -1
-      interval: 10s
-      retries: 10
-      timeout: 30s
-      start_period: 10s
-    ports:
-      - 9092:9092
-      # - 29092:29092
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_LOG4J_ROOT_LOGLEVEL: INFO
-      KAFKA_LOG4J_LOGGERS: org.apache.kafka=ERROR,kafka=ERROR,kafka.cluster=ERROR,kafka.controller=ERROR,kafka.coordinator=ERROR,kafka.log=ERROR,kafka.server=ERROR,state.change.logger=ERROR
-      KAFKA_JMX_PORT: 9997
-      KAFKA_NUM_PARTITIONS: 10
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_NODE_ID: 1
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
-  ############################
-  # Kafka UI
-  ############################
-  kafka-ui:
-    container_name: kafka-ui
-    image: provectuslabs/kafka-ui:latest
-    ports:
-      - 8090:8080
-    depends_on:
-      - kafka
-    environment:
-      KAFKA_CLUSTERS_0_NAME: local
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
-      KAFKA_CLUSTERS_0_METRICS_PORT: 9997
-      KAFKA_CLUSTERS_0_AUDIT_TOPICAUDITENABLED: "true"
-      KAFKA_CLUSTERS_0_AUDIT_CONSOLEAUDITENABLED: "true"
-      LOGGING_LEVEL_ROOT: "error"
-      LOGGING_LEVEL_COM_PROVECTUS: "error"
-    networks:
-      - daprmq-network
-
-  ############################
   # Azurite (Azure Blob Storage Emulator)
   ############################
   azurite:

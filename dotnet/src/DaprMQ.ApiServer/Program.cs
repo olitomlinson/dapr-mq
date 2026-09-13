@@ -88,7 +88,6 @@ var actorConfig = new
 {
     QueueActorTypeName = builder.Configuration.GetValue("QUEUE_ACTOR_TYPE_NAME", "QueueActor"),
     HttpSinkActorTypeName = builder.Configuration.GetValue("HTTP_SINK_ACTOR_TYPE_NAME", "HttpSinkActor"),
-    DaprPubSubSinkActorTypeName = builder.Configuration.GetValue("DAPR_PUBSUB_SINK_ACTOR_TYPE_NAME", "DaprPubSubSinkActor"),
     BlobReaperActorTypeName = builder.Configuration.GetValue("BLOB_REAPER_ACTOR_TYPE_NAME", "BlobReaperActor"),
     TopicActorTypeName = builder.Configuration.GetValue("TOPIC_ACTOR_TYPE_NAME", "TopicActor")
 };
@@ -106,12 +105,6 @@ builder.Services.AddSingleton<IHttpSinkActorInvoker>(sp =>
     new HttpSinkActorInvoker(
         sp.GetRequiredService<Dapr.Actors.Client.IActorProxyFactory>(),
         actorConfig.HttpSinkActorTypeName));
-
-// Register DaprPubSubSinkActor invoker (dedicated invoker for DaprPubSubSinkActor operations)
-builder.Services.AddSingleton<IDaprPubSubSinkActorInvoker>(sp =>
-    new DaprPubSubSinkActorInvoker(
-        sp.GetRequiredService<Dapr.Actors.Client.IActorProxyFactory>(),
-        actorConfig.DaprPubSubSinkActorTypeName));
 
 // Register BlobReaperActor invoker (dedicated invoker for BlobReaperActor operations, used by QueueActor)
 builder.Services.AddSingleton<IBlobReaperActorInvoker>(sp =>
@@ -175,7 +168,6 @@ if (registerActors)
     {
         options.Actors.RegisterActor<DaprMQ.QueueActor>(actorConfig.QueueActorTypeName);
         options.Actors.RegisterActor<DaprMQ.HttpSinkActor>(actorConfig.HttpSinkActorTypeName);
-        options.Actors.RegisterActor<DaprMQ.DaprPubSubSinkActor>(actorConfig.DaprPubSubSinkActorTypeName);
         options.Actors.RegisterActor<DaprMQ.BlobReaperActor>(actorConfig.BlobReaperActorTypeName);
         options.Actors.RegisterActor<DaprMQ.TopicActor>(actorConfig.TopicActorTypeName);
 

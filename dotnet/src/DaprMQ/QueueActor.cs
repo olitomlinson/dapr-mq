@@ -41,12 +41,11 @@ public record QueueMetadata
 }
 
 /// <summary>
-/// Queue segment item containing item data and optional sink configuration.
+/// Queue segment item containing item data.
 /// </summary>
 public record QueueSegmentItem
 {
     public required string ItemJson { get; init; }
-    public SinkConfig? Sink { get; init; }
 }
 
 /// <summary>
@@ -62,7 +61,6 @@ public record LockState
     public required int HeadSegment { get; init; }  // Kept for debugging/backward compat
     public required string ItemJson { get; init; }  // Stores dequeued item
     public required bool CompetingConsumerMode { get; init; }  // Whether competing consumers are enabled for this lock
-    public SinkConfig? Sink { get; init; }  // Optional sink configuration
 }
 
 /// <summary>
@@ -172,7 +170,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
     /// Internal push that stages changes without committing.
     /// Returns true if push succeeded, false otherwise.
     /// </summary>
-    private async Task<bool> PushInternal(string itemJson, int priority, SinkConfig? sink = null)
+    private async Task<bool> PushInternal(string itemJson, int priority)
     {
         // Validation
         if (string.IsNullOrEmpty(itemJson))
@@ -223,8 +221,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
         // Append item to segment (FIFO)
         var segmentItem = new QueueSegmentItem
         {
-            ItemJson = itemJson,
-            Sink = sink
+            ItemJson = itemJson
         };
         segmentQueue.Enqueue(segmentItem);
 
@@ -339,7 +336,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                 foreach (var item in group)
                 {
                     // Push and stage changes (reuse existing PushInternal)
-                    bool success = await PushInternal(item.ItemJson, priority, item.Sink);
+                    bool success = await PushInternal(item.ItemJson, priority);
 
                     if (!success)
                     {
@@ -419,7 +416,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
         // Pop up to Count items
         for (int i = 0; i < request.Count; i++)
         {
-            var (response, priority, itemJson, _) = await PopWithPriorityAsync();
+            var (response, priority, itemJson) = await PopWithPriorityAsync();
 
             // If locked, return what we have so far with lock info
             if (response.Locked)
@@ -486,7 +483,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
     /// - itemJson: The JSON string of the popped item (null if none)
     /// </summary>
     /// <param name="skipLockCheck">If true, skip the lock check (used for competing consumers)</param>
-    private async Task<(PopResponse response, int priority, string? itemJson, SinkConfig? sink)> PopWithPriorityAsync(bool skipLockCheck = false)
+    private async Task<(PopResponse response, int priority, string? itemJson)> PopWithPriorityAsync(bool skipLockCheck = false)
     {
 
         var metadata = await GetMetadataAsync();
@@ -504,13 +501,13 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                         Locked = true,
                         IsEmpty = false,
                         Message = "Queue is locked by another operation"
-                    }, -1, null, null);
+                    }, -1, null);
                 }
             }
 
             if (metadata.Queues.Count == 0)
             {
-                return (new PopResponse { Locked = false, IsEmpty = true }, -1, null, null);
+                return (new PopResponse { Locked = false, IsEmpty = true }, -1, null);
             }
 
             // Find lowest priority with items
@@ -548,7 +545,6 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                 var segmentQueue = segment.Value;
                 var segmentItem = segmentQueue.Dequeue();
                 var itemJson = segmentItem.ItemJson;
-                var sink = segmentItem.Sink;
 
                 // Handle segment cleanup
                 if (segmentQueue.Count == 0)
@@ -581,7 +577,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                         Logger.LogDebug($"Popped item from priority {priority}, count now {count}");
 
                         // Return item JSON string directly with priority
-                        return (new PopResponse { Locked = false, IsEmpty = false }, priority, itemJson, sink);
+                        return (new PopResponse { Locked = false, IsEmpty = false }, priority, itemJson);
                     }
                     else
                     {
@@ -597,7 +593,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                         Logger.LogDebug($"Popped last item from priority {priority}, queue now empty");
 
                         // Return item JSON string directly with priority
-                        return (new PopResponse { Locked = false, IsEmpty = false }, priority, itemJson, sink);
+                        return (new PopResponse { Locked = false, IsEmpty = false }, priority, itemJson);
                     }
                 }
                 else
@@ -617,11 +613,11 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                     Logger.LogDebug($"Popped item from priority {priority}, count now {count}");
 
                     // Return item JSON string directly with priority
-                    return (new PopResponse { Locked = false, IsEmpty = false }, priority, itemJson, sink);
+                    return (new PopResponse { Locked = false, IsEmpty = false }, priority, itemJson);
                 }
             }
 
-            return (new PopResponse { Locked = false, IsEmpty = true }, -1, null, null);
+            return (new PopResponse { Locked = false, IsEmpty = true }, -1, null);
         }
         catch (InvalidOperationException)
         {
@@ -631,7 +627,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
         catch (Exception ex)
         {
             Logger.LogError(ex, "Error in PopAsync");
-            return (new PopResponse { Locked = false, IsEmpty = true }, -1, null, null);
+            return (new PopResponse { Locked = false, IsEmpty = true }, -1, null);
         }
     }
 
@@ -670,7 +666,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                     // Re-queue the item at original priority using PushInternal (stages without saving)
                     try
                     {
-                        bool success = await PushInternal(lockState.Value.ItemJson, lockState.Value.Priority, lockState.Value.Sink);
+                        bool success = await PushInternal(lockState.Value.ItemJson, lockState.Value.Priority);
 
                         if (!success)
                         {
@@ -785,7 +781,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
             {
                 // Dequeue item (removes from queue) and store in lock
                 // Skip lock check to allow parallel locks
-                var (popResult, priority, itemJson, sink) = await PopWithPriorityAsync(skipLockCheck: true);
+                var (popResult, priority, itemJson) = await PopWithPriorityAsync(skipLockCheck: true);
 
                 // If queue is empty, return partial results
                 if (itemJson == null)
@@ -804,8 +800,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                     Priority = priority,
                     HeadSegment = 0,  // No longer used but kept for backward compat
                     ItemJson = itemJson!,
-                    CompetingConsumerMode = request.AllowCompetingConsumers,
-                    Sink = sink
+                    CompetingConsumerMode = request.AllowCompetingConsumers
                 };
 
                 await StateManager.SetStateAsync($"{lockId}-lock", lockData);
@@ -823,7 +818,6 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                     Priority = priority,
                     LockId = lockId,
                     LockExpiresAt = lockExpiresAt,
-                    Sink = sink,
                     ObjectClaimToken = isItemBlobRef ? _objectClaimTokenIssuer.Issue(blobEnvelope!.BlobReference, blobEnvelope.ContentType) : null,
                     BlobContentType = isItemBlobRef ? blobEnvelope!.ContentType : null
                 });

@@ -35,14 +35,7 @@ public class TopicController : ControllerBase
             var actorItems = request.Items.Select(apiItem => new PushItem
             {
                 ItemJson = apiItem.Item.GetRawText(),
-                Priority = apiItem.Priority,
-                Sink = apiItem.Sink != null ? new SinkConfig
-                {
-                    DaprPubSub = apiItem.Sink.DaprPubSub != null ? new DaprPubSubSinkConfig
-                    {
-                        Metadata = apiItem.Sink.DaprPubSub.Metadata
-                    } : null
-                } : null
+                Priority = apiItem.Priority
             }).ToList();
 
             var result = await _actorInvoker.InvokeMethodAsync<PublishRequest, PublishResponse>(

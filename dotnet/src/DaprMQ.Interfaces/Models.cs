@@ -25,11 +25,6 @@ public record PushItem
     /// Priority level (0 = highest priority, default: 1).
     /// </summary>
     public int Priority { get; init; } = 1;
-
-    /// <summary>
-    /// Optional sink configuration for this item.
-    /// </summary>
-    public SinkConfig? Sink { get; init; }
 }
 
 /// <summary>
@@ -167,11 +162,6 @@ public record PopWithAckItem
     /// Unix timestamp when lock expires.
     /// </summary>
     public required double LockExpiresAt { get; init; }
-
-    /// <summary>
-    /// Optional sink configuration for this item.
-    /// </summary>
-    public SinkConfig? Sink { get; init; }
 
     /// <summary>
     /// If the item's payload was offloaded to an object store, an opaque claim token to fetch it
@@ -372,64 +362,6 @@ public record InitializeHttpSinkRequest
     /// HTTP endpoint URL where messages will be delivered.
     /// </summary>
     public required string Url { get; init; }
-
-    /// <summary>
-    /// Queue actor ID to poll from.
-    /// </summary>
-    public required string QueueActorId { get; init; }
-
-    /// <summary>
-    /// Maximum number of concurrent locks in the queue (1-100).
-    /// </summary>
-    public required int MaxConcurrency { get; init; }
-
-    /// <summary>
-    /// Lock TTL in seconds for PopWithAck operations (1-300).
-    /// </summary>
-    public required int LockTtlSeconds { get; init; }
-}
-
-/// <summary>
-/// Sink configuration for queue items.
-/// </summary>
-public record SinkConfig
-{
-    /// <summary>
-    /// Dapr PubSub sink configuration.
-    /// </summary>
-    public DaprPubSubSinkConfig? DaprPubSub { get; init; }
-}
-
-/// <summary>
-/// Configuration for Dapr PubSub sink metadata.
-/// </summary>
-public record DaprPubSubSinkConfig
-{
-    /// <summary>
-    /// Metadata to be passed as query string parameters to Dapr PubSub API.
-    /// </summary>
-    public Dictionary<string, string>? Metadata { get; init; }
-}
-
-/// <summary>
-/// Request model for initializing a Dapr PubSub sink actor.
-/// </summary>
-public record InitializeDaprPubSubSinkRequest
-{
-    /// <summary>
-    /// Dapr PubSub component name.
-    /// </summary>
-    public required string PubSubName { get; init; }
-
-    /// <summary>
-    /// PubSub topic name.
-    /// </summary>
-    public required string Topic { get; init; }
-
-    /// <summary>
-    /// Whether to use raw payload (true) or CloudEvents envelope (false).
-    /// </summary>
-    public required bool RawPayload { get; init; }
 
     /// <summary>
     /// Queue actor ID to poll from.

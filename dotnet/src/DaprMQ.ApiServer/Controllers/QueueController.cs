@@ -76,14 +76,7 @@ public class QueueController : ControllerBase
             var actorItems = request.Items.Select(apiItem => new PushItem
             {
                 ItemJson = apiItem.Item.GetRawText(),
-                Priority = apiItem.Priority,
-                Sink = apiItem.Sink != null ? new SinkConfig
-                {
-                    DaprPubSub = apiItem.Sink.DaprPubSub != null ? new DaprPubSubSinkConfig
-                    {
-                        Metadata = apiItem.Sink.DaprPubSub.Metadata
-                    } : null
-                } : null
+                Priority = apiItem.Priority
             }).ToList();
 
             return await PushItemsAsync(queueId, actorItems);
@@ -237,12 +230,7 @@ public class QueueController : ControllerBase
                         ResolveItemElement(item.ItemJson, item.ObjectClaimToken, item.BlobContentType),
                         item.Priority,
                         item.LockId,
-                        item.LockExpiresAt,
-                        item.Sink != null ? new ApiSinkConfig(
-                            item.Sink.DaprPubSub != null ? new ApiDaprPubSubSinkConfig(
-                                item.Sink.DaprPubSub.Metadata
-                            ) : null
-                        ) : null));
+                        item.LockExpiresAt));
                 }
 
                 return Ok(new ApiPopWithAckResponse(apiItems, result.Locked, result.Message));

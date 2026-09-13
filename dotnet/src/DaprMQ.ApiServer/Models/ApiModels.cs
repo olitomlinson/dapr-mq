@@ -9,8 +9,7 @@ public record ApiPushRequest(
 
 public record ApiPushItem(
     JsonElement Item,
-    int Priority = 1,
-    ApiSinkConfig? Sink = null
+    int Priority = 1
 );
 
 public record ApiAcknowledgeRequest(
@@ -48,8 +47,7 @@ public record ApiPopWithAckItem(
     object Item,
     int Priority,
     string LockId,
-    double LockExpiresAt,
-    ApiSinkConfig? Sink = null
+    double LockExpiresAt
 );
 
 public record ApiAcknowledgeResponse(
@@ -100,33 +98,6 @@ public record ApiRegisterHttpSinkResponse(
 public record ApiUnregisterHttpSinkResponse(
     bool Success,
     string Message
-);
-
-public record ApiRegisterDaprPubSubSinkRequest(
-    string PubSubName,
-    string Topic,
-    bool RawPayload = false,
-    int MaxConcurrency = 5,
-    int LockTtlSeconds = 30
-);
-
-public record ApiRegisterDaprPubSubSinkResponse(
-    bool Success,
-    string Message,
-    string? DaprPubSubSinkActorId = null
-);
-
-public record ApiUnregisterDaprPubSubSinkResponse(
-    bool Success,
-    string Message
-);
-
-public record ApiSinkConfig(
-    ApiDaprPubSubSinkConfig? DaprPubSub
-);
-
-public record ApiDaprPubSubSinkConfig(
-    Dictionary<string, string>? Metadata
 );
 
 // Topic (pub/sub) models
