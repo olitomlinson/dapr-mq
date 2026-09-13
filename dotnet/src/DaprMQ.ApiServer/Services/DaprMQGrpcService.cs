@@ -33,9 +33,9 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                 throw new RpcException(new Status(StatusCode.InvalidArgument, "Items array cannot be empty"));
             }
 
-            if (request.Items.Count > 1000)
+            if (request.Items.Count > 10000)
             {
-                throw new RpcException(new Status(StatusCode.InvalidArgument, "Maximum 1000 items per push"));
+                throw new RpcException(new Status(StatusCode.InvalidArgument, "Maximum 10000 items per push"));
             }
 
             // Validate priorities
@@ -98,9 +98,9 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
             int count = request.Count > 0 ? request.Count : 1;
 
             // Validate count is not over max (0 is allowed as default)
-            if (request.Count > 100)
+            if (request.Count > 1000)
             {
-                throw new RpcException(new Status(StatusCode.InvalidArgument, "Count must be between 1 and 100"));
+                throw new RpcException(new Status(StatusCode.InvalidArgument, "Count must be between 1 and 1000"));
             }
 
             _logger.LogDebug($"gRPC Pop request for queue {request.QueueId}, count={count}");
@@ -174,9 +174,9 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
             int count = request.Count > 0 ? request.Count : 1;
 
             // Validate count is not over max (0 is allowed as default)
-            if (request.Count > 100)
+            if (request.Count > 1000)
             {
-                throw new RpcException(new Status(StatusCode.InvalidArgument, "Count must be between 1 and 100"));
+                throw new RpcException(new Status(StatusCode.InvalidArgument, "Count must be between 1 and 1000"));
             }
 
             _logger.LogDebug($"gRPC PopWithAck request for queue {request.QueueId}, ttl={request.TtlSeconds}s, allow_competing_consumers={request.AllowCompetingConsumers}, count={count}");

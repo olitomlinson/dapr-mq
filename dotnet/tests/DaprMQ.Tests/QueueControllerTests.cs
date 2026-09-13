@@ -175,7 +175,7 @@ public class QueueControllerTests
         var controller = CreateController(mockInvoker.Object);
 
         var items = new List<ApiPushItem>();
-        for (int i = 0; i < 1001; i++)
+        for (int i = 0; i < 10001; i++)
         {
             var itemElement = JsonSerializer.SerializeToElement(new { id = i });
             items.Add(new ApiPushItem(itemElement, Priority: 1));
@@ -833,7 +833,7 @@ public class QueueControllerTests
     /// This test verifies controller validation for count parameter.
     ///
     /// Expected behavior:
-    /// - Count exceeds max (100)
+    /// - Count exceeds max (1000)
     /// - Controller should return: HTTP 400 Bad Request
     /// </summary>
     [Fact]
@@ -843,8 +843,8 @@ public class QueueControllerTests
         var mockInvoker = new Mock<IQueueActorInvoker>();
         var controller = CreateController(mockInvoker.Object);
 
-        // Act - Request more than 100 items
-        var result = await controller.Pop("test-queue", require_ack: false, count: 101);
+        // Act - Request more than 1000 items
+        var result = await controller.Pop("test-queue", require_ack: false, count: 1001);
 
         // Assert - Should return HTTP 400 Bad Request
         Assert.IsType<BadRequestObjectResult>(result);

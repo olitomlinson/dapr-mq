@@ -289,9 +289,9 @@ public class BulkPopTests(DaprTestFixture fixture)
         var queueId = $"{fixture.QueueId}-grpc-invalid-count-{Guid.NewGuid():N}";
         var client = CreateGrpcClient();
 
-        // Act & Assert - Count > 100 should throw
+        // Act & Assert - Count > 1000 should throw
         var ex = await Assert.ThrowsAsync<RpcException>(async () =>
-            await client.PopAsync(new PopRequest { QueueId = queueId, Count = 101 }));
+            await client.PopAsync(new PopRequest { QueueId = queueId, Count = 1001 }));
         Assert.Equal(StatusCode.InvalidArgument, ex.StatusCode);
 
         // Note: Count = 0 is valid (defaults to 1 in protobuf)
@@ -451,7 +451,7 @@ public class BulkPopTests(DaprTestFixture fixture)
         Assert.True(elapsedSeconds < 30, $"Test took {elapsedSeconds:F2}s (expected <30s for {totalItems} items with parallel pops)");
     }
 
-    [Fact(Skip = "app is hardcoded to reject a batch size > 1000")]
+    [Fact]
     public async Task BulkOperations_10000Messages_SinglePush_ParallelPop()
     {
         var queueId = $"{fixture.QueueId}-bulk10000-parallel-{Guid.NewGuid():N}";
@@ -475,12 +475,12 @@ public class BulkPopTests(DaprTestFixture fixture)
         Assert.True(pushResult.Success, $"Push failed: {pushResult.Message}");
         Assert.Equal(totalItems, pushResult.ItemsPushed);
 
-        // Act - Pop 10000 items in 100 parallel batches of 100
+        // Act - Pop 10000 items in 10 parallel batches of 1000
         var lockIds = new ConcurrentBag<string>();
-        var popTasks = Enumerable.Range(0, 100).Select(async batch =>
+        var popTasks = Enumerable.Range(0, 10).Select(async batch =>
         {
             var popRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/pop");
-            popRequest.Headers.Add("count", "100");
+            popRequest.Headers.Add("count", "1000");
             popRequest.Headers.Add("require-ack", "true");
             popRequest.Headers.Add("ttl-seconds", "300");
             popRequest.Headers.Add("allow-competing-consumers", "true");

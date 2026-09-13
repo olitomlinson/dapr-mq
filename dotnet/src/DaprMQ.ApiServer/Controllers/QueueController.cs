@@ -56,9 +56,9 @@ public class QueueController : ControllerBase
                 return BadRequest(new ApiErrorResponse("Items array cannot be empty"));
             }
 
-            if (request.Items.Count > 1000)
+            if (request.Items.Count > 10000)
             {
-                return BadRequest(new ApiErrorResponse("Maximum 1000 items per push"));
+                return BadRequest(new ApiErrorResponse("Maximum 10000 items per push"));
             }
 
             // Validate priorities
@@ -187,9 +187,9 @@ public class QueueController : ControllerBase
             _logger.LogDebug($"Pop request for queue {queueId}, require_ack={require_ack}, allow_competing_consumers={allow_competing_consumers}, count={count}");
 
             // Validate count parameter
-            if (count < 0 || count > 100)
+            if (count < 0 || count > 1000)
             {
-                return BadRequest(new ApiErrorResponse("Count must be between 0 and 100"));
+                return BadRequest(new ApiErrorResponse("Count must be between 0 and 1000"));
             }
 
             var actorId = new ActorId(queueId);

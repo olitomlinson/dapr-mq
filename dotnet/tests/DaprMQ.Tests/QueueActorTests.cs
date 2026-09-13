@@ -2103,8 +2103,8 @@ public class QueueActorTests
         var mockStateManager = CreateMockStateManager();
         var actor = await CreateActorAsync(mockStateManager);
 
-        // Act - Request more than max (100)
-        var result = await actor.Pop(new Interfaces.PopRequest { Count = 101 });
+        // Act - Request more than max (1000)
+        var result = await actor.Pop(new Interfaces.PopRequest { Count = 1001 });
 
         // Assert
         Assert.Empty(result.Items);

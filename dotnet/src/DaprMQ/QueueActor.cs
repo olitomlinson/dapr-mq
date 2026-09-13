@@ -282,14 +282,14 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                 };
             }
 
-            if (request.Items.Count > 1000)
+            if (request.Items.Count > 10000)
             {
-                Logger.LogWarning($"Push failed: Items count {request.Items.Count} exceeds maximum of 1000");
+                Logger.LogWarning($"Push failed: Items count {request.Items.Count} exceeds maximum of 10000");
                 return new PushResponse
                 {
                     Success = false,
                     ItemsPushed = 0,
-                    ErrorMessage = "Maximum 1000 items per push"
+                    ErrorMessage = "Maximum 10000 items per push"
                 };
             }
 
@@ -400,14 +400,14 @@ public class QueueActor : Actor, IQueueActor, IRemindable
         }
 
         // Validate count parameter
-        if (request.Count < 0 || request.Count > 100)
+        if (request.Count < 0 || request.Count > 1000)
         {
             return new PopResponse
             {
                 Items = new List<PopItem>(),
                 IsEmpty = false,
                 Locked = false,
-                Message = "Count must be between 0 and 100"
+                Message = "Count must be between 0 and 1000"
             };
         }
 
@@ -738,8 +738,8 @@ public class QueueActor : Actor, IQueueActor, IRemindable
             // Get TTL (default 30, clamped to 1-300)
             int ttlSeconds = Math.Max(MinLockTtlSeconds, Math.Min(MaxLockTtlSeconds, request.TtlSeconds));
 
-            // Get count (default 1, clamped to 1-100)
-            int count = Math.Max(1, Math.Min(100, request.Count));
+            // Get count (default 1, clamped to 1-1000)
+            int count = Math.Max(1, Math.Min(1000, request.Count));
 
             // Apply MaxConcurrency limit if specified
             if (request.MaxConcurrency.HasValue)
