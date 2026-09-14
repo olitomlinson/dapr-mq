@@ -172,6 +172,12 @@ daprMQ takes a different approach:
 - [ ] **Language SDKs**: Competing Consumers would benefit from language SDKs which implement a gRPC message pump loop. This would allow the SDK to buffer messages and relay them to the applications message handler as push-based model to further increase throughput and reduce latency.
 - [ ] **Message TTL**: After a message has been in the queue for longer than the target ttl, drop it or send it to the dlq.
 - [ ] **Message Receipts**: on successful publish, return a unique receipt id which encodes the segment, and maybe even position
+- [ ] **FIFO group/partition key**: Messages tagged with the same group key preserve strict order relative to each other, while messages across different group keys can be popped in parallel, raising throughput without giving up per-key ordering.
+- [ ] **Visibility timeout auto-heartbeat**: Consumer-side keepalive that automatically calls Extend Lock on an in-flight message, so long-running handlers don't need to manage lock extension manually.
+- [ ] **Long-polling Pop**: Pop can optionally hold the request open until a message is available or a timeout elapses, instead of requiring the client to poll on an interval.
+- [ ] **Queue depth / consumer lag metrics**: Expose Prometheus/OpenTelemetry metrics for queue depth, lock counts, and consumer lag per queue and priority.
+- [ ] **Backoff-on-nack**: When a locked message fails to be acknowledged, delay how soon it becomes visible for re-delivery using an exponential (or configurable) backoff, distinct from Scheduled Enqueue.
+- [ ] **Bulk Acknowledge**: Acknowledge many locked messages from a Pop With Acknowledgement in one atomic operation, mirroring Bulk Push and Bulk Pop.
 
 
 ## Use Cases
