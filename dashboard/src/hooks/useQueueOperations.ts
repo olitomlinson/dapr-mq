@@ -40,6 +40,7 @@ export const useQueueOperations = (queueId: string) => {
   const [sinkConfig, setSinkConfig] = useState<SinkConfig | null>(null);
   const [isRegisteringSink, setIsRegisteringSink] = useState(false);
   const [wiremockLockStates, setWiremockLockStates] = useState<Record<string, { acknowledged?: boolean; deadLettered?: boolean; dlqId?: string }>>({});
+  const [lastPushDeduplicated, setLastPushDeduplicated] = useState(false);
 
   // Reset state when queue ID changes - popped messages/count are restored from localStorage
   // instead of cleared, so switching queues doesn't lose what was already popped from each.
@@ -53,6 +54,7 @@ export const useQueueOperations = (queueId: string) => {
     setSinkRegistered(false);
     setSinkConfig(null);
     setWiremockLockStates({});
+    setLastPushDeduplicated(false);
   }, [queueId]);
 
   // Persist on every change so acknowledge/dead-letter updates are kept too.
@@ -65,11 +67,17 @@ export const useQueueOperations = (queueId: string) => {
     }
   }, [queueId, poppedMessages, messagesPopped]);
 
-  const pushMessage = async (priority: number, payload: QueuePayload) => {
+  const pushMessage = async (priority: number, payload: QueuePayload, idempotencyKey?: string) => {
     setIsPushing(true);
     try {
-      await queueApi.push(queueId, { items: [{ item: payload, priority }] });
-      setMessagesPushed(prev => prev + 1);
+      const response = await queueApi.push(queueId, {
+        items: [{ item: payload, priority, idempotencyKey: idempotencyKey || undefined }],
+      });
+      const deduplicated = (response.itemsDeduplicated ?? 0) > 0;
+      setLastPushDeduplicated(deduplicated);
+      if (!deduplicated) {
+        setMessagesPushed(prev => prev + 1);
+      }
       setCurrentPayload(generatePayload());
     } catch (err) {
       if (err instanceof QueueApiError) {
@@ -244,6 +252,7 @@ export const useQueueOperations = (queueId: string) => {
     isPushing,
     isPopping,
     error,
+    lastPushDeduplicated,
     pushMessage,
     popMessage,
     popWithAck,

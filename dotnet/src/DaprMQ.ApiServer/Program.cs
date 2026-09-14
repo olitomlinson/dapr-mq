@@ -149,6 +149,14 @@ var blobReapConfig = new BlobReapConfig
 };
 builder.Services.AddSingleton(blobReapConfig);
 
+// Register the idempotency-key dedup TTL (single global default, no per-request override)
+var idempotencyConfig = new IdempotencyConfig
+{
+    TtlSeconds = builder.Configuration.GetValue("IDEMPOTENCY_KEY_TTL_SECONDS", 86400),
+    UnloadAfterCommit = builder.Configuration.GetValue("IDEMPOTENCY_KEY_UNLOAD_AFTER_COMMIT", true)
+};
+builder.Services.AddSingleton(idempotencyConfig);
+
 // Add Swagger/OpenAPI
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>

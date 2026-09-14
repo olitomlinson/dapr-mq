@@ -220,7 +220,33 @@ public class TopicActor : Actor, ITopicActor, IRemindable
             await InitializeHttpSinkBestEffortAsync(queueActorId, request.SubscriberId, request.HttpSink);
         }
 
+        if (request.DedupEnabled.HasValue)
+        {
+            await ConfigureDedupBestEffortAsync(queueActorId, request.SubscriberId, request.DedupEnabled.Value);
+        }
+
         return new SubscribeResponse { Success = true, QueueActorId = queueActorId };
+    }
+
+    /// <summary>
+    /// Configures dedup on a subscriber's provisioned queue at subscribe time. Best-effort, same
+    /// reasoning as InitializeHttpSinkBestEffortAsync above: the subscription itself is already
+    /// committed by the time this runs, so a failure here logs a warning rather than failing
+    /// Subscribe - the caller can always reconfigure the queue afterwards directly.
+    /// </summary>
+    private async Task ConfigureDedupBestEffortAsync(string queueActorId, string subscriberId, bool enabled)
+    {
+        try
+        {
+            await _queueActorInvoker.InvokeMethodAsync<ConfigureDedupRequest, ConfigureDedupResponse>(
+                new ActorId(queueActorId),
+                "ConfigureDedup",
+                new ConfigureDedupRequest { Enabled = enabled });
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "TopicActor {ActorId} failed to configure dedup for subscriber {SubscriberId}", Id.GetId(), subscriberId);
+        }
     }
 
     /// <summary>

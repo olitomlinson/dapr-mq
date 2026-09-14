@@ -25,6 +25,13 @@ public record PushItem
     /// Priority level (0 = highest priority, default: 1).
     /// </summary>
     public int Priority { get; init; } = 1;
+
+    /// <summary>
+    /// Optional client-supplied idempotency/deduplication key. If the destination queue has
+    /// dedup enabled (the default) and this key was already used within the configured TTL
+    /// window, the item is silently skipped instead of being pushed again.
+    /// </summary>
+    public string? IdempotencyKey { get; init; } = null;
 }
 
 /// <summary>
@@ -46,6 +53,13 @@ public record PushResponse
     /// Error message if not successful.
     /// </summary>
     public string? ErrorMessage { get; init; }
+
+    /// <summary>
+    /// Number of items skipped because their IdempotencyKey was already used within the TTL
+    /// window. Not an error - Success stays true, and ItemsPushed + ItemsDeduplicated equals
+    /// the request's item count.
+    /// </summary>
+    public int ItemsDeduplicated { get; init; } = 0;
 }
 
 /// <summary>
@@ -291,6 +305,22 @@ public record UnsafeUnloadRequest
 }
 
 /// <summary>
+/// Request model for configuring whether a queue honors IdempotencyKey dedup on Push.
+/// </summary>
+public record ConfigureDedupRequest
+{
+    public required bool Enabled { get; init; }
+}
+
+/// <summary>
+/// Response model for a ConfigureDedup operation.
+/// </summary>
+public record ConfigureDedupResponse
+{
+    public bool Success { get; init; }
+}
+
+/// <summary>
 /// Response model for ExtendLock operation.
 /// </summary>
 public record ExtendLockResponse
@@ -440,6 +470,12 @@ public record SubscribeRequest
 {
     public required string SubscriberId { get; init; }
     public TopicHttpSinkConfig? HttpSink { get; init; }
+
+    /// <summary>
+    /// Whether this subscriber's provisioned queue should honor IdempotencyKey dedup on items
+    /// relayed from the topic. Null leaves the queue's default (dedup enabled) untouched.
+    /// </summary>
+    public bool? DedupEnabled { get; init; }
 }
 
 /// <summary>

@@ -67,6 +67,17 @@ public class QueueActorTests
                 return new ConditionalValue<List<string>>(false, null);
             });
 
+        // Setup TryGetStateAsync for IdempotencyMarker
+        mock.Setup(m => m.TryGetStateAsync<IdempotencyMarker>(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string key, CancellationToken ct) =>
+            {
+                if (stateData.ContainsKey(key) && stateData[key] is IdempotencyMarker marker)
+                {
+                    return new ConditionalValue<IdempotencyMarker>(true, marker);
+                }
+                return new ConditionalValue<IdempotencyMarker>(false, null);
+            });
+
         // Setup GetStateAsync for ActorMetadata (used in test assertions)
         mock.Setup(m => m.GetStateAsync<ActorMetadata>(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((string key, CancellationToken ct) =>
@@ -81,6 +92,14 @@ public class QueueActorTests
         // Setup SetStateAsync
         mock.Setup(m => m.SetStateAsync(It.IsAny<string>(), It.IsAny<object>(), It.IsAny<CancellationToken>()))
             .Returns((string key, object value, CancellationToken ct) =>
+            {
+                stateData[key] = value;
+                return Task.CompletedTask;
+            });
+
+        // Setup SetStateAsync with TTL (used for idempotency-key markers)
+        mock.Setup(m => m.SetStateAsync(It.IsAny<string>(), It.IsAny<object>(), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+            .Returns((string key, object value, TimeSpan ttl, CancellationToken ct) =>
             {
                 stateData[key] = value;
                 return Task.CompletedTask;
@@ -101,7 +120,7 @@ public class QueueActorTests
         return mock;
     }
 
-    private async Task<QueueActor> CreateActorAsync(Mock<IActorStateManager> mockStateManager, Mock<IBlobReaperActorInvoker>? mockBlobReaperActorInvoker = null)
+    private async Task<QueueActor> CreateActorAsync(Mock<IActorStateManager> mockStateManager, Mock<IBlobReaperActorInvoker>? mockBlobReaperActorInvoker = null, IdempotencyConfig? idempotencyConfig = null)
     {
         // Create mock timer manager that no-ops timer registration
         var mockTimerManager = new Mock<ActorTimerManager>();
@@ -136,9 +155,10 @@ public class QueueActorTests
             TokenTtl = TimeSpan.FromMinutes(5)
         });
         var blobReapConfig = new BlobReapConfig { BackstopSeconds = 86400, PostDownloadSeconds = 86400 };
+        idempotencyConfig ??= new IdempotencyConfig { TtlSeconds = 86400 };
 
         var actorHost = ActorHost.CreateForTest<QueueActor>(testOptions);
-        var actor = new QueueActor(actorHost, mockInvoker.Object, mockBlobReaperActorInvoker.Object, tokenIssuer, blobReapConfig);
+        var actor = new QueueActor(actorHost, mockInvoker.Object, mockBlobReaperActorInvoker.Object, tokenIssuer, blobReapConfig, idempotencyConfig);
 
         // Use reflection to set the StateManager property
         var stateManagerProperty = typeof(Actor).GetProperty("StateManager");
@@ -369,6 +389,236 @@ public class QueueActorTests
         // Verify nothing was actually pushed
         var popResult = await actor.Pop(new Interfaces.PopRequest());
         Assert.Empty(popResult.Items);
+    }
+
+    [Fact]
+    public async Task PushAsync_WithFreshIdempotencyKey_ReturnsSuccessAndItemIsPopped()
+    {
+        var mockStateManager = CreateMockStateManager();
+        var actor = await CreateActorAsync(mockStateManager);
+        var itemJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "test" });
+
+        var result = await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = itemJson, Priority = 0, IdempotencyKey = Guid.NewGuid().ToString() }
+            }
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.ItemsPushed);
+        Assert.Equal(0, result.ItemsDeduplicated);
+
+        var popResult = await actor.Pop(new Interfaces.PopRequest());
+        Assert.Single(popResult.Items);
+    }
+
+    [Fact]
+    public async Task PushAsync_WithAlreadyUsedIdempotencyKey_SkipsItemAndReturnsDeduplicatedCount()
+    {
+        var mockStateManager = CreateMockStateManager();
+        var actor = await CreateActorAsync(mockStateManager);
+        var key = Guid.NewGuid().ToString();
+        var itemJson1 = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "first" });
+        var itemJson2 = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "second" });
+
+        var firstResult = await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem> { new Interfaces.PushItem { ItemJson = itemJson1, Priority = 0, IdempotencyKey = key } }
+        });
+        Assert.True(firstResult.Success);
+        Assert.Equal(1, firstResult.ItemsPushed);
+
+        var secondResult = await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem> { new Interfaces.PushItem { ItemJson = itemJson2, Priority = 0, IdempotencyKey = key } }
+        });
+
+        Assert.True(secondResult.Success);
+        Assert.Equal(0, secondResult.ItemsPushed);
+        Assert.Equal(1, secondResult.ItemsDeduplicated);
+
+        var popResult = await actor.Pop(new Interfaces.PopRequest { Count = 10 });
+        Assert.Single(popResult.Items); // only the first item ever landed
+    }
+
+    [Fact]
+    public async Task PushAsync_WithDuplicateKeyTwiceInSameBatch_PushesFirstAndSkipsSecond()
+    {
+        var mockStateManager = CreateMockStateManager();
+        var actor = await CreateActorAsync(mockStateManager);
+        var key = Guid.NewGuid().ToString();
+        var itemJson1 = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "first" });
+        var itemJson2 = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "second" });
+
+        var result = await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = itemJson1, Priority = 0, IdempotencyKey = key },
+                new Interfaces.PushItem { ItemJson = itemJson2, Priority = 0, IdempotencyKey = key }
+            }
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.ItemsPushed);
+        Assert.Equal(1, result.ItemsDeduplicated);
+
+        var popResult = await actor.Pop(new Interfaces.PopRequest { Count = 10 });
+        Assert.Single(popResult.Items);
+    }
+
+    [Fact]
+    public async Task PushAsync_WithMixedKeyedAndUnkeyedAndDuplicateItems_PushesNonDuplicatesOnly()
+    {
+        var mockStateManager = CreateMockStateManager();
+        var actor = await CreateActorAsync(mockStateManager);
+        var key = Guid.NewGuid().ToString();
+        var itemJsonA = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "a" });
+        var itemJsonB = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "b" });
+        var itemJsonC = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "c" });
+
+        // Seed the key as already used
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem> { new Interfaces.PushItem { ItemJson = itemJsonA, Priority = 0, IdempotencyKey = key } }
+        });
+
+        var result = await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem>
+            {
+                new Interfaces.PushItem { ItemJson = itemJsonB, Priority = 0 }, // no key
+                new Interfaces.PushItem { ItemJson = itemJsonC, Priority = 0, IdempotencyKey = key } // duplicate
+            }
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.ItemsPushed);
+        Assert.Equal(1, result.ItemsDeduplicated);
+    }
+
+    [Fact]
+    public async Task PushAsync_WithIdempotencyKey_StagesMarkerWithConfiguredTtl()
+    {
+        var mockStateManager = CreateMockStateManager();
+        var idempotencyConfig = new IdempotencyConfig { TtlSeconds = 3600 };
+        var actor = await CreateActorAsync(mockStateManager, idempotencyConfig: idempotencyConfig);
+        var itemJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "test" });
+        var key = Guid.NewGuid().ToString();
+
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem> { new Interfaces.PushItem { ItemJson = itemJson, Priority = 0, IdempotencyKey = key } }
+        });
+
+        mockStateManager.Verify(m => m.SetStateAsync(
+            $"idem_{key}",
+            It.IsAny<IdempotencyMarker>(),
+            TimeSpan.FromSeconds(3600),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task PushAsync_WithUnloadAfterCommitTrue_UnloadsTouchedIdempotencyKeys()
+    {
+        var mockStateManager = CreateMockStateManager();
+        var idempotencyConfig = new IdempotencyConfig { TtlSeconds = 86400, UnloadAfterCommit = true };
+        var actor = await CreateActorAsync(mockStateManager, idempotencyConfig: idempotencyConfig);
+        var itemJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "test" });
+        var key = Guid.NewGuid().ToString();
+
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem> { new Interfaces.PushItem { ItemJson = itemJson, Priority = 0, IdempotencyKey = key } }
+        });
+
+        mockStateManager.Verify(m => m.UnloadStateAsync($"idem_{key}", It.IsAny<UnloadStateOptions>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task PushAsync_WithUnloadAfterCommitFalse_NeverUnloadsIdempotencyKeys()
+    {
+        var mockStateManager = CreateMockStateManager();
+        var idempotencyConfig = new IdempotencyConfig { TtlSeconds = 86400, UnloadAfterCommit = false };
+        var actor = await CreateActorAsync(mockStateManager, idempotencyConfig: idempotencyConfig);
+        var itemJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "test" });
+        var key = Guid.NewGuid().ToString();
+
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem> { new Interfaces.PushItem { ItemJson = itemJson, Priority = 0, IdempotencyKey = key } }
+        });
+
+        mockStateManager.Verify(m => m.UnloadStateAsync(It.IsAny<string>(), It.IsAny<UnloadStateOptions>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task PushAsync_WithIdempotencyKeyExceedingMaxLength_ReturnsFailureWithZeroItemsPushed()
+    {
+        var mockStateManager = CreateMockStateManager();
+        var actor = await CreateActorAsync(mockStateManager);
+        var itemJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "test" });
+        var overlongKey = new string('k', 129);
+
+        var result = await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem> { new Interfaces.PushItem { ItemJson = itemJson, Priority = 0, IdempotencyKey = overlongKey } }
+        });
+
+        Assert.False(result.Success);
+        Assert.Equal(0, result.ItemsPushed);
+
+        var popResult = await actor.Pop(new Interfaces.PopRequest());
+        Assert.Empty(popResult.Items);
+    }
+
+    [Fact]
+    public async Task PushAsync_WithIdempotencyKeyContainingControlCharacter_ReturnsFailureWithZeroItemsPushed()
+    {
+        var mockStateManager = CreateMockStateManager();
+        var actor = await CreateActorAsync(mockStateManager);
+        var itemJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "test" });
+
+        var result = await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem> { new Interfaces.PushItem { ItemJson = itemJson, Priority = 0, IdempotencyKey = "bad\0key" } }
+        });
+
+        Assert.False(result.Success);
+        Assert.Equal(0, result.ItemsPushed);
+    }
+
+    [Fact]
+    public async Task ConfigureDedup_WithEnabledFalse_DisablesDedupOnSubsequentPush()
+    {
+        var mockStateManager = CreateMockStateManager();
+        var actor = await CreateActorAsync(mockStateManager);
+        var key = Guid.NewGuid().ToString();
+        var itemJson1 = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "first" });
+        var itemJson2 = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["message"] = "second" });
+
+        var configureResult = await actor.ConfigureDedup(new Interfaces.ConfigureDedupRequest { Enabled = false });
+        Assert.True(configureResult.Success);
+
+        await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem> { new Interfaces.PushItem { ItemJson = itemJson1, Priority = 0, IdempotencyKey = key } }
+        });
+
+        var secondResult = await actor.Push(new Interfaces.PushRequest
+        {
+            Items = new List<Interfaces.PushItem> { new Interfaces.PushItem { ItemJson = itemJson2, Priority = 0, IdempotencyKey = key } }
+        });
+
+        // Dedup disabled - the "duplicate" key is not honored, item is pushed again
+        Assert.True(secondResult.Success);
+        Assert.Equal(1, secondResult.ItemsPushed);
+        Assert.Equal(0, secondResult.ItemsDeduplicated);
+
+        var popResult = await actor.Pop(new Interfaces.PopRequest { Count = 10 });
+        Assert.Equal(2, popResult.Items.Count);
     }
 
     [Fact]

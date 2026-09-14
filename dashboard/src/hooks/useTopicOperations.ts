@@ -34,10 +34,12 @@ export const useTopicOperations = (topicId: string) => {
     }
   };
 
-  const publish = async (priority: number, payload: QueuePayload) => {
+  const publish = async (priority: number, payload: QueuePayload, idempotencyKey?: string) => {
     setIsPublishing(true);
     try {
-      const response = await topicApi.publish(topicId, { items: [{ item: payload, priority }] });
+      const response = await topicApi.publish(topicId, {
+        items: [{ item: payload, priority, idempotencyKey: idempotencyKey || undefined }],
+      });
       setLastPublish(response);
       setCurrentPayload(generatePayload());
       return response;
@@ -49,10 +51,10 @@ export const useTopicOperations = (topicId: string) => {
     }
   };
 
-  const subscribe = async (subscriberId: string) => {
+  const subscribe = async (subscriberId: string, dedupEnabled?: boolean) => {
     setIsSubscribing(true);
     try {
-      const response = await topicApi.subscribe(topicId, subscriberId);
+      const response = await topicApi.subscribe(topicId, subscriberId, { dedupEnabled });
       setSubscriberIds(prev => (prev.includes(subscriberId) ? prev : [...prev, subscriberId]));
       return response;
     } catch (err) {

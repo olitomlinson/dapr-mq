@@ -152,11 +152,11 @@ daprMQ takes a different approach:
 - [x] **Competing Consumers**: Experimental project (requires Bulk Push and Bulk Pop as a pre-requisite)
 - [x] **Large message support**: large messages are already possible, but large messages can be optionally stored in a dedicated binary store and not in the transaction store of the queue. 
 - [x] **Pub Sub**: When publishing to a single Topic, dapr-mq can fan-out to N other independent Subscriber Queues. 
+- [x] **Message Deduplication**: Messages with a non-unique Idempotency Key will be deduplicated within a time-window since first-occurrence.
 
 ### To-do
 
 - [ ] **Multi-tenant API surface**: Ensure all queues operations can be scoped to a first-class `Tenant ID`. Stretch to JWT validation.
-- [ ] **Message Deduplication**: Messages with a non-unique Idempotency Key will be deuplicated within a time-window since first-occurence.
 - [ ] **Optimised large message support**: When Dapr releases the Binary Store component in 1.19, large messages will be streamed rather than buffered in memory.
 - [ ] **Queue Purge**: Remove all messages from a queue.
 - [ ] **Max Retries / Automatic Dead-lettering**: When calling Pop With Acknowledgements, if a message is popped N number of times without Acknowledgement, the message will be deemed poisonous, and automatically moved to the Deadletter queue.

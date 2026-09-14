@@ -32,6 +32,7 @@ function App() {
     isPushing,
     isPopping,
     error,
+    lastPushDeduplicated,
     pushMessage,
     popMessage,
     popWithAck,
@@ -150,7 +151,8 @@ function App() {
               queueId={queueId}
               currentPayload={currentPayload}
               isPushing={isPushing}
-              onPush={(priority, payload) => pushMessage(priority, payload)}
+              lastPushDeduplicated={lastPushDeduplicated}
+              onPush={(priority, payload, idempotencyKey) => pushMessage(priority, payload, idempotencyKey)}
             />
 
             {showPopSection && (

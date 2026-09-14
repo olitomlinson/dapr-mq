@@ -9,15 +9,17 @@ interface PushSectionProps {
   queueId: string;
   currentPayload: QueuePayload;
   isPushing: boolean;
-  onPush: (priority: number, payload: QueuePayload) => void;
+  lastPushDeduplicated?: boolean;
+  onPush: (priority: number, payload: QueuePayload, idempotencyKey?: string) => void;
 }
 
-export const PushSection = ({ queueId, currentPayload, isPushing, onPush }: PushSectionProps) => {
+export const PushSection = ({ queueId, currentPayload, isPushing, lastPushDeduplicated, onPush }: PushSectionProps) => {
   const [activeTab, setActiveTab] = useState<'simple' | 'curl'>('simple');
   const [priority, setPriority] = useState<number>(0);
   const [jsonText, setJsonText] = useState<string>('');
   const [validationError, setValidationError] = useState<string | null>(null);
   const [isValid, setIsValid] = useState(true);
+  const [idempotencyKey, setIdempotencyKey] = useState<string>('');
 
   useEffect(() => {
     setJsonText(JSON.stringify(currentPayload, null, 2));
@@ -26,7 +28,9 @@ export const PushSection = ({ queueId, currentPayload, isPushing, onPush }: Push
   }, [currentPayload]);
 
   const generateCurl = (queueId: string, payload: QueuePayload, priority: number): string => {
-    const body = JSON.stringify({ items: [{ item: payload, priority }] });
+    const item: Record<string, unknown> = { item: payload, priority };
+    if (idempotencyKey) item.idempotencyKey = idempotencyKey;
+    const body = JSON.stringify({ items: [item] });
     return `curl -X POST '${API_BASE}/queue/${queueId}/push' \\\n  -H 'Content-Type: application/json' \\\n  -d '${body}'`;
   };
 
@@ -55,9 +59,11 @@ export const PushSection = ({ queueId, currentPayload, isPushing, onPush }: Push
   const handlePush = () => {
     const result = validateQueuePayload(jsonText);
     if (result.valid && result.payload) {
-      onPush(priority, result.payload as unknown as QueuePayload);
+      onPush(priority, result.payload as unknown as QueuePayload, idempotencyKey || undefined);
     }
   };
+
+  const generateIdempotencyKey = () => setIdempotencyKey(crypto.randomUUID());
 
   const getPayloadForCurl = (): QueuePayload => {
     const result = validateQueuePayload(jsonText);
@@ -110,6 +116,25 @@ export const PushSection = ({ queueId, currentPayload, isPushing, onPush }: Push
             <button onClick={incrementPriority} disabled={isPushing}>+</button>
           </div>
 
+          <div className={styles.idempotencyControl}>
+            <label>Idempotency Key:</label>
+            <input
+              type="text"
+              value={idempotencyKey}
+              onChange={(e) => setIdempotencyKey(e.target.value)}
+              placeholder="optional - dedup within TTL window"
+              disabled={isPushing}
+            />
+            <button onClick={generateIdempotencyKey} disabled={isPushing} title="Generate a UUID">
+              Generate
+            </button>
+            {idempotencyKey && (
+              <button onClick={() => setIdempotencyKey('')} disabled={isPushing} title="Clear">
+                ×
+              </button>
+            )}
+          </div>
+
           <button
             className={styles.pushBtn}
             onClick={handlePush}
@@ -117,6 +142,12 @@ export const PushSection = ({ queueId, currentPayload, isPushing, onPush }: Push
           >
             {isPushing ? 'Pushing...' : 'Push'}
           </button>
+
+          {lastPushDeduplicated && (
+            <div className={styles.dedupNotice}>
+              This item was not pushed — its idempotency key was already used within the TTL window.
+            </div>
+          )}
         </div>
       )}
 

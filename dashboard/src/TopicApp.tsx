@@ -56,8 +56,8 @@ function TopicApp() {
     updateTopicIdInUrl(newTopicId);
   };
 
-  const handleAddSubscriber = async (subscriberId: string) => {
-    const result = await subscribe(subscriberId);
+  const handleAddSubscriber = async (subscriberId: string, dedupEnabled?: boolean) => {
+    const result = await subscribe(subscriberId, dedupEnabled);
     if (result) {
       setSelectedSubscriberId(subscriberId);
     }
@@ -120,7 +120,7 @@ function TopicApp() {
             topicId={topicId}
             currentPayload={currentPayload}
             isPublishing={isPublishing}
-            onPublish={(priority, payload) => publish(priority, payload)}
+            onPublish={(priority, payload, idempotencyKey) => publish(priority, payload, idempotencyKey)}
           />
 
           {selectedSubscriberId && (

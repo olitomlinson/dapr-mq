@@ -105,9 +105,10 @@ public class QueueActorRaceConditionTests
             TokenTtl = TimeSpan.FromMinutes(5)
         });
         var blobReapConfig = new BlobReapConfig { BackstopSeconds = 86400, PostDownloadSeconds = 86400 };
+        var idempotencyConfig = new IdempotencyConfig { TtlSeconds = 86400 };
 
         var actorHost = ActorHost.CreateForTest<QueueActor>(testOptions);
-        var actor = new QueueActor(actorHost, mockInvoker.Object, mockBlobReaperActorInvoker.Object, tokenIssuer, blobReapConfig);
+        var actor = new QueueActor(actorHost, mockInvoker.Object, mockBlobReaperActorInvoker.Object, tokenIssuer, blobReapConfig, idempotencyConfig);
 
         var stateManagerProperty = typeof(Actor).GetProperty("StateManager");
         stateManagerProperty?.SetValue(actor, mockStateManager.Object);

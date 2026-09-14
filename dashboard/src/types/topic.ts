@@ -1,13 +1,17 @@
 // API request/response types matching the DaprMQ Topic (pub/sub) API
 
 export interface PublishRequest {
-  items: { item: unknown; priority: number }[];
+  items: { item: unknown; priority: number; idempotencyKey?: string }[];
 }
 
 export interface PublishResponse {
   accepted: boolean;
   publishId: string;
   sequence: number;
+}
+
+export interface SubscribeRequest {
+  dedupEnabled?: boolean;
 }
 
 export interface SubscribeResponse {

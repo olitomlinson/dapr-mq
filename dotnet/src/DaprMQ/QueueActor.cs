@@ -26,6 +26,7 @@ public record MetadataConfig
 {
     public int SegmentSize { get; init; } = 100;
     public int BufferSegments { get; init; } = 1;
+    public bool DedupEnabled { get; init; } = true;
 }
 
 /// <summary>
@@ -64,6 +65,16 @@ public record LockState
 }
 
 /// <summary>
+/// Marker written at state key "idem_{key}" (one entry per idempotency key, with a native
+/// per-entry TTL) to record that an IdempotencyKey has already been used. TTL enforcement is
+/// native to the state store; CreatedAt is for debugging only.
+/// </summary>
+public record IdempotencyMarker
+{
+    public required double CreatedAt { get; init; }
+}
+
+/// <summary>
 /// QueueActor - A FIFO queue-based Dapr actor with priority support.
 /// Implements segmented storage (100 items per segment) for scalable queue operations.
 /// </summary>
@@ -73,11 +84,13 @@ public class QueueActor : Actor, IQueueActor, IRemindable
     private readonly IBlobReaperActorInvoker _blobReaperActorInvoker;
     private readonly IObjectClaimTokenIssuer _objectClaimTokenIssuer;
     private readonly BlobReapConfig _blobReapConfig;
+    private readonly IdempotencyConfig _idempotencyConfig;
 
     private const int MaxSegmentSize = 100;
     private const int MinLockTtlSeconds = 1;
     private const int MaxLockTtlSeconds = 300;
     private const int LockIdLength = 11;
+    private const int MaxIdempotencyKeyLength = 128;
 
     private static bool IsQueueCorrupted(ActorMetadata metadata) =>
         !string.IsNullOrEmpty(metadata.ErrorMessage);
@@ -87,12 +100,14 @@ public class QueueActor : Actor, IQueueActor, IRemindable
         IQueueActorInvoker queueActorInvoker,
         IBlobReaperActorInvoker blobReaperActorInvoker,
         IObjectClaimTokenIssuer objectClaimTokenIssuer,
-        BlobReapConfig blobReapConfig) : base(host)
+        BlobReapConfig blobReapConfig,
+        IdempotencyConfig idempotencyConfig) : base(host)
     {
         _actorInvoker = queueActorInvoker ?? throw new ArgumentNullException(nameof(queueActorInvoker));
         _blobReaperActorInvoker = blobReaperActorInvoker ?? throw new ArgumentNullException(nameof(blobReaperActorInvoker));
         _objectClaimTokenIssuer = objectClaimTokenIssuer ?? throw new ArgumentNullException(nameof(objectClaimTokenIssuer));
         _blobReapConfig = blobReapConfig ?? throw new ArgumentNullException(nameof(blobReapConfig));
+        _idempotencyConfig = idempotencyConfig ?? throw new ArgumentNullException(nameof(idempotencyConfig));
     }
 
     /// <summary>
@@ -138,6 +153,18 @@ public class QueueActor : Actor, IQueueActor, IRemindable
     }
 
     /// <summary>
+    /// Validates a client-supplied IdempotencyKey before it's used as (a suffix of) an actor
+    /// state key. Used raw, not hashed - bounds length to stay well under Postgres's B-tree
+    /// index row-size ceiling, and rejects control characters (including NUL, which Postgres
+    /// `text` columns cannot store at all).
+    /// </summary>
+    private static bool IsValidIdempotencyKey(string idempotencyKey)
+    {
+        return idempotencyKey.Length <= MaxIdempotencyKeyLength
+            && !idempotencyKey.Any(char.IsControl);
+    }
+
+    /// <summary>
     /// Called when the actor is activated. Initializes metadata structure if it doesn't exist.
     /// </summary>
     protected override async Task OnActivateAsync()
@@ -151,7 +178,8 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                 Config = new MetadataConfig
                 {
                     SegmentSize = MaxSegmentSize,
-                    BufferSegments = 1
+                    BufferSegments = 1,
+                    DedupEnabled = true
                 },
                 Queues = new Dictionary<int, QueueMetadata>(),
                 LockCount = 0
@@ -317,6 +345,17 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                         ErrorMessage = $"Priority must be >= 0, got {item.Priority}"
                     };
                 }
+
+                if (item.IdempotencyKey != null && !IsValidIdempotencyKey(item.IdempotencyKey))
+                {
+                    Logger.LogWarning($"Push failed: IdempotencyKey exceeds {MaxIdempotencyKeyLength} chars or contains control characters");
+                    return new PushResponse
+                    {
+                        Success = false,
+                        ItemsPushed = 0,
+                        ErrorMessage = $"IdempotencyKey must be <= {MaxIdempotencyKeyLength} characters and contain no control characters"
+                    };
+                }
             }
 
             // Group by priority and process in order
@@ -325,6 +364,8 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                 .OrderBy(g => g.Key);
 
             int totalPushed = 0;
+            int totalDeduplicated = 0;
+            var touchedIdempotencyKeys = new List<string>();
             var processedPriorities = new HashSet<int>();
 
             // Process each priority group
@@ -335,6 +376,24 @@ public class QueueActor : Actor, IQueueActor, IRemindable
 
                 foreach (var item in group)
                 {
+                    if (!string.IsNullOrEmpty(item.IdempotencyKey) && metadata.Config.DedupEnabled)
+                    {
+                        var idemKey = $"idem_{item.IdempotencyKey}";
+                        var existingMarker = await StateManager.TryGetStateAsync<IdempotencyMarker>(idemKey);
+                        if (existingMarker.HasValue)
+                        {
+                            totalDeduplicated++;
+                            touchedIdempotencyKeys.Add(idemKey);
+                            continue; // skip PushInternal - already seen within the TTL window
+                        }
+
+                        await StateManager.SetStateAsync(
+                            idemKey,
+                            new IdempotencyMarker { CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds() },
+                            TimeSpan.FromSeconds(_idempotencyConfig.TtlSeconds));
+                        touchedIdempotencyKeys.Add(idemKey);
+                    }
+
                     // Push and stage changes (reuse existing PushInternal)
                     bool success = await PushInternal(item.ItemJson, priority);
 
@@ -361,12 +420,30 @@ public class QueueActor : Actor, IQueueActor, IRemindable
             // Commit all staged changes atomically (all items across all priorities)
             await StateManager.SaveStateAsync();
 
+            // Bound actor in-memory growth: once committed, idempotency markers are safe to
+            // unload from the state manager's tracker (best-effort, controlled by config).
+            if (_idempotencyConfig.UnloadAfterCommit)
+            {
+                foreach (var idemKey in touchedIdempotencyKeys)
+                {
+                    try
+                    {
+                        await StateManager.UnloadStateAsync(idemKey);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.LogWarning(ex, "Failed to unload idempotency key state {IdemKey}", idemKey);
+                    }
+                }
+            }
+
             Logger.LogDebug($"Pushed {totalPushed} items across {processedPriorities.Count} priorities");
 
             return new PushResponse
             {
                 Success = true,
-                ItemsPushed = totalPushed
+                ItemsPushed = totalPushed,
+                ItemsDeduplicated = totalDeduplicated
             };
         }
         catch (InvalidOperationException)
@@ -384,6 +461,20 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                 ErrorMessage = ex.Message
             };
         }
+    }
+
+    /// <summary>
+    /// Configures whether this queue honors IdempotencyKey dedup on Push. Defaults to enabled;
+    /// callable directly for a plain queue, or by TopicActor.Subscribe to opt a subscriber's
+    /// provisioned queue out of dedup for items relayed from the topic.
+    /// </summary>
+    public async Task<ConfigureDedupResponse> ConfigureDedup(ConfigureDedupRequest request)
+    {
+        var metadata = await GetMetadataAsync();
+        metadata = metadata with { Config = metadata.Config with { DedupEnabled = request.Enabled } };
+        await SetMetadataAsync(metadata);
+        await StateManager.SaveStateAsync();
+        return new ConfigureDedupResponse { Success = true };
     }
 
     /// <summary>

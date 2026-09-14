@@ -13,6 +13,7 @@ public static class ActorMethodNames
     public const string DeadLetter = "DeadLetter";
     public const string InitializeHttpSink = "InitializeHttpSink";
     public const string UninitializeHttpSink = "UninitializeHttpSink";
+    public const string ConfigureDedup = "ConfigureDedup";
 
     public const string TestUnsafeUnload = "TestUnsafeUnload";
 

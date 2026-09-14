@@ -113,6 +113,60 @@ public class QueueControllerTests
     }
 
     [Fact]
+    public async Task Push_WithIdempotencyKey_MapsToActorPushItem()
+    {
+        // Arrange
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        PushRequest? capturedRequest = null;
+        mockInvoker.Setup(i => i.InvokeMethodAsync<PushRequest, PushResponse>(
+                It.IsAny<ActorId>(),
+                It.IsAny<string>(),
+                It.IsAny<PushRequest>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<ActorId, string, PushRequest, CancellationToken>((_, _, req, _) => capturedRequest = req)
+            .ReturnsAsync(new PushResponse { Success = true, ItemsPushed = 1 });
+
+        var controller = CreateController(mockInvoker.Object);
+        var itemElement = JsonSerializer.SerializeToElement(new { id = 1, value = "test" });
+        var request = new ApiPushRequest(new List<ApiPushItem>
+        {
+            new ApiPushItem(itemElement, Priority: 1, IdempotencyKey: "my-key-123")
+        });
+
+        // Act
+        await controller.Push("test-queue", request);
+
+        // Assert
+        Assert.NotNull(capturedRequest);
+        Assert.Equal("my-key-123", capturedRequest!.Items[0].IdempotencyKey);
+    }
+
+    [Fact]
+    public async Task Push_ResponseIncludesItemsDeduplicated()
+    {
+        // Arrange
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        mockInvoker.Setup(i => i.InvokeMethodAsync<PushRequest, PushResponse>(
+                It.IsAny<ActorId>(),
+                It.IsAny<string>(),
+                It.IsAny<PushRequest>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PushResponse { Success = true, ItemsPushed = 1, ItemsDeduplicated = 2 });
+
+        var controller = CreateController(mockInvoker.Object);
+        var itemElement = JsonSerializer.SerializeToElement(new { id = 1 });
+        var request = new ApiPushRequest(new List<ApiPushItem> { new ApiPushItem(itemElement, Priority: 1) });
+
+        // Act
+        var result = await controller.Push("test-queue", request);
+
+        // Assert
+        var okResult = Assert.IsType<OkObjectResult>(result);
+        var response = Assert.IsType<ApiPushResponse>(okResult.Value);
+        Assert.Equal(2, response.ItemsDeduplicated);
+    }
+
+    [Fact]
     public async Task Push_EmptyArray_Returns400()
     {
         // Arrange

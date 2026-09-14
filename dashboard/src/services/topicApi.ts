@@ -2,6 +2,7 @@ import { API_BASE, QueueApiError } from './queueApi';
 import type {
   PublishRequest,
   PublishResponse,
+  SubscribeRequest,
   SubscribeResponse,
   ListSubscribersResponse,
   PublishStatusResponse,
@@ -24,9 +25,11 @@ export const topicApi = {
     return response.json();
   },
 
-  async subscribe(topicId: string, subscriberId: string): Promise<SubscribeResponse> {
+  async subscribe(topicId: string, subscriberId: string, request?: SubscribeRequest): Promise<SubscribeResponse> {
     const response = await fetch(`${API_BASE}/topic/${topicId}/subscribers/${subscriberId}`, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request ?? {}),
     });
 
     if (!response.ok) {

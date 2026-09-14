@@ -180,6 +180,7 @@ public class DaprTestEnvironment : IAsyncLifetime
                 "--placement-host-address", "dapr-placement:50005",
                 "--scheduler-host-address", "dapr-scheduler:50006",
                 "--resources-path", "/tmp/dapr-components",
+                "--config", "/tmp/dapr-components/config.yml",
                 "--log-level", "info")  // Enable debug logging for Dapr
             .WithBindMount(componentsPath, "/tmp/dapr-components")
             .WithBindMount(_blobStoreTestDirectory, "/tmp/blobstore")

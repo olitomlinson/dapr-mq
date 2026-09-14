@@ -92,6 +92,52 @@ public class QueueControllerLargeObjectTests
     }
 
     [Fact]
+    public async Task PushObject_WithIdempotencyKeyHeader_MapsToActorPushItem()
+    {
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        PushRequest? capturedRequest = null;
+        mockInvoker.Setup(i => i.InvokeMethodAsync<PushRequest, PushResponse>(
+                It.IsAny<ActorId>(), "Push", It.IsAny<PushRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<ActorId, string, PushRequest, CancellationToken>((_, _, req, _) => capturedRequest = req)
+            .ReturnsAsync(new PushResponse { Success = true, ItemsPushed = 1 });
+
+        var mockObjectStore = new Mock<IObjectStore>();
+        mockObjectStore.Setup(o => o.UploadAsync("test-queue", It.IsAny<string>(), It.IsAny<Stream>(), null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync("test-queue/generated-id");
+
+        var controller = CreateController(mockInvoker, mockObjectStore);
+
+        var result = await controller.PushObject("test-queue", idempotencyKey: "object-key-456");
+
+        Assert.IsType<OkObjectResult>(result);
+        Assert.NotNull(capturedRequest);
+        Assert.Equal("object-key-456", capturedRequest!.Items[0].IdempotencyKey);
+    }
+
+    [Fact]
+    public async Task PushObject_WithoutIdempotencyKeyHeader_LeavesKeyNull()
+    {
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        PushRequest? capturedRequest = null;
+        mockInvoker.Setup(i => i.InvokeMethodAsync<PushRequest, PushResponse>(
+                It.IsAny<ActorId>(), "Push", It.IsAny<PushRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<ActorId, string, PushRequest, CancellationToken>((_, _, req, _) => capturedRequest = req)
+            .ReturnsAsync(new PushResponse { Success = true, ItemsPushed = 1 });
+
+        var mockObjectStore = new Mock<IObjectStore>();
+        mockObjectStore.Setup(o => o.UploadAsync("test-queue", It.IsAny<string>(), It.IsAny<Stream>(), null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync("test-queue/generated-id");
+
+        var controller = CreateController(mockInvoker, mockObjectStore);
+
+        var result = await controller.PushObject("test-queue");
+
+        Assert.IsType<OkObjectResult>(result);
+        Assert.NotNull(capturedRequest);
+        Assert.Null(capturedRequest!.Items[0].IdempotencyKey);
+    }
+
+    [Fact]
     public async Task PushObject_NegativePriority_ReturnsBadRequest()
     {
         var mockInvoker = new Mock<IQueueActorInvoker>();

@@ -1,5 +1,6 @@
 import type {
   PushRequest,
+  PushResponse,
   PopResponse,
   PopWithAckResponse,
   AcknowledgeRequest,
@@ -22,7 +23,7 @@ export class QueueApiError extends Error {
 }
 
 export const queueApi = {
-  async push(queueId: string, request: PushRequest): Promise<void> {
+  async push(queueId: string, request: PushRequest): Promise<PushResponse> {
     const response = await fetch(`${API_BASE}/queue/${queueId}/push`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -33,6 +34,8 @@ export const queueApi = {
       const data = await response.json().catch(() => ({ message: 'Unknown error' }));
       throw new QueueApiError(response.status, data);
     }
+
+    return response.json();
   },
 
   async pop(queueId: string, count: number = 1): Promise<PopResponse | null> {

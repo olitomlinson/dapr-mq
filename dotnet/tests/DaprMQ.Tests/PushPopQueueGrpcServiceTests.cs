@@ -56,6 +56,86 @@ public class DaprMQGrpcServiceTests
     }
 
     [Fact]
+    public async Task Push_WithIdempotencyKey_MapsToActorPushItem()
+    {
+        // Arrange
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        ActorModels.PushRequest? capturedRequest = null;
+        mockInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.PushRequest, ActorModels.PushResponse>(
+                It.IsAny<ActorId>(),
+                It.IsAny<string>(),
+                It.IsAny<ActorModels.PushRequest>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<ActorId, string, ActorModels.PushRequest, CancellationToken>((_, _, req, _) => capturedRequest = req)
+            .ReturnsAsync(new ActorModels.PushResponse { Success = true, ItemsPushed = 1 });
+
+        var service = new DaprMQGrpcService(_mockLogger.Object, mockInvoker.Object);
+        var request = new ApiServer.Grpc.PushRequest { QueueId = "test-queue" };
+        request.Items.Add(new ApiServer.Grpc.PushItem
+        {
+            ItemJson = "{\"id\":1}",
+            Priority = 1,
+            IdempotencyKey = "grpc-key-789"
+        });
+
+        // Act
+        await service.Push(request, _mockContext.Object);
+
+        // Assert
+        Assert.NotNull(capturedRequest);
+        Assert.Equal("grpc-key-789", capturedRequest!.Items[0].IdempotencyKey);
+    }
+
+    [Fact]
+    public async Task Push_WithoutIdempotencyKey_LeavesKeyNull()
+    {
+        // Arrange
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        ActorModels.PushRequest? capturedRequest = null;
+        mockInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.PushRequest, ActorModels.PushResponse>(
+                It.IsAny<ActorId>(),
+                It.IsAny<string>(),
+                It.IsAny<ActorModels.PushRequest>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<ActorId, string, ActorModels.PushRequest, CancellationToken>((_, _, req, _) => capturedRequest = req)
+            .ReturnsAsync(new ActorModels.PushResponse { Success = true, ItemsPushed = 1 });
+
+        var service = new DaprMQGrpcService(_mockLogger.Object, mockInvoker.Object);
+        var request = new ApiServer.Grpc.PushRequest { QueueId = "test-queue" };
+        request.Items.Add(new ApiServer.Grpc.PushItem { ItemJson = "{\"id\":1}", Priority = 1 });
+
+        // Act
+        await service.Push(request, _mockContext.Object);
+
+        // Assert
+        Assert.NotNull(capturedRequest);
+        Assert.Null(capturedRequest!.Items[0].IdempotencyKey);
+    }
+
+    [Fact]
+    public async Task Push_ResponseIncludesItemsDeduplicated()
+    {
+        // Arrange
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        mockInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.PushRequest, ActorModels.PushResponse>(
+                It.IsAny<ActorId>(),
+                It.IsAny<string>(),
+                It.IsAny<ActorModels.PushRequest>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.PushResponse { Success = true, ItemsPushed = 1, ItemsDeduplicated = 2 });
+
+        var service = new DaprMQGrpcService(_mockLogger.Object, mockInvoker.Object);
+        var request = new ApiServer.Grpc.PushRequest { QueueId = "test-queue" };
+        request.Items.Add(new ApiServer.Grpc.PushItem { ItemJson = "{\"id\":1}", Priority = 1 });
+
+        // Act
+        var response = await service.Push(request, _mockContext.Object);
+
+        // Assert
+        Assert.Equal(2, response.ItemsDeduplicated);
+    }
+
+    [Fact]
     public async Task Push_NegativePriority_ThrowsInvalidArgument()
     {
         // Arrange

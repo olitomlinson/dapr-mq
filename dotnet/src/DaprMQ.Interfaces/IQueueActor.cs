@@ -14,6 +14,11 @@ public interface IQueueActor : IActor
     /// <returns>Push response with success status</returns>
     Task<PushResponse> Push(PushRequest request);
 
+    /// <summary>
+    /// Configures whether this queue honors IdempotencyKey dedup on Push.
+    /// </summary>
+    Task<ConfigureDedupResponse> ConfigureDedup(ConfigureDedupRequest request);
+
     Task TestUnsafeUnload(UnsafeUnloadRequest request);
 
     /// <summary>

@@ -9,7 +9,7 @@ interface TopicPublishSectionProps {
   topicId: string;
   currentPayload: QueuePayload;
   isPublishing: boolean;
-  onPublish: (priority: number, payload: QueuePayload) => void;
+  onPublish: (priority: number, payload: QueuePayload, idempotencyKey?: string) => void;
 }
 
 export const TopicPublishSection = ({ topicId, currentPayload, isPublishing, onPublish }: TopicPublishSectionProps) => {
@@ -18,6 +18,7 @@ export const TopicPublishSection = ({ topicId, currentPayload, isPublishing, onP
   const [jsonText, setJsonText] = useState<string>('');
   const [validationError, setValidationError] = useState<string | null>(null);
   const [isValid, setIsValid] = useState(true);
+  const [idempotencyKey, setIdempotencyKey] = useState<string>('');
 
   useEffect(() => {
     setJsonText(JSON.stringify(currentPayload, null, 2));
@@ -26,7 +27,9 @@ export const TopicPublishSection = ({ topicId, currentPayload, isPublishing, onP
   }, [currentPayload]);
 
   const generateCurl = (topicId: string, payload: QueuePayload, priority: number): string => {
-    const body = JSON.stringify({ items: [{ item: payload, priority }] });
+    const item: Record<string, unknown> = { item: payload, priority };
+    if (idempotencyKey) item.idempotencyKey = idempotencyKey;
+    const body = JSON.stringify({ items: [item] });
     return `curl -X POST '${API_BASE}/topic/${topicId}/publish' \\\n  -H 'Content-Type: application/json' \\\n  -d '${body}'`;
   };
 
@@ -55,9 +58,11 @@ export const TopicPublishSection = ({ topicId, currentPayload, isPublishing, onP
   const handlePublish = () => {
     const result = validateQueuePayload(jsonText);
     if (result.valid && result.payload) {
-      onPublish(priority, result.payload as unknown as QueuePayload);
+      onPublish(priority, result.payload as unknown as QueuePayload, idempotencyKey || undefined);
     }
   };
+
+  const generateIdempotencyKey = () => setIdempotencyKey(crypto.randomUUID());
 
   const getPayloadForCurl = (): QueuePayload => {
     const result = validateQueuePayload(jsonText);
@@ -108,6 +113,25 @@ export const TopicPublishSection = ({ topicId, currentPayload, isPublishing, onP
               disabled={isPublishing}
             />
             <button onClick={incrementPriority} disabled={isPublishing}>+</button>
+          </div>
+
+          <div className={styles.idempotencyControl}>
+            <label>Idempotency Key:</label>
+            <input
+              type="text"
+              value={idempotencyKey}
+              onChange={(e) => setIdempotencyKey(e.target.value)}
+              placeholder="optional - per-subscriber dedup within TTL window"
+              disabled={isPublishing}
+            />
+            <button onClick={generateIdempotencyKey} disabled={isPublishing} title="Generate a UUID">
+              Generate
+            </button>
+            {idempotencyKey && (
+              <button onClick={() => setIdempotencyKey('')} disabled={isPublishing} title="Clear">
+                ×
+              </button>
+            )}
           </div>
 
           <button

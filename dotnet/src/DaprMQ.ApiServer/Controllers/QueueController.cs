@@ -76,7 +76,8 @@ public class QueueController : ControllerBase
             var actorItems = request.Items.Select(apiItem => new PushItem
             {
                 ItemJson = apiItem.Item.GetRawText(),
-                Priority = apiItem.Priority
+                Priority = apiItem.Priority,
+                IdempotencyKey = apiItem.IdempotencyKey
             }).ToList();
 
             return await PushItemsAsync(queueId, actorItems);
@@ -106,10 +107,14 @@ public class QueueController : ControllerBase
 
         if (result.Success)
         {
+            var message = result.ItemsDeduplicated > 0
+                ? $"Pushed {result.ItemsPushed} items to queue {queueId} ({result.ItemsDeduplicated} deduplicated)"
+                : $"Pushed {result.ItemsPushed} items to queue {queueId}";
             return Ok(new ApiPushResponse(
                 true,
-                $"Pushed {result.ItemsPushed} items to queue {queueId}",
-                result.ItemsPushed
+                message,
+                result.ItemsPushed,
+                result.ItemsDeduplicated
             ));
         }
 
@@ -126,6 +131,7 @@ public class QueueController : ControllerBase
         [FromHeader(Name = "priority")] int priority = 1,
         [FromHeader(Name = "content-type")] string? contentType = null,
         [FromHeader(Name = "prefix")] string? prefix = null,
+        [FromHeader(Name = "idempotency-key")] string? idempotencyKey = null,
         CancellationToken cancellationToken = default)
     {
         try
@@ -157,7 +163,8 @@ public class QueueController : ControllerBase
                 new PushItem
                 {
                     ItemJson = itemJson,
-                    Priority = priority
+                    Priority = priority,
+                    IdempotencyKey = idempotencyKey
                 }
             };
 

@@ -2,10 +2,18 @@
 export interface PushItem {
   item: unknown;
   priority: number;
+  idempotencyKey?: string;
 }
 
 export interface PushRequest {
   items: PushItem[];
+}
+
+export interface PushResponse {
+  success: boolean;
+  message: string;
+  itemsPushed: number;
+  itemsDeduplicated?: number;
 }
 
 export interface PopResponseItem {

@@ -224,6 +224,64 @@ public class TopicActorTests
     }
 
     [Fact]
+    public async Task Subscribe_WithDedupEnabledFalse_CallsConfigureDedupOnProvisionedQueue()
+    {
+        var stateData = new Dictionary<string, object>();
+        var mockStateManager = CreateMockStateManager(stateData);
+        var mockQueueActorInvoker = new Mock<IQueueActorInvoker>();
+        ConfigureDedupRequest? capturedRequest = null;
+        ActorId? capturedActorId = null;
+        mockQueueActorInvoker.Setup(i => i.InvokeMethodAsync<ConfigureDedupRequest, ConfigureDedupResponse>(
+                It.IsAny<ActorId>(), "ConfigureDedup", It.IsAny<ConfigureDedupRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<ActorId, string, ConfigureDedupRequest, CancellationToken>((id, _, req, _) =>
+            {
+                capturedActorId = id;
+                capturedRequest = req;
+            })
+            .ReturnsAsync(new ConfigureDedupResponse { Success = true });
+
+        var actor = await CreateActorAsync(mockStateManager, mockQueueActorInvoker: mockQueueActorInvoker);
+
+        var response = await actor.Subscribe(new SubscribeRequest { SubscriberId = "sub-a", DedupEnabled = false });
+
+        Assert.True(response.Success);
+        Assert.Equal("test-topic-sub-sub-a", capturedActorId?.GetId());
+        Assert.NotNull(capturedRequest);
+        Assert.False(capturedRequest!.Enabled);
+    }
+
+    [Fact]
+    public async Task Subscribe_WithDedupEnabledOmitted_NeverCallsConfigureDedup()
+    {
+        var stateData = new Dictionary<string, object>();
+        var mockStateManager = CreateMockStateManager(stateData);
+        var mockQueueActorInvoker = new Mock<IQueueActorInvoker>();
+
+        var actor = await CreateActorAsync(mockStateManager, mockQueueActorInvoker: mockQueueActorInvoker);
+        await actor.Subscribe(new SubscribeRequest { SubscriberId = "sub-a" });
+
+        mockQueueActorInvoker.Verify(i => i.InvokeMethodAsync<ConfigureDedupRequest, ConfigureDedupResponse>(
+            It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<ConfigureDedupRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Subscribe_ConfigureDedupThrows_SubscribeStillSucceeds()
+    {
+        var stateData = new Dictionary<string, object>();
+        var mockStateManager = CreateMockStateManager(stateData);
+        var mockQueueActorInvoker = new Mock<IQueueActorInvoker>();
+        mockQueueActorInvoker.Setup(i => i.InvokeMethodAsync<ConfigureDedupRequest, ConfigureDedupResponse>(
+                It.IsAny<ActorId>(), "ConfigureDedup", It.IsAny<ConfigureDedupRequest>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("queue actor unreachable"));
+
+        var actor = await CreateActorAsync(mockStateManager, mockQueueActorInvoker: mockQueueActorInvoker);
+
+        var response = await actor.Subscribe(new SubscribeRequest { SubscriberId = "sub-a", DedupEnabled = true });
+
+        Assert.True(response.Success);
+    }
+
+    [Fact]
     public async Task Subscribe_AfterItemsAlreadyExist_CursorSkipsBacklog()
     {
         var stateData = new Dictionary<string, object>();
@@ -371,6 +429,36 @@ public class TopicActorTests
         mockStateManager.Verify(m => m.SaveStateAsync(It.IsAny<CancellationToken>()), Times.Once);
         Assert.True(stateData.ContainsKey("circuit_bad"));
         Assert.False(stateData.ContainsKey("circuit_good"));
+    }
+
+    [Fact]
+    public async Task RelayTick_PublishedItemWithIdempotencyKey_ForwardsKeyUnchangedToSubscriberQueuePush()
+    {
+        var stateData = new Dictionary<string, object>();
+        var mockStateManager = CreateMockStateManager(stateData);
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+
+        List<PushItem>? pushedItems = null;
+        mockInvoker.Setup(i => i.InvokeMethodAsync<PushRequest, PushResponse>(
+                It.IsAny<ActorId>(),
+                ActorMethodNames.Push,
+                It.IsAny<PushRequest>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<ActorId, string, PushRequest, CancellationToken>((_, _, req, _) => pushedItems = req.Items)
+            .ReturnsAsync(new PushResponse { Success = true, ItemsPushed = 1 });
+
+        var actor = await CreateActorAsync(mockStateManager, mockInvoker);
+
+        await actor.Subscribe(new SubscribeRequest { SubscriberId = "sub-a" });
+        await actor.Publish(new PublishRequest
+        {
+            Items = new List<PushItem> { new PushItem { ItemJson = "{}", IdempotencyKey = "relay-key-1" } }
+        });
+
+        await actor.ReceiveReminderAsync("relay", Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.FromSeconds(1));
+
+        Assert.NotNull(pushedItems);
+        Assert.Equal("relay-key-1", pushedItems![0].IdempotencyKey);
     }
 
     [Fact]

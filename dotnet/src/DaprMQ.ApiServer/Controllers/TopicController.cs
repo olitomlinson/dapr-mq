@@ -35,7 +35,8 @@ public class TopicController : ControllerBase
             var actorItems = request.Items.Select(apiItem => new PushItem
             {
                 ItemJson = apiItem.Item.GetRawText(),
-                Priority = apiItem.Priority
+                Priority = apiItem.Priority,
+                IdempotencyKey = apiItem.IdempotencyKey
             }).ToList();
 
             var result = await _actorInvoker.InvokeMethodAsync<PublishRequest, PublishResponse>(
@@ -102,7 +103,7 @@ public class TopicController : ControllerBase
             var result = await _actorInvoker.InvokeMethodAsync<SubscribeRequest, SubscribeResponse>(
                 new ActorId(topicId),
                 ActorMethodNames.Subscribe,
-                new SubscribeRequest { SubscriberId = subscriberId, HttpSink = httpSinkConfig });
+                new SubscribeRequest { SubscriberId = subscriberId, HttpSink = httpSinkConfig, DedupEnabled = request?.DedupEnabled });
 
             if (!result.Success)
             {

@@ -6,7 +6,7 @@ interface SubscribersPanelProps {
   subscriberIds: string[];
   isSubscribing: boolean;
   selectedSubscriberId: string | null;
-  onAdd: (subscriberId: string) => void;
+  onAdd: (subscriberId: string, dedupEnabled?: boolean) => void;
   onRemove: (subscriberId: string) => void;
   onSelect: (subscriberId: string) => void;
 }
@@ -20,6 +20,7 @@ export const SubscribersPanel = ({
   onSelect,
 }: SubscribersPanelProps) => {
   const [newSubscriberId, setNewSubscriberId] = useState('');
+  const [dedupEnabled, setDedupEnabled] = useState(true);
   const [validationError, setValidationError] = useState<string | null>(null);
 
   const handleAdd = () => {
@@ -33,8 +34,10 @@ export const SubscribersPanel = ({
       return;
     }
 
-    onAdd(newSubscriberId);
+    // Only send an explicit false - true is the queue's own default, no need to set it.
+    onAdd(newSubscriberId, dedupEnabled ? undefined : false);
     setNewSubscriberId('');
+    setDedupEnabled(true);
     setValidationError(null);
   };
 
@@ -66,6 +69,15 @@ export const SubscribersPanel = ({
           {isSubscribing ? 'Adding...' : 'Add Subscriber'}
         </button>
       </div>
+      <label className={styles.dedupToggle}>
+        <input
+          type="checkbox"
+          checked={dedupEnabled}
+          onChange={(e) => setDedupEnabled(e.target.checked)}
+          disabled={isSubscribing}
+        />
+        Dedup published items by idempotency key
+      </label>
       {validationError && <div className={styles.validationError}>{validationError}</div>}
 
       {subscriberIds.length === 0 ? (

@@ -55,7 +55,8 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
             var actorItems = request.Items.Select(grpcItem => new ActorModels.PushItem
             {
                 ItemJson = grpcItem.ItemJson,
-                Priority = grpcItem.Priority
+                Priority = grpcItem.Priority,
+                IdempotencyKey = grpcItem.HasIdempotencyKey ? grpcItem.IdempotencyKey : null
             }).ToList();
 
             var result = await _queueActorInvoker.InvokeMethodAsync<ActorModels.PushRequest, ActorModels.PushResponse>(
@@ -76,7 +77,8 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
             {
                 Success = result.Success,
                 Message = $"Pushed {result.ItemsPushed} items to queue {request.QueueId}",
-                ItemsPushed = result.ItemsPushed
+                ItemsPushed = result.ItemsPushed,
+                ItemsDeduplicated = result.ItemsDeduplicated
             };
         }
         catch (RpcException)

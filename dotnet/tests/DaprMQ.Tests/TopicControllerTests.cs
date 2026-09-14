@@ -38,6 +38,28 @@ public class TopicControllerTests
     }
 
     [Fact]
+    public async Task Publish_WithIdempotencyKeyOnItem_MapsToActorPushItem()
+    {
+        var mockInvoker = new Mock<ITopicActorInvoker>();
+        PublishRequest? captured = null;
+        mockInvoker.Setup(i => i.InvokeMethodAsync<PublishRequest, PublishResponse>(
+                It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<PublishRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<ActorId, string, PublishRequest, CancellationToken>((_, _, req, _) => captured = req)
+            .ReturnsAsync(new PublishResponse { Accepted = true, PublishId = "p1", Sequence = 0 });
+
+        var controller = CreateController(mockInvoker.Object);
+        var request = new ApiPublishRequest(new List<ApiPushItem>
+        {
+            new ApiPushItem(JsonSerializer.SerializeToElement(new { hello = "world" }), IdempotencyKey: "topic-key-1")
+        });
+
+        await controller.Publish("topic-a", request);
+
+        Assert.NotNull(captured);
+        Assert.Equal("topic-key-1", captured!.Items[0].IdempotencyKey);
+    }
+
+    [Fact]
     public async Task Publish_EmptyItems_Returns400()
     {
         var mockInvoker = new Mock<ITopicActorInvoker>();
@@ -84,6 +106,41 @@ public class TopicControllerTests
         Assert.Equal("https://example.com/webhook", captured!.HttpSink!.Url);
         Assert.Equal(10, captured.HttpSink.MaxConcurrency);
         Assert.Equal(60, captured.HttpSink.LockTtlSeconds);
+    }
+
+    [Fact]
+    public async Task Subscribe_WithDedupEnabledFalse_PassesFlagToActor()
+    {
+        var mockInvoker = new Mock<ITopicActorInvoker>();
+        SubscribeRequest? captured = null;
+        mockInvoker.Setup(i => i.InvokeMethodAsync<SubscribeRequest, SubscribeResponse>(
+                It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<SubscribeRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<ActorId, string, SubscribeRequest, CancellationToken>((_, _, req, _) => captured = req)
+            .ReturnsAsync(new SubscribeResponse { Success = true, QueueActorId = "topic-a-sub-s1" });
+
+        var controller = CreateController(mockInvoker.Object);
+        var request = new ApiSubscribeRequest(DedupEnabled: false);
+        await controller.Subscribe("topic-a", "s1", request);
+
+        Assert.NotNull(captured);
+        Assert.Equal(false, captured!.DedupEnabled);
+    }
+
+    [Fact]
+    public async Task Subscribe_WithDedupEnabledOmitted_LeavesFlagNull()
+    {
+        var mockInvoker = new Mock<ITopicActorInvoker>();
+        SubscribeRequest? captured = null;
+        mockInvoker.Setup(i => i.InvokeMethodAsync<SubscribeRequest, SubscribeResponse>(
+                It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<SubscribeRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<ActorId, string, SubscribeRequest, CancellationToken>((_, _, req, _) => captured = req)
+            .ReturnsAsync(new SubscribeResponse { Success = true, QueueActorId = "topic-a-sub-s1" });
+
+        var controller = CreateController(mockInvoker.Object);
+        await controller.Subscribe("topic-a", "s1", null);
+
+        Assert.NotNull(captured);
+        Assert.Null(captured!.DedupEnabled);
     }
 
     [Fact]

@@ -32,20 +32,23 @@ Content-Type: application/json
 ```json
 {
   "items": [
-    { "item": { "task": "send_email", "to": "a@example.com" }, "priority": 0 }
+    { "item": { "task": "send_email", "to": "a@example.com" }, "priority": 0, "idempotencyKey": "order-42-confirmation" }
   ]
 }
 ```
 
 - `item` — arbitrary JSON, stored and returned as-is.
 - `priority` — `0` is the fast lane, `1+` is normal (lower value = higher priority). Default `1`.
+- `idempotencyKey` — optional. If set and this queue has dedup enabled (the default), an item is silently skipped instead of being pushed again if the same key was already used within the configured TTL window (`IDEMPOTENCY_KEY_TTL_SECONDS`, default 24h). Max 128 characters, no control characters (including NUL).
 - Up to 1000 items per request.
 
 **Response — `200 OK`**
 
 ```json
-{ "success": true, "message": "Pushed 1 items to queue my-queue", "itemsPushed": 1 }
+{ "success": true, "message": "Pushed 1 items to queue my-queue", "itemsPushed": 1, "itemsDeduplicated": 0 }
 ```
+
+- `itemsDeduplicated` — how many items in this request were skipped because their `idempotencyKey` was already used. Not an error: `success` stays `true`, and `itemsPushed + itemsDeduplicated` equals the number of items sent.
 
 **Example**
 
@@ -74,6 +77,7 @@ Unlike `push`, the request **body is the raw object content** (not JSON) — sen
 | `priority` | no | `1` | Same semantics as `push` — `0` is the fast lane. |
 | `content-type` | no | _(none)_ | Recorded alongside the object reference; returned as-is on pop. |
 | `prefix` | no | `{queueId}` | User-controlled path segment the object is stored under, e.g. `store-a`, `store-b`. Combined with an operator-configured global prefix (set at deploy time, never client-controlled) to form the final key: `{globalPrefix}/{prefix}/{objectId}`. Restricted to `[A-Za-z0-9_-]` segments — no `..` or leading `/`. |
+| `idempotency-key` | no | _(none)_ | Same semantics as `push`'s `idempotencyKey` — there's no JSON body here to carry it, so it's a header instead. |
 
 **Response — `200 OK`** — same shape as `push`.
 
@@ -332,7 +336,7 @@ Every poll, the sink pops a batch of items with `PopWithAck` and `POST`s them as
 
 Practical implications:
 
-- **Idempotency matters.** Any non-`200`/non-`202` response (including a slow response that outlives the lock TTL) results in redelivery — design your endpoint to handle receiving the same item more than once.
+- **Idempotency matters.** Any non-`200`/non-`202` response (including a slow response that outlives the lock TTL) results in redelivery — design your endpoint to handle receiving the same item more than once. This is about *redelivery* of an item already on the queue; if you want the *queue itself* to stop a duplicate submission from landing in the first place, see `idempotencyKey` under [Push](#push) instead — the two are complementary, not alternatives.
 - **`202` puts you in control of the ack, but also the risk.** If your endpoint accepts the delivery (`202`) but then crashes before acknowledging, the item redelivers once the lock expires — same as a hard failure. Use `202` when your processing is genuinely async and outlives the lock TTL; use `200` when processing completes synchronously within the request.
 - **No sink-side retries or backoff on failure.** A failing endpoint doesn't get hammered with retries — the next attempt only happens on the item's normal lock-expiry/redelivery cycle, which naturally throttles retry pressure.
 - **Delivered payload shape** — the POST body is a JSON array, one entry per popped item: `{"item": ..., "priority": 0, "lockId": "...", "lockExpiresAt": 1780000123.45}`. That's everything your endpoint needs to call `acknowledge`/`extend-lock`/`deadletter` on a `202` response.
@@ -396,10 +400,12 @@ Content-Type: application/json
 ```
 
 ```json
-{ "items": [{ "item": { "task": "send_email" }, "priority": 0 }] }
+{ "items": [{ "item": { "task": "send_email" }, "priority": 0, "idempotencyKey": "order-42-confirmation" }] }
 ```
 
 Async accept — relay to subscribers happens out of band. Not a delivery receipt.
+
+`idempotencyKey` is forwarded unchanged to every subscriber's queue, but whether it's honored is each subscriber's own choice (see `dedupEnabled` under [Subscribe](#subscribe)) — dedup is enforced independently per destination queue, never at the topic itself. This `202 Accepted` response reflects only that publishing was accepted, not any per-subscriber dedup outcome.
 
 **Response — `202 Accepted`**
 
@@ -419,10 +425,12 @@ Registers a subscriber and provisions its queue (`{topicId}-sub-{subscriberId}`)
 **Body** — optional; omit entirely for a pull-only subscription.
 
 ```json
-{ "httpSink": { "url": "https://example.com/webhook", "maxConcurrency": 10, "lockTtlSeconds": 30 } }
+{ "httpSink": { "url": "https://example.com/webhook", "maxConcurrency": 10, "lockTtlSeconds": 30 }, "dedupEnabled": false }
 ```
 
 `httpSink` registers push delivery on the provisioned queue in the same call — same fields and validation as [HTTP Sink Register](#register), `maxConcurrency`/`lockTtlSeconds` default to `5`/`30` if omitted. If sink registration itself fails after the subscription is created (e.g. the sink actor is transiently unreachable), `Subscribe` still succeeds — the subscription is valid either way, and a sink can always be registered afterwards via `POST /queue/{queueActorId}/sink/http/register`.
+
+`dedupEnabled` — optional, defaults to unset (queue keeps its default of dedup **enabled**). Set to `false` if this subscriber wants every delivery even when the publisher attaches an `idempotencyKey` — e.g. an audit-log consumer, or one that's already idempotent downstream and doesn't need the queue to filter anything. Applies only to this subscriber's own provisioned queue; other subscribers on the same topic are unaffected. Configuring it is best-effort — if it fails (e.g. the queue actor is transiently unreachable), `Subscribe` still succeeds with the queue's default (dedup enabled) in place, the same way a failed `httpSink` registration doesn't fail `Subscribe` either.
 
 **Response — `201 Created`**
 

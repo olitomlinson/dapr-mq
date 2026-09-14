@@ -41,6 +41,11 @@ message PushItem {
   // Priority level (0=fast lane, 1=default, 2+=lower priority)
   // Lower numbers processed first
   int32 priority = 2;
+
+  // Optional client-supplied idempotency/deduplication key (max 128 chars, no control
+  // characters). If the destination queue has dedup enabled and this key was already used
+  // within the configured TTL window, the item is silently skipped.
+  optional string idempotency_key = 3;
 }
 
 // Request to push items to a queue
@@ -62,6 +67,10 @@ message PushResponse {
 
   // Number of items successfully pushed
   int32 items_pushed = 3;
+
+  // Number of items skipped because their idempotency_key was already used within the TTL
+  // window. Not an error - success stays true.
+  int32 items_deduplicated = 4;
 }
 
 // Request to pop items without acknowledgment

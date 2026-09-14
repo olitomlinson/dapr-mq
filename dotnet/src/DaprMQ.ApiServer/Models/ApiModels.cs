@@ -9,7 +9,8 @@ public record ApiPushRequest(
 
 public record ApiPushItem(
     JsonElement Item,
-    int Priority = 1
+    int Priority = 1,
+    string? IdempotencyKey = null
 );
 
 public record ApiAcknowledgeRequest(
@@ -25,7 +26,8 @@ public record ApiExtendLockRequest(
 public record ApiPushResponse(
     bool Success,
     string Message,
-    int ItemsPushed
+    int ItemsPushed,
+    int ItemsDeduplicated = 0
 );
 
 public record ApiPopResponse(
@@ -113,7 +115,8 @@ public record ApiPublishResponse(
 );
 
 public record ApiSubscribeRequest(
-    ApiRegisterHttpSinkRequest? HttpSink = null
+    ApiRegisterHttpSinkRequest? HttpSink = null,
+    bool? DedupEnabled = null
 );
 
 public record ApiSubscribeResponse(
