@@ -1,0 +1,10 @@
+apiVersion: dapr.io/v1alpha1
+kind: Configuration
+metadata:
+  name: daprConfig
+spec:
+  features:
+    # Required for IActorStateManager.SetStateAsync's TTL overload (idempotency-key markers) -
+    # without this, actor state saves with ttlInSeconds are rejected outright.
+    - name: ActorStateTTL
+      enabled: true

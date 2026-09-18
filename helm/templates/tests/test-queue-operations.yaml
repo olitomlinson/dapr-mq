@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "daprmq.fullname" . }}-test-queue-ops
+  labels:
+    {{- include "daprmq.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  containers:
+  - name: test
+    image: curlimages/curl:latest
+    command:
+    - /bin/sh
+    - -c
+    - |
+      set -e
+      echo "Testing DaprMQ queue operations..."
+
+      # Wait for gateway pod to be ready
+      sleep 10
+
+      GATEWAY_URL="http://{{ include "daprmq.fullname" . }}-gateway:{{ .Values.gateway.httpPort }}"
+      QUEUE_ID="test-queue-$(date +%s)"
+
+      echo "Using queue ID: $QUEUE_ID"
+
+      # Test enqueue operation - "items" is a plural array, even for a single item
+      echo "Testing enqueue operation..."
+      ENQUEUE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$GATEWAY_URL/queue/$QUEUE_ID/enqueue" \
+        -H "Content-Type: application/json" \
+        -d '{"items":[{"item":{"test":"data","timestamp":"2024-01-01"},"priority":1}]}')
+
+      ENQUEUE_HTTP_CODE=$(echo "$ENQUEUE_RESPONSE" | tail -n1)
+      ENQUEUE_BODY=$(echo "$ENQUEUE_RESPONSE" | sed '$d')
+
+      if [ "$ENQUEUE_HTTP_CODE" != "200" ]; then
+        echo "Enqueue failed with HTTP code: $ENQUEUE_HTTP_CODE"
+        echo "Response: $ENQUEUE_BODY"
+        exit 1
+      fi
+      echo "Enqueue succeeded: $ENQUEUE_BODY"
+
+      # Test dequeue operation
+      echo "Testing dequeue operation..."
+      DEQUEUE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$GATEWAY_URL/queue/$QUEUE_ID/dequeue")
+
+      DEQUEUE_HTTP_CODE=$(echo "$DEQUEUE_RESPONSE" | tail -n1)
+      DEQUEUE_BODY=$(echo "$DEQUEUE_RESPONSE" | sed '$d')
+
+      if [ "$DEQUEUE_HTTP_CODE" != "200" ]; then
+        echo "Dequeue failed with HTTP code: $DEQUEUE_HTTP_CODE"
+        echo "Response: $DEQUEUE_BODY"
+        exit 1
+      fi
+      echo "Dequeue succeeded: $DEQUEUE_BODY"
+
+      # Verify we got data back
+      if echo "$DEQUEUE_BODY" | grep -q "test"; then
+        echo "Queue operations test passed!"
+        exit 0
+      else
+        echo "Dequeue response doesn't contain expected data"
+        exit 1
+      fi
+  restartPolicy: Never

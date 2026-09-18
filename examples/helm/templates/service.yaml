@@ -1,0 +1,25 @@
+{{- $root := . -}}
+{{- range $lang, $cfg := .Values.languages }}
+{{- if $cfg.enabled }}
+{{- range $role := list "producer" "consumer" }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "daprmq-examples.fullname" $root }}-{{ $lang }}-{{ $role }}
+  labels:
+    {{- include "daprmq-examples.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $lang }}-{{ $role }}
+spec:
+  type: ClusterIP
+  ports:
+  - port: {{ $root.Values.controlPort }}
+    targetPort: {{ $root.Values.controlPort }}
+    protocol: TCP
+    name: http
+  selector:
+    {{- include "daprmq-examples.selectorLabels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $lang }}-{{ $role }}
+{{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,17 @@
+apiVersion: dapr.io/v1alpha1
+kind: Configuration
+metadata:
+  name: {{ include "daprmq.fullname" . }}-dapr-config
+  labels:
+    {{- include "daprmq.labels" . | nindent 4 }}
+spec:
+  tracing:
+    samplingRate: "1"
+  # Enable actor reentrancy for better concurrency
+  features:
+    - name: Actor.Reentrancy
+      enabled: true
+    # Required for IActorStateManager.SetStateAsync's TTL overload (idempotency-key markers) -
+    # without this, actor state saves with ttlInSeconds are rejected outright.
+    - name: ActorStateTTL
+      enabled: true

@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>daprMQ — A Priority-Aware Message Queue, Powered by Dapr</title>
+  <meta name="description"
+    content="daprMQ is a lightweight, priority-aware message queue built on Dapr. Two endpoints, no noisy neighbours, first-class dead-lettering, and at-least-once delivery — running anywhere Dapr runs.">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+
+<body>
+
+  <nav class="nav glass">
+    <div class="container">
+      <img src="assets/logo.svg" alt="daprMQ" height="28">
+      <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#compare">Compare</a>
+        <a href="#sdks">SDKs</a>
+        <a href="#demo">Demo</a>
+        <a href="#dashboard">Dashboard</a>
+        <a href="#license">License</a>
+        <a href="https://github.com/olitomlinson/dapr-mq" target="_blank" rel="noopener">GitHub</a>
+        <a href="#demo" class="btn btn-primary">Get Started</a>
+      </div>
+      <button class="nav-toggle" aria-label="Toggle menu">&#9776;</button>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div class="corner-peel" aria-hidden="false">
+      <div class="peel-message">
+        <span class="construction-icon">&#128679;</span>
+        <span>Under active construction — building towards a 1.0 release</span>
+      </div>
+      <div class="peel-flap"></div>
+    </div>
+    <div class="container">
+      <h1>An Open Source<br><span class="gradient-text">Distributed Message Queue</span> — Powered by
+        <img src="assets/logowhite.webp" alt="Dapr" class="hero-dapr-logo">
+      </h1>
+      <p class="lead">DaprMQ Runs anywhere
+        Dapr runs: any Kubernetes cluster, VM, or local Docker Compose setup with a Dapr 1.18+ installation. Two API endpoints, no noisy neighbours, priority lanes, and dead-lettering built in.</p>
+      <div class="hero-ctas">
+        <a href="https://github.com/olitomlinson/dapr-mq" target="_blank" rel="noopener" class="btn btn-outline">View on
+          GitHub</a>
+        <a href="#demo" class="btn btn-primary">Quick Start</a>
+      </div>
+    </div>
+  </header>
+
+  <section id="features">
+    <div class="container">
+      <div class="section-label">Features</div>
+      <h2 class="section-title">Everything a modern transactional queue needs.</h2>
+      <p class="section-sub" style="max-width: none;">Just <em>enqueue</em> and <em>dequeue</em> is all you need to get
+        started! Every other feature is optional, and layers on cleanly when you need it.</p>
+      <div class="feature-grid">
+        <div class="feature-card glass">
+          <div class="icon">&#8644;</div>
+          <h3>It Just Works</h3>
+          <p>Enqueue and Dequeue — that's the whole API surface. Queues are created on-demand, no provisioning step.</p>
+        </div>
+        <div class="feature-card glass">
+          <div class="icon">&#128225;</div>
+          <h3>HTTP and gRPC API Surface</h3>
+          <p>Call daprMQ over simple HTTP or gRPC interfaces</p>
+        </div>
+        <div class="feature-card glass">
+          <div class="icon">&#128220;</div>
+          <h3>Guaranteed FIFO</h3>
+          <p>Strict first-in-first-out ordering per queue — no reordering, no surprises, no partitions to reason about.
+          </p>
+        </div>
+        <div class="feature-card glass">
+          <div class="icon">&#9889;</div>
+          <h3>Priority Support</h3>
+          <p>Route urgent messages ahead of normal ones. Unbounded priority levels, 0 = highest.</p>
+        </div>
+        <div class="feature-card glass">
+          <div class="icon">&#10003;</div>
+          <h3>Acknowledgements</h3>
+          <p>Optional at-least-once delivery — unacknowledged messages become available again after a timeout.</p>
+        </div>
+        <div class="feature-card glass">
+          <div class="icon">&#128225;</div>
+          <h3>Pub Sub</h3>
+          <p>Publish messages to a Topic, automatic fan-out to many independent Subsciber Queues.</p>
+        </div>
+        <div class="feature-card glass">
+          <div class="icon">&#128202;</div>
+          <h3>Session / Message Group</h3>
+          <p>Messages within a Queue can be assigned a Session ID. Consumers can lease one or more Sessions and recieve a FIFO stream of messages</p>
+        </div>
+        <div class="feature-card glass">
+          <div class="icon">&#128273;</div>
+          <h3>Message Deduplication</h3>
+          <p>Attach a client-supplied Idempotency key to a message — duplicate submissions within a configurable TTL window are
+            silently dropped before they ever reach the queue. Works on direct enqueues and Topic publishes, with
+            per-subscriber opt-out.</p>
+        </div>
+        <div class="feature-card glass">
+          <div class="icon">&#128230;</div>
+          <h3>Bulk Enqueue &amp; Dequeue</h3>
+          <p>Atomic operations for enqueuing and dequeuing many items at once, for best throughput.</p>
+        </div>
+        <div class="feature-card glass">
+          <div class="icon">&#8942;</div>
+          <h3>Competing Consumers / Relaxed FIFO</h3>
+          <p>Run many concurrent Dequeue operations in a traditional competing-consumer pattern.</p>
+        </div>
+        <div class="feature-card glass">
+          <div class="icon">&#10060;</div>
+          <h3>Dead-Lettering</h3>
+          <p>Move poison messages to a dedicated dead-letter queue without blocking the main queue.</p>
+        </div>
+        <div class="feature-card glass">
+          <div class="icon">&#127760;</div>
+          <h3>Built-in HTTP Sink</h3>
+          <p>Forward messages to any webhook automatically — no custom control loop required.</p>
+        </div>
+        <div class="feature-card glass">
+          <div class="icon">&#128193;</div>
+          <h3>Optimised Memory Strategy</h3>
+          <p>Queues split into fixed-size segments so memory and network usage stay bounded.</p>
+        </div>
+        <div class="feature-card glass">
+          <div class="icon">&#128206;</div>
+          <h3>Large Object Support</h3>
+          <p>Enqueue oversized payloads to external object storage (S3, Azure Blob Storage) and dequeue lightweight claim
+            tokens — queue state never
+            carries the bytes.</p>
+        </div>
+        <div class="feature-card glass">
+          <div class="icon">&#128190;</div>
+          <h3>Persistent</h3>
+          <p>Backed by any Dapr state store — PostgreSQL, Redis, Cosmos DB, and more.</p>
+        </div>
+        <div class="feature-card glass">
+          <div class="icon">&#9017;</div>
+          <h3>Helm Deploy</h3>
+          <p>Ship to Kubernetes with the bundled Helm chart — gateway and worker deployments with autoscaling out of the box.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="architecture">
+    <div class="container">
+      <div class="section-label">How it works</div>
+      <h2 class="section-title">Why the Dapr dependency?</h2>
+      <p class="section-sub" style="max-width: none;">Rather than reinvent proprietary infrastructure, daprMQ builds on
+        Dapr's hardened, open-source building blocks:</p>
+      <ul class="why-dapr">
+        <li><strong>Bring any Dapr-supported state store</strong> for queue persistence — Postgres, Redis, Cosmos DB, or
+          any of Dapr's 20+ supported stores, with zero code changes.</li>
+        <li><strong>Horizontal scaling for free</strong> — Dapr's actor runtime handles placement and re-activation
+          across instances, so queues scale out without daprMQ writing its own sharding logic.</li>
+        <li><strong>Strict FIFO without hand-rolled locks</strong> — each queue actor gets single-threaded, turn-based
+          execution from Dapr, which is what guarantees ordering.</li>
+        <li><strong>No broker cluster to run or patch</strong> — daprMQ runs anywhere Dapr runs: Kubernetes, a VM, or
+          local Docker Compose.</li>
+        <li><strong>High availability from the control plane</strong> — Dapr's placement service tracks actor health
+          and re-activates queue actors elsewhere on instance failure, so daprMQ doesn't need to build its own failover
+          logic.</li>
+        <li><strong>Bounded memory, whatever the queue depth</strong> — every queue is split into 1000 message
+          segments. Only the head and tail segments of a queue are ever held in memory; every segment in between is
+          unloaded, via Dapr's keyed state API. So memory and network usage scale with the work done (O(N) per
+          operation), not with how many messages are sitting in the queue.</li>
+        <li><strong>Unlimited queues, created on demand</strong> — every queue is just a Dapr actor, so there's nothing
+          to provision upfront; spin up as many as you need and idle ones cost nothing until activated.</li>
+        <li><strong>An idle queue costs nothing</strong> — a queue sitting untouched with millions of messages consumes
+          zero memory; Dapr only activates and loads an actor when it's actually invoked. Idle queues are automatically
+          unloaded from memory.</li>
+      </ul>
+      <div class="showcase-frame glass" style="margin-bottom: var(--spacing-3xl);">
+        <img src="assets/architecture-diagram.png"
+          alt="daprMQ architecture diagram showing producer and consumer apps talking to daprMQ over HTTP/gRPC, backed by a Dapr state store such as PostgreSQL, Redis, or Cosmos DB">
+      </div>
+      <div class="flow">
+        <div class="flow-step glass">
+          <div class="n">1</div>
+          <h4>Enqueue</h4>
+          <p>Your app sends a message to a named queue.</p>
+        </div>
+        <div class="flow-step glass">
+          <div class="n">2</div>
+          <h4>Dapr Actor</h4>
+          <p>A per-queue actor handles the write, single-threaded.</p>
+        </div>
+        <div class="flow-step glass">
+          <div class="n">3</div>
+          <h4>State Store</h4>
+          <p>Persisted to Postgres, Redis, Cosmos DB, or any Dapr state store.</p>
+        </div>
+        <div class="flow-step glass">
+          <div class="n">4</div>
+          <h4>Dequeue / Ack or Sink</h4>
+          <p>Consume directly, or let the built-in HTTP Sink deliver it for you.</p>
+        </div>
+      </div>
+      <p class="section-sub" style="margin-top: var(--spacing-2xl); margin-bottom: 0;"><a
+          href="https://github.com/olitomlinson/dapr-mq/blob/main/docs/ARCHITECTURE.md" target="_blank" rel="noopener"
+          style="color: var(--color-lock); text-decoration: underline;">Read the architecture docs on GitHub.</a></p>
+    </div>
+  </section>
+
+  <section id="managed-dapr">
+    <div class="container">
+      <h2 class="section-title">Don't want to run Dapr yourself?</h2>
+      <div class="callout glass">
+        <h2 class="section-title"><span class="gradient-text">Diagrid Catalyst</span> runs Dapr for you</h2>
+        <p class="callout-lead">Fully managed, serverless Dapr sidecars and control plane — skip installing and
+          operating Dapr in your own cluster, and point daprMQ straight at Catalyst.</p>
+        <div class="hero-ctas">
+          <a href="https://www.diagrid.io/catalyst" target="_blank" rel="noopener" class="btn btn-primary">Explore
+            Diagrid Catalyst</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="compare">
+    <div class="container">
+      <div class="section-label">Comparison</div>
+      <h2 class="section-title">How daprMQ stacks up</h2>
+      <p class="section-sub" style="max-width: none;">daprMQ trades raw streaming throughput for cheap, isolated,
+        per-tenant queues with priority and dead-lettering built in — no bolt-on middleware required.</p>
+
+      <div class="compare-tabs">
+        <button class="compare-tab active" data-target="cmp-kafka">Kafka</button>
+        <button class="compare-tab" data-target="cmp-rabbitmq">RabbitMQ</button>
+        <button class="compare-tab" data-target="cmp-sqs">AWS SQS/SNS</button>
+        <button class="compare-tab" data-target="cmp-asb">Azure Service Bus</button>
+      </div>
+
+      <div id="cmp-kafka" class="compare-panel active glass">
+        <table class="compare-table">
+          <tr>
+            <th>Dimension</th>
+            <th class="highlight">daprMQ</th>
+            <th>Kafka</th>
+          </tr>
+          <tr>
+            <td>Ordering</td>
+            <td class="highlight">Per queue</td>
+            <td>Per partition</td>
+          </tr>
+          <tr>
+            <td>Priority</td>
+            <td class="highlight">Built-in</td>
+            <td>No native support</td>
+          </tr>
+          <tr>
+            <td>Dead-lettering</td>
+            <td class="highlight">Built-in</td>
+            <td>Application managed</td>
+          </tr>
+          <tr>
+            <td>Hosting model</td>
+            <td class="highlight">Just Dapr + your state store</td>
+            <td>Dedicated broker cluster to run &amp; patch</td>
+          </tr>
+          <tr>
+            <td>Portability</td>
+            <td class="highlight">Any Dapr-supported state store</td>
+            <td>Self-hosted or vendor-managed Kafka</td>
+          </tr>
+        </table>
+      </div>
+
+      <div id="cmp-rabbitmq" class="compare-panel glass">
+        <table class="compare-table">
+          <tr>
+            <th>Dimension</th>
+            <th class="highlight">daprMQ</th>
+            <th>RabbitMQ</th>
+          </tr>
+          <tr>
+            <td>Ordering</td>
+            <td class="highlight">Per-queue FIFO</td>
+            <td>Per-queue FIFO</td>
+          </tr>
+          <tr>
+            <td>Priority</td>
+            <td class="highlight">Native, unbounded priority lanes</td>
+            <td>Plugin-based priority queues</td>
+          </tr>
+          <tr>
+            <td>Dead-lettering</td>
+            <td class="highlight">Built-in</td>
+            <td>Manual exchange/queue wiring</td>
+          </tr>
+          <tr>
+            <td>Hosting model</td>
+            <td class="highlight">Just Dapr + your state store</td>
+            <td>Dedicated broker cluster to run &amp; patch</td>
+          </tr>
+          <tr>
+            <td>Portability</td>
+            <td class="highlight">Any Dapr-supported state store</td>
+            <td>Self-hosted or vendor-managed RabbitMQ</td>
+          </tr>
+        </table>
+      </div>
+
+      <div id="cmp-sqs" class="compare-panel glass">
+        <table class="compare-table">
+          <tr>
+            <th>Dimension</th>
+            <th class="highlight">daprMQ</th>
+            <th>AWS SQS/SNS</th>
+          </tr>
+          <tr>
+            <td>Ordering</td>
+            <td class="highlight">Bound only by your state store</td>
+            <td>FIFO capped per message-group without batching</td>
+          </tr>
+          <tr>
+            <td>Priority</td>
+            <td class="highlight">Built-in</td>
+            <td>No native support</td>
+          </tr>
+          <tr>
+            <td>Dead-lettering</td>
+            <td class="highlight">Built-in</td>
+            <td>Separate queue + redrive policy</td>
+          </tr>
+          <tr>
+            <td>Hosting model</td>
+            <td class="highlight">Just Dapr + your state store</td>
+            <td>Fully managed AWS service</td>
+          </tr>
+          <tr>
+            <td>Portability</td>
+            <td class="highlight">Any Dapr-supported state store</td>
+            <td>Locked to AWS</td>
+          </tr>
+        </table>
+      </div>
+
+      <div id="cmp-asb" class="compare-panel glass">
+        <table class="compare-table">
+          <tr>
+            <th>Dimension</th>
+            <th class="highlight">daprMQ</th>
+            <th>Azure Service Bus</th>
+          </tr>
+          <tr>
+            <td>Ordering</td>
+            <td class="highlight">FIFO by default, per queue</td>
+            <td>Requires sessions for guaranteed FIFO</td>
+          </tr>
+          <tr>
+            <td>Priority</td>
+            <td class="highlight">Built-in</td>
+            <td>No native support</td>
+          </tr>
+          <tr>
+            <td>Dead-lettering</td>
+            <td class="highlight">Built-in</td>
+            <td>Built-in</td>
+          </tr>
+          <tr>
+            <td>Hosting model</td>
+            <td class="highlight">Just Dapr + your state store</td>
+            <td>Namespace + tier pricing, fully managed</td>
+          </tr>
+          <tr>
+            <td>Portability</td>
+            <td class="highlight">Any Dapr-supported state store</td>
+            <td>Azure only</td>
+          </tr>
+        </table>
+      </div>
+
+      <p class="section-sub" style="margin-top: var(--spacing-2xl); margin-bottom: 0;">Want the deep dive on partitions
+        and the noisy-neighbour problem? <a
+          href="https://github.com/olitomlinson/dapr-mq#comparing-with-kafka-going-deeper" target="_blank"
+          rel="noopener" style="color: var(--color-lock); text-decoration: underline;">Read the full comparison on
+          GitHub.</a></p>
+    </div>
+  </section>
+
+  <section id="sdks">
+    <div class="container">
+      <div class="section-label">SDKs</div>
+      <h2 class="section-title">Client SDKs, in your language</h2>
+      <p class="section-sub" style="max-width: none;">Typed clients for four languages, all generated from the same
+        proto contract, so behaviour stays consistent across the board.</p>
+      <div class="sdk-grid">
+        <div class="sdk-card glass">
+          <div class="icon">C#</div>
+          <h3>.NET</h3>
+          <p>DaprMQClient over HTTP/gRPC, plus a managed SessionQueueConsumer for multi-session consume loops. Targets
+            net10.0.</p>
+          <span class="sdk-status">Source-only &middot; not yet on NuGet</span>
+        </div>
+        <div class="sdk-card glass">
+          <div class="icon">&#9749;</div>
+          <h3>Java</h3>
+          <p>A blocking client built on java.net.http and grpc-java, with the same session consume loop. Requires Java
+            17+.</p>
+          <span class="sdk-status">Source-only &middot; not yet on Maven Central</span>
+        </div>
+        <div class="sdk-card glass">
+          <div class="icon">&#128013;</div>
+          <h3>Python</h3>
+          <p>A fully async client built on httpx and grpc.aio &mdash; every public method is a coroutine.</p>
+          <span class="sdk-status">Source-only &middot; not yet on PyPI</span>
+        </div>
+        <div class="sdk-card glass">
+          <div class="icon">TS</div>
+          <h3>TypeScript</h3>
+          <p>A Node client over fetch and gRPC, with types generated straight from the shared proto contract.</p>
+          <span class="sdk-status">Source-only &middot; not yet on npm</span>
+        </div>
+      </div>
+      <p class="section-sub" style="margin-top: var(--spacing-2xl); margin-bottom: 0;">All four SDKs live in the
+        monorepo today, ready to reference by path or git submodule. <a
+          href="https://github.com/olitomlinson/dapr-mq/tree/main/sdks" target="_blank" rel="noopener"
+          style="color: var(--color-lock); text-decoration: underline;">Browse the SDKs on GitHub.</a></p>
+    </div>
+  </section>
+
+  <section id="demo">
+    <div class="container">
+      <div class="section-label">API</div>
+      <h2 class="section-title">HTTP & gRPC API Surface</h2>
+      <p class="section-sub" style="max-width: none;">If you do not wish to use an SDK, all of the capabilities are
+        available via API</p>
+      <div class="code-grid">
+        <div class="code-card glass">
+          <div class="code-head"><span>Enqueue</span><button class="copy-btn">Copy</button></div>
+          <pre>curl -X POST http://localhost:8002/queue/my-queue/enqueue \
+  -H "Content-Type: application/json" \
+  -d '{ "items": [{ "item": { "task": "first" }, "priority": 1 }] }'</pre>
+        </div>
+        <div class="code-card glass">
+          <div class="code-head"><span>Dequeue</span><button class="copy-btn">Copy</button></div>
+          <pre>curl -X POST "http://localhost:8002/queue/my-queue/dequeue"
+# {
+#   "items": [
+#     { "item": { "task": "first" }, "priority": 1 }
+#   ]
+# }</pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="dashboard">
+    <div class="container">
+      <div class="section-label">Dashboard</div>
+      <h2 class="section-title">See it in action</h2>
+      <p class="section-sub" style="max-width: none;">A bundled web dashboard for exploring queues, priorities, locks,
+        and dead-letters as you build.</p>
+      <div class="showcase-frame glass">
+        <img src="assets/dash2.png" alt="daprMQ dashboard showing enqueue, dequeue, and acknowledgement controls">
+      </div>
+      <p class="showcase-caption">The bundled Dashboard UI — available at <code>http://localhost:9000</code> after
+        <code>docker-compose up</code>.
+      </p>
+    </div>
+  </section>
+
+  <section id="roadmap">
+    <div class="container">
+      <div class="section-label">Roadmap</div>
+      <h2 class="section-title">What's next</h2>
+      <div class="roadmap-chips">
+        <span class="chip glass">Multi-tenant API surface</span>
+        <span class="chip glass">Fan-Out Architecture</span>
+        <span class="chip glass">Language SDKs</span>
+        <span class="chip glass">Rate-limiting</span>
+      </div>
+      <p class="section-sub" style="margin-top: var(--spacing-2xl); margin-bottom: 0;"><a
+          href="https://github.com/olitomlinson/dapr-mq#roadmap" target="_blank" rel="noopener"
+          style="color: var(--color-lock); text-decoration: underline;">See the full roadmap on GitHub.</a></p>
+    </div>
+  </section>
+
+  <section id="license">
+    <div class="container">
+      <div class="section-label">Licensing</div>
+      <h2 class="section-title">Free for internal use. Simple when it isn't.</h2>
+      <div class="license-grid">
+        <div class="license-card glass">
+          <h3>Free</h3>
+          <p>Elastic License 2.0 (ELv2). Use daprMQ in development, testing, and production &mdash; internally, without
+            restriction. Modify it for internal purposes.</p>
+        </div>
+        <div class="license-card commercial glass">
+          <h3>Commercial</h3>
+          <p>Required if you offer daprMQ as a hosted/managed service, sell it as part of a paid product, embed it as a
+            core feature, or build a competing messaging solution.</p>
+        </div>
+      </div>
+      <p class="license-rule">"If you are making money directly from daprMQ or offering it to others, you likely need a
+        commercial license."</p>
+      <div class="hero-ctas" style="justify-content: flex-start;">
+        <a href="https://github.com/olitomlinson/dapr-mq" target="_blank" rel="noopener" class="btn btn-primary">Get
+          Started on GitHub</a>
+        <a href="mailto:oliverjamestomlinson@gmail.com" class="btn btn-outline">Contact for Licensing</a>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <div class="container">
+      <img src="assets/logo.svg" alt="daprMQ" height="24">
+      <div class="foot-links">
+        <a href="https://github.com/olitomlinson/dapr-mq" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/olitomlinson/dapr-mq/blob/main/LICENSE.md" target="_blank"
+          rel="noopener">License</a>
+        <a href="https://github.com/olitomlinson/dapr-mq/blob/main/COMMERCIAL.md" target="_blank"
+          rel="noopener">Commercial Licensing</a>
+      </div>
+      <div class="copyright">&copy; 2026 Oliver Tomlinson &mdash; daprMQ is distributed under the Elastic License 2.0
+        (ELv2).</div>
+    </div>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+
+</html>

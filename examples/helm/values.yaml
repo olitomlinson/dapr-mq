@@ -1,0 +1,116 @@
+# Default values for the daprmq-examples chart.
+# This chart assumes a `daprmq` release (the main DaprMQ Helm chart, ../../helm) is
+# already installed in the target namespace, and points the example apps at its
+# gateway Service using the values below - no overrides needed if that release was
+# installed with a release name containing "daprmq" (e.g. "daprmq", "my-daprmq").
+
+daprmq:
+  # Release name of the already-installed main `daprmq` chart. Used to compute the
+  # gateway Service name the same way the main chart's own `daprmq.fullname` helper
+  # does: releaseName as-is if it already contains "daprmq", otherwise
+  # "<releaseName>-daprmq". Ignored if gatewayServiceName is set below.
+  releaseName: "daprmq"
+
+  # Namespace the main chart's gateway Service lives in. "" = this release's own
+  # .Release.Namespace (i.e. install this chart alongside the main one, same namespace).
+  namespace: ""
+
+  # Override escape hatch: if set, used verbatim as the gateway Service name instead
+  # of computing it from `releaseName` above. Use this if the main chart was installed
+  # with `fullnameOverride` or a release name that doesn't contain "daprmq".
+  gatewayServiceName: ""
+
+  # Must match the main chart's gateway.httpPort / gateway.grpcPort (defaults: 8080/8081).
+  httpPort: 8080
+  grpcPort: 8081
+
+# Port each example container's own control API (health/config/scenarios/reset) listens on.
+controlPort: 8080
+
+image:
+  registry: ""
+  pullPolicy: IfNotPresent
+
+# One producer + one consumer Deployment/Service pair is created per enabled language.
+# Producer and consumer are separate images (separate Dockerfiles under
+# examples/<lang>/producer and examples/<lang>/consumer), not one image reused for
+# both roles.
+languages:
+  dotnet:
+    enabled: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    producer:
+      image:
+        repository: daprmq-examples-dotnet-producer
+        tag: "0.1.0"
+    consumer:
+      image:
+        repository: daprmq-examples-dotnet-consumer
+        tag: "0.1.0"
+
+  java:
+    enabled: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+    producer:
+      image:
+        repository: daprmq-examples-java-producer
+        tag: "0.1.0"
+    consumer:
+      image:
+        repository: daprmq-examples-java-consumer
+        tag: "0.1.0"
+
+  python:
+    enabled: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    producer:
+      image:
+        repository: daprmq-examples-python-producer
+        tag: "0.1.0"
+    consumer:
+      image:
+        repository: daprmq-examples-python-consumer
+        tag: "0.1.0"
+
+  typescript:
+    enabled: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    producer:
+      image:
+        repository: daprmq-examples-typescript-producer
+        tag: "0.1.0"
+    consumer:
+      image:
+        repository: daprmq-examples-typescript-consumer
+        tag: "0.1.0"
+
+nameOverride: ""
+fullnameOverride: ""
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

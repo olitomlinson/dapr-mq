@@ -1,0 +1,30 @@
+{{- $root := . -}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "daprmq-examples.fullname" . }}-test-health
+  labels:
+    {{- include "daprmq-examples.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  containers:
+  - name: test
+    image: curlimages/curl:latest
+    command:
+    - /bin/sh
+    - -c
+    - |
+      set -e
+      echo "Checking /health on every example service..."
+      {{- range $lang, $cfg := .Values.languages }}
+      {{- if $cfg.enabled }}
+      {{- range $role := list "producer" "consumer" }}
+      echo "-> {{ $lang }}-{{ $role }}"
+      curl -f http://{{ include "daprmq-examples.fullname" $root }}-{{ $lang }}-{{ $role }}:{{ $root.Values.controlPort }}/health
+      {{- end }}
+      {{- end }}
+      {{- end }}
+      echo "All example services are healthy."
+  restartPolicy: Never

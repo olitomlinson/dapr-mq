@@ -1,0 +1,27 @@
+DaprMQ example apps installed.
+
+This chart assumes a `daprmq` release is already installed in this namespace (or set
+--set daprmq.releaseName=<name> / daprmq.namespace=<ns> / daprmq.gatewayServiceName=<svc>
+if not). Each enabled language got a producer + consumer pod pair, each with its own
+ClusterIP Service exposing a small control API on port {{ .Values.controlPort }}.
+
+Pick a pod pair and port-forward it, e.g. for dotnet:
+
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "daprmq-examples.fullname" . }}-dotnet-producer {{ .Values.controlPort }}:{{ .Values.controlPort }}
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "daprmq-examples.fullname" . }}-dotnet-consumer {{ .Values.controlPort }}:{{ .Values.controlPort }}
+
+Then, in separate terminals:
+
+  curl http://localhost:{{ .Values.controlPort }}/health
+  curl http://localhost:{{ .Values.controlPort }}/config
+  curl -X POST http://localhost:{{ .Values.controlPort }}/scenarios/basic/run
+
+Run the same scenario against the matching consumer's port-forward to see the dequeue
+side, and tail both pods' logs to watch the demo narrative:
+
+  kubectl logs -f -n {{ .Release.Namespace }} deploy/{{ include "daprmq-examples.fullname" . }}-dotnet-producer
+  kubectl logs -f -n {{ .Release.Namespace }} deploy/{{ include "daprmq-examples.fullname" . }}-dotnet-consumer
+
+Replace "dotnet" with java / python / typescript for the other SDKs. See
+examples/README.md and examples/shared/SCENARIOS.md for the full walkthrough and
+scenario list (basic, ack-deadletter, priority, sessions).

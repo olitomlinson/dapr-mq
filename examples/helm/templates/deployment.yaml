@@ -1,0 +1,81 @@
+{{- $root := . -}}
+{{- range $lang, $cfg := .Values.languages }}
+{{- if $cfg.enabled }}
+{{- range $role := list "producer" "consumer" }}
+{{- $roleCfg := index $cfg $role }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "daprmq-examples.fullname" $root }}-{{ $lang }}-{{ $role }}
+  labels:
+    {{- include "daprmq-examples.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $lang }}-{{ $role }}
+spec:
+  # Fixed at 1: /config and scenario bookkeeping are per-pod in-memory state, and a
+  # Service load-balancing across replicas would make results non-deterministic from
+  # the caller's point of view. Not exposed as a value on purpose.
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "daprmq-examples.selectorLabels" $root | nindent 6 }}
+      app.kubernetes.io/component: {{ $lang }}-{{ $role }}
+  template:
+    metadata:
+      labels:
+        {{- include "daprmq-examples.selectorLabels" $root | nindent 8 }}
+        app.kubernetes.io/component: {{ $lang }}-{{ $role }}
+    spec:
+      containers:
+      - name: app
+        image: "{{ if $root.Values.image.registry }}{{ $root.Values.image.registry }}/{{ end }}{{ $roleCfg.image.repository }}:{{ $roleCfg.image.tag }}"
+        imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ $root.Values.controlPort }}
+        env:
+        - name: LANGUAGE
+          value: {{ $lang | quote }}
+        - name: ROLE
+          value: {{ $role | quote }}
+        - name: CONTROL_PORT
+          value: {{ $root.Values.controlPort | quote }}
+        - name: DAPRMQ_HTTP_BASE_URL
+          value: {{ include "daprmq-examples.gatewayHttpUrl" $root | quote }}
+        - name: DAPRMQ_GRPC_ADDRESS
+          value: {{ include "daprmq-examples.gatewayGrpcAddress" $root | quote }}
+        - name: DAPRMQ_QUEUE_PREFIX
+          value: {{ printf "examples-%s" $lang | quote }}
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ $root.Values.controlPort }}
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: {{ $root.Values.controlPort }}
+          initialDelaySeconds: 2
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        resources:
+          {{- toYaml $cfg.resources | nindent 10 }}
+      {{- with $root.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $root.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $root.Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,460 @@
+syntax = "proto3";
+
+package daprmq;
+
+option csharp_namespace = "DaprMQ.ApiServer.Grpc";
+option java_package = "com.daprmq.grpc";
+option java_multiple_files = true;
+
+// DaprMQ service provides FIFO queue operations with priority support,
+// acknowledgment-based message handling, and lock management.
+service DaprMQ {
+  // Enqueue an item to the queue with optional priority.
+  // Priority 0 is the fast lane, priority 1 (default) is normal processing.
+  // Lower priority numbers are processed first.
+  rpc Enqueue(EnqueueRequest) returns (EnqueueResponse);
+
+  // Dequeue one or more items from the queue without acknowledgment.
+  // Returns immediately if queue is empty or items are locked.
+  rpc Dequeue(DequeueRequest) returns (DequeueResponse);
+
+  // Dequeue one or more items from the queue with acknowledgment.
+  // Creates locks with TTL and returns lock_ids for acknowledgment.
+  rpc DequeueLocked(DequeueLockedRequest) returns (DequeueLockedResponse);
+
+  // Acknowledge and permanently remove a locked item from the queue.
+  // Requires valid lock_id from DequeueLocked.
+  rpc Acknowledge(AcknowledgeRequest) returns (AcknowledgeResponse);
+
+  // Extend the TTL of an existing lock.
+  // Useful for long-running processing that needs more time.
+  rpc ExtendLock(ExtendLockRequest) returns (ExtendLockResponse);
+
+  // Move a locked item to the dead letter queue and void the lock.
+  // Used when a message cannot be processed successfully after multiple attempts.
+  rpc DeadLetter(DeadLetterRequest) returns (DeadLetterResponse);
+
+  // Claim exclusive ownership of a session - "any available" (session_id unset) or targeted
+  // (session_id set, sticky routing). Once claimed, Dequeue/DequeueLocked/Acknowledge/ExtendLock/
+  // DeadLetter are called against "{queue_id}-session-{session_id}" with lease_id set.
+  rpc AcceptSession(AcceptSessionRequest) returns (AcceptSessionResponse);
+
+  // Heartbeat to keep an already-claimed session lease alive past what would otherwise be its
+  // expiry.
+  rpc RenewSessionLease(RenewSessionLeaseRequest) returns (RenewSessionLeaseResponse);
+
+  // Explicitly give up a claimed session lease, freeing it for another consumer immediately
+  // rather than waiting out the lease TTL. Idempotent.
+  rpc ReleaseSession(ReleaseSessionRequest) returns (ReleaseSessionResponse);
+
+  // Managed consume loop for exactly one session per call: claims a session (any-available or
+  // targeted), streams delivered items back, accepts Ack/DeadLetter, and renews the lease on the
+  // server's own schedule for as long as the stream stays open - no client heartbeat needed. On
+  // disconnect the server releases the session immediately, faster than the lease TTL would.
+  // One stream = one session (see plan §2.4.1) - a client wanting N concurrent sessions opens N
+  // of these streams, which multiplex cheaply over one gRPC channel/HTTP2 connection.
+  rpc ConsumeSession(stream ConsumeSessionRequest) returns (stream ConsumeSessionResponse);
+}
+
+// Individual item in an enqueue request
+message EnqueueItem {
+  // Item data as JSON string
+  string item_json = 1;
+
+  // Priority level (0=fast lane, 1=default, 2+=lower priority)
+  // Lower numbers processed first
+  int32 priority = 2;
+
+  // Optional client-supplied idempotency/deduplication key (max 128 chars, no control
+  // characters). If the destination queue has dedup enabled and this key was already used
+  // within the configured TTL window, the item is silently skipped.
+  optional string idempotency_key = 3;
+
+  // Optional session id. If set, this item is routed to the queue's dedicated per-session
+  // QueueActor instance ("{queue_id}-session-{session_id}") instead of the plain queue actor -
+  // never forwarded into the actor-level request itself, purely a routing hint consumed here.
+  optional string session_id = 4;
+}
+
+// Request to enqueue items to a queue
+message EnqueueRequest {
+  // Queue identifier (actor ID)
+  string queue_id = 1;
+
+  // Array of items to enqueue (1-10000 items)
+  repeated EnqueueItem items = 2;
+}
+
+// Response from enqueue operation
+message EnqueueResponse {
+  // Whether the enqueue was successful
+  bool success = 1;
+
+  // Human-readable message
+  string message = 2;
+
+  // Number of items successfully enqueued
+  int32 items_enqueued = 3;
+
+  // Number of items skipped because their idempotency_key was already used within the TTL
+  // window. Not an error - success stays true.
+  int32 items_deduplicated = 4;
+}
+
+// Request to dequeue items without acknowledgment
+message DequeueRequest {
+  // Queue identifier (actor ID)
+  string queue_id = 1;
+
+  // Number of items to dequeue (1-1000, default: 1)
+  int32 count = 2;
+
+  // Required when targeting a session-scoped queue actor with an active lease synced onto it
+  // (unset otherwise, e.g. an ordinary queue). Must match the current lease holder's lease_id.
+  optional string lease_id = 3;
+}
+
+// Response from dequeue operation (without acknowledgment)
+message DequeueResponse {
+  // Result of the dequeue operation
+  oneof result {
+    // Item successfully dequeued
+    DequeueSuccess success = 1;
+
+    // Queue is empty
+    DequeueEmpty empty = 2;
+
+    // Item is locked by another consumer
+    DequeueBlocked locked = 3;
+  }
+}
+
+// Successfully dequeued items
+message DequeueSuccess {
+  // Item data as JSON strings (array of items)
+  repeated string item_json = 1;
+
+  // Priority levels of the dequeued items (parallel array)
+  repeated int32 priority = 2;
+}
+
+// Queue is empty
+message DequeueEmpty {
+  // Human-readable message
+  string message = 1;
+}
+
+// Item is locked
+message DequeueBlocked {
+  // Human-readable message explaining the lock
+  string message = 1;
+
+  // Unix timestamp (seconds since epoch) when lock expires
+  double lock_expires_at = 2;
+}
+
+// Request to dequeue items with acknowledgment
+message DequeueLockedRequest {
+  // Queue identifier (actor ID)
+  string queue_id = 1;
+
+  // Lock time-to-live in seconds (default: 30)
+  int32 ttl_seconds = 2;
+
+  // Allow competing consumers (multiple parallel locks). Default: false (legacy single-lock behavior)
+  bool allow_competing_consumers = 3;
+
+  // Number of items to dequeue (1-1000, default: 1)
+  int32 count = 4;
+
+  // Required when targeting a session-scoped queue actor with an active lease synced onto it
+  // (unset otherwise, e.g. an ordinary queue). Must match the current lease holder's lease_id.
+  optional string lease_id = 5;
+}
+
+// Response from dequeue with acknowledgment operation
+message DequeueLockedResponse {
+  // Result of the dequeue operation
+  oneof result {
+    // Item successfully dequeued with lock created
+    DequeueLockedSuccess success = 1;
+
+    // Queue is empty
+    DequeueEmpty empty = 2;
+
+    // Item is already locked by another consumer
+    DequeueBlocked locked = 3;
+  }
+}
+
+// Successfully dequeued items with locks
+message DequeueLockedSuccess {
+  // Item data as JSON strings (array of items)
+  repeated string item_json = 1;
+
+  // Priority levels of the dequeued items (parallel array)
+  repeated int32 priority = 2;
+
+  // Lock identifiers for acknowledgment (parallel array)
+  repeated string lock_id = 3;
+
+  // Unix timestamps (seconds since epoch) when locks expire (parallel array)
+  repeated double lock_expires_at = 4;
+}
+
+// Request to acknowledge and remove a locked item
+message AcknowledgeRequest {
+  // Queue identifier (actor ID)
+  string queue_id = 1;
+
+  // Lock identifier from DequeueLocked
+  string lock_id = 2;
+
+  // Required when targeting a session-scoped queue actor with an active lease synced onto it
+  // (unset otherwise, e.g. an ordinary queue). Must match the current lease holder's lease_id.
+  optional string lease_id = 3;
+}
+
+// Response from acknowledge operation
+message AcknowledgeResponse {
+  // Whether acknowledgment was successful
+  bool success = 1;
+
+  // Human-readable message
+  string message = 2;
+
+  // Number of items acknowledged and removed
+  int32 items_acknowledged = 3;
+
+  // Error code if failed (LOCK_EXPIRED, LOCK_NOT_FOUND, INVALID_LOCK_ID, SESSION_LEASE_EXPIRED,
+  // INVALID_LEASE_ID)
+  string error_code = 4;
+}
+
+// Request to extend lock TTL
+message ExtendLockRequest {
+  // Queue identifier (actor ID)
+  string queue_id = 1;
+
+  // Lock identifier from DequeueLocked
+  string lock_id = 2;
+
+  // Additional TTL in seconds to add (default: 30)
+  int32 additional_ttl_seconds = 3;
+
+  // Required when targeting a session-scoped queue actor with an active lease synced onto it
+  // (unset otherwise, e.g. an ordinary queue). Must match the current lease holder's lease_id.
+  optional string lease_id = 4;
+}
+
+// Response from extend lock operation
+message ExtendLockResponse {
+  // Whether lock extension was successful
+  bool success = 1;
+
+  // Unix timestamp (seconds since epoch) of new expiration time
+  double new_expires_at = 2;
+
+  // Error code if failed (LOCK_EXPIRED, LOCK_NOT_FOUND, INVALID_LOCK_ID, INVALID_TTL,
+  // SESSION_LEASE_EXPIRED, INVALID_LEASE_ID)
+  string error_code = 3;
+
+  // Human-readable error message if failed
+  string error_message = 4;
+}
+
+// Request to move locked item to dead letter queue
+message DeadLetterRequest {
+  // Queue identifier (actor ID)
+  string queue_id = 1;
+
+  // Lock identifier from DequeueLocked
+  string lock_id = 2;
+
+  // Required when targeting a session-scoped queue actor with an active lease synced onto it
+  // (unset otherwise, e.g. an ordinary queue). Must match the current lease holder's lease_id.
+  optional string lease_id = 3;
+}
+
+// Response from dead letter operation
+message DeadLetterResponse {
+  // Result of the dead letter operation
+  oneof result {
+    // Item successfully moved to DLQ
+    DeadLetterSuccess success = 1;
+
+    // Failed to move item
+    DeadLetterError error = 2;
+  }
+}
+
+// Successfully moved item to dead letter queue
+message DeadLetterSuccess {
+  // Dead letter queue ID where item was moved
+  string dlq_id = 1;
+}
+
+// Failed to move item to dead letter queue
+message DeadLetterError {
+  // Error code (LOCK_EXPIRED, LOCK_NOT_FOUND, INVALID_LOCK_ID, SESSION_LEASE_EXPIRED,
+  // INVALID_LEASE_ID)
+  string error_code = 1;
+
+  // Human-readable error message
+  string message = 2;
+}
+
+// Claim exclusive ownership of a session - "any available" (session_id unset) or targeted
+// (session_id set, sticky routing).
+message AcceptSessionRequest {
+  // Queue identifier (SessionCoordinatorActor id - same id string as its QueueActor)
+  string queue_id = 1;
+
+  // Target a specific session id (sticky routing). Unset = any available.
+  optional string session_id = 2;
+
+  // Lease time-to-live in seconds (1-300, default: 30)
+  int32 lease_seconds = 3;
+}
+
+// Response from a successful AcceptSession
+message AcceptSessionResponse {
+  // The claimed session id (echoes session_id if targeted, or the chosen one if any-available)
+  string session_id = 1;
+
+  // Lease identifier - a bearer token required on Dequeue/DequeueLocked/Acknowledge/ExtendLock/
+  // DeadLetter/RenewSessionLease/ReleaseSession calls against this session
+  string lease_id = 2;
+
+  // Unix timestamp (seconds since epoch) when the lease expires
+  double lease_expires_at = 3;
+}
+
+// Heartbeat to keep an already-claimed session lease alive
+message RenewSessionLeaseRequest {
+  // Queue identifier (SessionCoordinatorActor id)
+  string queue_id = 1;
+
+  // Session id whose lease is being renewed
+  string session_id = 2;
+
+  // Must match the current lease holder's lease_id
+  string lease_id = 3;
+
+  // Additional TTL in seconds to add (default: 30)
+  int32 additional_seconds = 4;
+}
+
+// Response from a successful RenewSessionLease
+message RenewSessionLeaseResponse {
+  // Unix timestamp (seconds since epoch) of the new expiration time
+  double new_expires_at = 1;
+}
+
+// Explicitly give up a claimed session lease. Idempotent - releasing an already-released or
+// unknown session succeeds.
+message ReleaseSessionRequest {
+  // Queue identifier (SessionCoordinatorActor id)
+  string queue_id = 1;
+
+  // Session id to release
+  string session_id = 2;
+
+  // Must match the current lease holder's lease_id
+  string lease_id = 3;
+}
+
+// Response from ReleaseSession
+message ReleaseSessionResponse {
+  // Always true on success (release is idempotent - see ReleaseSessionRequest)
+  bool success = 1;
+}
+
+// Client -> server frame on the ConsumeSession stream.
+message ConsumeSessionRequest {
+  oneof payload {
+    // Must be the first message sent on the stream. Claims a session and configures the
+    // managed dequeue loop.
+    ConsumeSessionStart start = 1;
+
+    // Acknowledge and permanently remove a previously delivered item.
+    ConsumeSessionAck ack = 2;
+
+    // Move a previously delivered item to the dead letter queue.
+    ConsumeSessionDeadLetter dead_letter = 3;
+  }
+}
+
+// Claims a session (any-available or targeted) and configures the managed dequeue loop. Must be
+// the first message sent on a ConsumeSession stream.
+message ConsumeSessionStart {
+  // Queue identifier (SessionCoordinatorActor id - same id string as its QueueActor)
+  string queue_id = 1;
+
+  // Target a specific session id (sticky routing). Unset = any available.
+  optional string session_id = 2;
+
+  // Lease time-to-live in seconds (1-300, default: 30). The server renews this lease on its own
+  // schedule at roughly lease_seconds/2 for as long as the stream stays open.
+  int32 lease_seconds = 3;
+
+  // How many delivered-but-not-yet-acked/dead-lettered items to keep in flight at once
+  // (default: 10).
+  int32 prefetch_count = 4;
+}
+
+// Acknowledge and permanently remove a previously delivered item.
+message ConsumeSessionAck {
+  string lock_id = 1;
+}
+
+// Move a previously delivered item to the dead letter queue.
+message ConsumeSessionDeadLetter {
+  string lock_id = 1;
+}
+
+// Server -> client frame on the ConsumeSession stream.
+message ConsumeSessionResponse {
+  oneof payload {
+    // Sent exactly once, immediately after a successful claim.
+    SessionAssigned session_assigned = 1;
+
+    // One per delivered item, ongoing for the life of the session.
+    SessionDelivered delivered = 2;
+
+    // Terminal - no further messages follow. The initial claim failed (see AcceptSession's
+    // ErrorCode table) or the stream's first message wasn't Start.
+    SessionError error = 3;
+
+    // Terminal - no further messages follow. The claim succeeded but the lease could not be
+    // maintained afterwards (e.g. a lease renewal failed because the session's QueueActor
+    // became unreachable, or the lease was lost to another claimant).
+    SessionLost session_lost = 4;
+  }
+}
+
+// Sent once, immediately after AcceptSession succeeds server-side.
+message SessionAssigned {
+  string session_id = 1;
+  double lease_expires_at = 2;
+}
+
+// One delivered, locked item - the streaming equivalent of one DequeueLockedSuccess entry.
+message SessionDelivered {
+  string lock_id = 1;
+  string item_json = 2;
+  int32 priority = 3;
+  double lock_expires_at = 4;
+}
+
+// Terminal failure - the claim itself never succeeded.
+message SessionError {
+  // e.g. SESSION_NOT_FOUND, SESSION_LOCKED, NO_SESSIONS_AVAILABLE, SESSION_ACTOR_UNAVAILABLE
+  string error_code = 1;
+  string message = 2;
+}
+
+// Terminal - the lease could not be maintained after a successful claim.
+message SessionLost {
+  string message = 1;
+}
