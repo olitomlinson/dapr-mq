@@ -200,16 +200,13 @@ public class SessionQueueActorTests
         var (mockStateManager, _) = CreateMockStateManager();
         var (actor, mockSessionCoordinatorInvoker) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
 
-        // Assert - self-registered exactly once, against the SessionCoordinatorActor for this
-        // queue (same id as the queue, different actor type), with the parsed-out session id.
+        // Assert - self-registered against the SessionCoordinatorActor for this queue (same id
+        // as the queue, different actor type), with the parsed-out session id.
         mockSessionCoordinatorInvoker.Verify(i => i.InvokeMethodAsync<RegisterSessionRequest, RegisterSessionResponse>(
             It.Is<ActorId>(id => id.GetId() == "orders"),
             "RegisterSession",
             It.Is<RegisterSessionRequest>(r => r.SessionId == "order-42"),
             It.IsAny<CancellationToken>()), Times.Once());
-
-        var metadata = await mockStateManager.Object.GetStateAsync<ActorMetadata>("metadata");
-        Assert.True(metadata.HasRegisteredSession);
     }
 
     [Fact]
@@ -224,31 +221,31 @@ public class SessionQueueActorTests
             It.IsAny<string>(),
             It.IsAny<RegisterSessionRequest>(),
             It.IsAny<CancellationToken>()), Times.Never());
-
-        var metadata = await mockStateManager.Object.GetStateAsync<ActorMetadata>("metadata");
-        Assert.False(metadata.HasRegisteredSession);
     }
 
     [Fact]
-    public async Task Activation_WhenAlreadyRegistered_DoesNotRegisterAgain()
+    public async Task Activation_WhenReactivatedAfterAlreadyRegistering_RegistersAgain()
     {
-        // Simulates a session actor being reactivated after idle timeout, having already
-        // registered successfully on a prior activation - registration must not repeat on
-        // every activation, only ever once.
-        var (mockStateManager, stateData) = CreateMockStateManager();
-        stateData["metadata"] = new ActorMetadata { HasRegisteredSession = true };
+        // Simulates a session actor deactivating (idle timeout) and later reactivating - e.g.
+        // after its coordinator directory entry was pruned by the TTL sweep. Registration must
+        // repeat on every activation (RegisterSession is idempotent on the coordinator side), not
+        // just the first, so a pruned-but-still-relevant session self-heals unconditionally.
+        var (mockStateManager, _) = CreateMockStateManager();
 
+        // First activation.
+        await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
+        // Second activation of the same session actor id, sharing the same persisted state.
         var (actor, mockSessionCoordinatorInvoker) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
 
         mockSessionCoordinatorInvoker.Verify(i => i.InvokeMethodAsync<RegisterSessionRequest, RegisterSessionResponse>(
-            It.IsAny<ActorId>(),
-            It.IsAny<string>(),
-            It.IsAny<RegisterSessionRequest>(),
-            It.IsAny<CancellationToken>()), Times.Never());
+            It.Is<ActorId>(id => id.GetId() == "orders"),
+            "RegisterSession",
+            It.Is<RegisterSessionRequest>(r => r.SessionId == "order-42"),
+            It.IsAny<CancellationToken>()), Times.Once());
     }
 
     [Fact]
-    public async Task Activation_WhenRegistrationThrows_LeavesHasRegisteredSessionFalseAndDoesNotFailActivation()
+    public async Task Activation_WhenRegistrationThrows_DoesNotFailActivation()
     {
         // Best-effort: a failed self-registration must not block activation (and thus not block
         // Enqueue/Dequeue on this session actor) - it just retries on the next activation.
@@ -259,9 +256,6 @@ public class SessionQueueActorTests
             actorId: "orders-session-order-42",
             registerSessionThrows: new InvalidOperationException("session coordinator unreachable"));
 
-        var metadata = await mockStateManager.Object.GetStateAsync<ActorMetadata>("metadata");
-        Assert.False(metadata.HasRegisteredSession);
-
         // Activation succeeded despite the failure - the actor is otherwise usable.
         var enqueueResult = await actor.Enqueue(new EnqueueRequest
         {
@@ -271,7 +265,7 @@ public class SessionQueueActorTests
     }
 
     [Fact]
-    public async Task Activation_WhenRegistrationRejected_LeavesHasRegisteredSessionFalse()
+    public async Task Activation_WhenRegistrationRejected_DoesNotFailActivation()
     {
         var (mockStateManager, _) = CreateMockStateManager();
         var (actor, _) = await CreateActorAsync(
@@ -279,8 +273,11 @@ public class SessionQueueActorTests
             actorId: "orders-session-order-42",
             registerSessionResponse: new RegisterSessionResponse { Success = false });
 
-        var metadata = await mockStateManager.Object.GetStateAsync<ActorMetadata>("metadata");
-        Assert.False(metadata.HasRegisteredSession);
+        var enqueueResult = await actor.Enqueue(new EnqueueRequest
+        {
+            Items = new List<EnqueueItem> { new EnqueueItem { ItemJson = "{\"id\":1}", Priority = 1 } }
+        });
+        Assert.True(enqueueResult.Success);
     }
 
     [Fact]

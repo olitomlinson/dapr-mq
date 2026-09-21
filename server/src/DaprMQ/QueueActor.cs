@@ -19,16 +19,6 @@ public record ActorMetadata
     public int LockCount { get; init; } = 0;
 
     /// <summary>
-    /// True once this actor, when acting as a per-session queue actor (an id containing
-    /// "-session-"), has successfully told the SessionCoordinatorActor about itself via
-    /// RegisterSession. Checked on every activation so registration happens at most once per
-    /// session actor, ever, rather than once per enqueue - registration failure leaves this false so
-    /// it retries on the next activation. Meaningless (stays false) for an ordinary, non-session
-    /// queue actor.
-    /// </summary>
-    public bool HasRegisteredSession { get; init; } = false;
-
-    /// <summary>
     /// Enforcement cache for the currently-active session lease, synced here by
     /// SessionCoordinatorActor via SetSessionLease/ClearSessionLease. Null on a plain (non-session)
     /// queue actor, and null on a session actor whenever no lease is currently held. Checked by the
@@ -262,23 +252,27 @@ public class QueueActor : Actor, IQueueActor, IRemindable
             Logger.LogDebug("Actor activated with existing metadata");
         }
 
-        await RegisterAsSessionActorIfNeededAsync(metadata);
+        await RegisterAsSessionActorIfNeededAsync();
     }
 
     /// <summary>
     /// If this actor's own id identifies it as a per-session queue actor
-    /// ("{queueId}-session-{sessionId}") and it hasn't already registered itself, tells the
-    /// SessionCoordinatorActor for this queue about this session via RegisterSession - once,
-    /// ever, not on every enqueue. Best-effort: a failure is logged and left for the next activation
-    /// to retry, it never fails activation itself.
+    /// ("{queueId}-session-{sessionId}"), tells the SessionCoordinatorActor for this queue about
+    /// this session via RegisterSession - on every activation, not just the first, so a session
+    /// whose directory entry was ever pruned (e.g. by the coordinator's TTL sweep) self-heals the
+    /// next time it activates, unconditionally. RegisterSession itself is idempotent (a no-op if
+    /// already present), so this is safe and cheap to repeat. Best-effort: a failure is logged and
+    /// left for the next activation to retry, it never fails activation itself.
+    ///
+    /// KNOWN UNFIXED HAZARD: because this now runs (and calls out) on every activation rather
+    /// than once ever, it can trigger a reentrancy deadlock - SessionCoordinatorActor calling
+    /// SetSessionLease/ClearSessionLease on a cold session actor, whose activation calls back into
+    /// the coordinator via this method while the coordinator's own turn is still outstanding
+    /// (A -> B -> A). Dapr actor reentrancy was tried as the fix and rejected - see the note on
+    /// options.ReentrancyConfig in Program.cs for why. Not yet fixed.
     /// </summary>
-    private async Task RegisterAsSessionActorIfNeededAsync(ActorMetadata metadata)
+    private async Task RegisterAsSessionActorIfNeededAsync()
     {
-        if (metadata.HasRegisteredSession)
-        {
-            return;
-        }
-
         string ownId = Id.GetId();
         int markerIndex = ownId.IndexOf(SessionActorIdMarker, StringComparison.Ordinal);
         if (markerIndex <= 0)
@@ -302,8 +296,6 @@ public class QueueActor : Actor, IQueueActor, IRemindable
 
             if (result.Success)
             {
-                await SetMetadataAsync(metadata with { HasRegisteredSession = true });
-                await StateManager.SaveStateAsync();
                 Logger.LogDebug("Session actor {OwnId} registered with SessionCoordinatorActor {QueueId}", ownId, queueId);
             }
             else

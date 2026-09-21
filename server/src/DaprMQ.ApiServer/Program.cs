@@ -126,6 +126,17 @@ builder.Services.AddSingleton<ISessionCoordinatorActorInvoker>(sp =>
         sp.GetRequiredService<Dapr.Actors.Client.IActorProxyFactory>(),
         actorConfig.SessionCoordinatorActorTypeName));
 
+// Register QueueActorStateReader (used by SessionCoordinatorActor's directory sweep to check a
+// session's item count via Dapr's actor-state data-plane API directly, bypassing actor
+// activation - see QueueActorStateReader for why that matters for a sweep that specifically
+// targets idle, likely-cold candidates)
+var daprHttpEndpoint = builder.Configuration.GetValue("DAPR_HTTP_ENDPOINT", "http://localhost:3500") ?? "http://localhost:3500";
+builder.Services.AddSingleton<DaprMQ.IQueueActorStateReader>(sp =>
+    new DaprMQ.QueueActorStateReader(
+        sp.GetRequiredService<IHttpClientFactory>(),
+        actorConfig.QueueActorTypeName,
+        daprHttpEndpoint));
+
 // Register TopicActor tunables (global defaults - see TopicActorConfig)
 builder.Services.AddSingleton(new TopicActorConfig());
 
@@ -190,6 +201,20 @@ if (registerActors)
 
         // Configure actor runtime settings
         options.ActorIdleTimeout = TimeSpan.FromSeconds(60);
+
+        // KNOWN UNFIXED HAZARD: session actors now self-register with their
+        // SessionCoordinatorActor on every activation (not just once, ever), so a
+        // pruned-but-still-relevant session self-heals. That can trigger the coordinator calling
+        // back into itself mid-turn (SessionCoordinatorActor -> QueueActor -> SessionCoordinatorActor)
+        // whenever SetSessionLease/ClearSessionLease target a currently-cold session actor - an
+        // A -> B -> A call chain that non-reentrant actors deadlock on. Dapr's actor reentrancy
+        // (options.ReentrancyConfig) is the documented fix for exactly this shape, but enabling it
+        // was verified (on both Dapr 1.18.2 and 1.18.4) to break TopicActor's reminder-driven
+        // publish relay entirely - the relay reminder silently never fires once reentrancy is on,
+        // no error logged, consistent with the actor lock not being released after a plain
+        // (non-reentrant-in-practice) call returns. Not usable as a fix here. The deadlock itself
+        // remains unfixed pending a different approach (e.g. making the self-registration call
+        // fire-and-forget instead of awaited).
         options.JsonSerializerOptions = new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase, // Use camelCase instead of PascalCase

@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Linq;
 using Dapr.Actors;
 using Dapr.Actors.Runtime;
 using Microsoft.Extensions.Logging;
@@ -9,11 +10,41 @@ namespace DaprMQ;
 
 /// <summary>
 /// State for SessionCoordinatorActor. Deliberately minimal - no queue storage, no segments, no
-/// priorities. Just which session ids are known for this queue.
+/// priorities. Just which session ids are known for this queue, plus each one's directory-sweep
+/// scheduling data (see SweepCandidate) - kept in the same dictionary rather than a second
+/// collection so membership and sweep bookkeeping can never drift out of sync, and so the sweep
+/// can rank every entry from the one read it already does each tick.
 /// </summary>
 public record SessionCoordinatorMetadata
 {
-    public List<string> SessionDirectory { get; init; } = new();
+    public Dictionary<string, SweepCandidate> SessionDirectory { get; init; } = new();
+}
+
+/// <summary>
+/// Per-session bookkeeping for SessionCoordinatorActor's directory-sweep reminder. NextCheckAt
+/// doubles as both the eligibility filter (a candidate is skipped until this time) and the
+/// priority order (ascending - a freshly-registered entry's default 0 sorts first, i.e. an
+/// unchecked session is maximally overdue), so the sweep can pick a fair batch without reading
+/// anything beyond the one metadata blob it already loads.
+/// </summary>
+public record SweepCandidate
+{
+    /// <summary>
+    /// Set the first time a sweep tick finds this session empty with no active lease; cleared if
+    /// a later tick finds it non-empty again. A second consecutive empty confirmation (this
+    /// already set) is what triggers eviction - a single reading isn't trusted, to narrow the
+    /// window where a producer's enqueue could race the directory removal.
+    /// </summary>
+    public double? FirstConfirmedEmptyAt { get; init; }
+
+    public double NextCheckAt { get; init; }
+
+    /// <summary>
+    /// Current backoff applied after a "not empty" result, doubled (capped) each time it recurs,
+    /// so a session that's legitimately in steady use - or has an abandoned, never-claimed
+    /// backlog - doesn't get re-checked at full sweep frequency forever.
+    /// </summary>
+    public double BackoffSeconds { get; init; }
 }
 
 /// <summary>
@@ -36,6 +67,7 @@ public record SessionLockState
 public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IRemindable
 {
     private readonly IQueueActorInvoker _queueActorInvoker;
+    private readonly IQueueActorStateReader _queueActorStateReader;
 
     private const int MinLeaseSeconds = 1;
     private const int MaxLeaseSeconds = 300;
@@ -46,9 +78,18 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
     // (which is the queueId, since SessionCoordinatorActor and its QueueActor share an id string).
     private const string SessionActorIdMarker = "-session-";
 
-    public SessionCoordinatorActor(ActorHost host, IQueueActorInvoker queueActorInvoker) : base(host)
+    private const string SweepReminderName = "directory-sweep";
+    private static readonly TimeSpan SweepInterval = TimeSpan.FromHours(1);
+    private const int SweepBatchSize = 200;
+    private const double InitialBackoffSeconds = 3600; // 1 hour
+    private const double MaxBackoffSeconds = 86400; // 1 day, capped
+    private const double SecondPassDelaySeconds = 300; // re-check soon for the second confirmation
+    private const double LeaseSkipRecheckSeconds = 3600; // don't let a leased session dominate every batch
+
+    public SessionCoordinatorActor(ActorHost host, IQueueActorInvoker queueActorInvoker, IQueueActorStateReader queueActorStateReader) : base(host)
     {
         _queueActorInvoker = queueActorInvoker ?? throw new ArgumentNullException(nameof(queueActorInvoker));
+        _queueActorStateReader = queueActorStateReader ?? throw new ArgumentNullException(nameof(queueActorStateReader));
     }
 
     protected override async Task OnActivateAsync()
@@ -64,6 +105,22 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
         {
             Logger.LogDebug("SessionCoordinatorActor activated with existing metadata");
         }
+
+        try
+        {
+            await RegisterReminderAsync(
+                SweepReminderName,
+                null,
+                TimeSpan.Zero,
+                SweepInterval);
+        }
+        catch (Exception ex)
+        {
+            // Scheduler service not available - the directory just doesn't get swept until a
+            // later activation manages to register it, matching this actor's other reminders'
+            // degradation. Not a correctness issue, only delayed cleanup.
+            Logger.LogDebug(ex, "Directory-sweep reminder registration failed (scheduler unavailable)");
+        }
     }
 
     /// <inheritdoc />
@@ -75,9 +132,13 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
         }
 
         var metadata = await GetMetadataAsync();
-        if (!metadata.SessionDirectory.Contains(request.SessionId))
+        if (!metadata.SessionDirectory.ContainsKey(request.SessionId))
         {
-            metadata = metadata with { SessionDirectory = metadata.SessionDirectory.Append(request.SessionId).ToList() };
+            var updatedDirectory = new Dictionary<string, SweepCandidate>(metadata.SessionDirectory)
+            {
+                [request.SessionId] = new SweepCandidate()
+            };
+            metadata = metadata with { SessionDirectory = updatedDirectory };
             await SetMetadataAsync(metadata);
             await StateManager.SaveStateAsync();
             Logger.LogDebug("Registered session {SessionId} in directory", request.SessionId);
@@ -97,7 +158,7 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
         if (!string.IsNullOrEmpty(request.SessionId))
         {
             // Targeted claim.
-            if (!metadata.SessionDirectory.Contains(request.SessionId))
+            if (!metadata.SessionDirectory.ContainsKey(request.SessionId))
             {
                 return new AcceptSessionResponse
                 {
@@ -124,7 +185,7 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
         {
             // Any-available claim: first directory entry with no live lease.
             string? found = null;
-            foreach (var candidate in metadata.SessionDirectory)
+            foreach (var candidate in metadata.SessionDirectory.Keys)
             {
                 var candidateLock = await StateManager.TryGetStateAsync<SessionLockState>($"session-lock_{candidate}");
                 if (!candidateLock.HasValue || now >= candidateLock.Value.ExpiresAt)
@@ -344,7 +405,11 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
     {
         try
         {
-            if (reminderName.StartsWith("session-"))
+            if (reminderName == SweepReminderName)
+            {
+                await SweepDirectoryAsync();
+            }
+            else if (reminderName.StartsWith("session-"))
             {
                 string sessionId = reminderName["session-".Length..];
                 var existing = await StateManager.TryGetStateAsync<SessionLockState>($"session-lock_{sessionId}");
@@ -365,6 +430,95 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
         {
             Logger.LogError(ex, "Error in ReceiveReminderAsync for reminder {ReminderName}", reminderName);
         }
+    }
+
+    /// <summary>
+    /// Reminder callback for the periodic directory sweep. Picks a bounded, fairly-ranked batch of
+    /// candidates due for a check, evicts ones confirmed empty (no active lease, no items) on two
+    /// consecutive ticks, and leaves everything else untouched or backed off. See SweepCandidate
+    /// for what each field means and why the eviction requires two confirmations, not one.
+    /// </summary>
+    private async Task SweepDirectoryAsync()
+    {
+        var metadata = await GetMetadataAsync();
+        double now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+        var batch = metadata.SessionDirectory
+            .Where(kv => kv.Value.NextCheckAt <= now)
+            .OrderBy(kv => kv.Value.NextCheckAt)
+            .Take(SweepBatchSize)
+            .Select(kv => kv.Key)
+            .ToList();
+
+        if (batch.Count == 0)
+        {
+            return;
+        }
+
+        var updatedDirectory = new Dictionary<string, SweepCandidate>(metadata.SessionDirectory);
+
+        foreach (var sessionId in batch)
+        {
+            var candidate = updatedDirectory[sessionId];
+
+            var leaseState = await StateManager.TryGetStateAsync<SessionLockState>($"session-lock_{sessionId}");
+            if (leaseState.HasValue && now < leaseState.Value.ExpiresAt)
+            {
+                // In use - free local check, no cross-actor call. Still bump NextCheckAt so a
+                // leased session doesn't keep re-winning batch selection every tick.
+                updatedDirectory[sessionId] = candidate with { NextCheckAt = now + LeaseSkipRecheckSeconds };
+                continue;
+            }
+
+            bool isEmpty;
+            try
+            {
+                string sessionActorId = $"{Id.GetId()}{SessionActorIdMarker}{sessionId}";
+                isEmpty = await _queueActorStateReader.IsSessionEmptyAsync(new ActorId(sessionActorId));
+            }
+            catch (Exception ex)
+            {
+                // Inconclusive read - fail closed, leave the candidate exactly as it was and
+                // retry once it's next eligible rather than risk evicting on bad information.
+                Logger.LogDebug(ex, "Failed to check emptiness for session {SessionId} during directory sweep; leaving as-is", sessionId);
+                continue;
+            }
+
+            if (!isEmpty)
+            {
+                double newBackoff = candidate.BackoffSeconds <= 0
+                    ? InitialBackoffSeconds
+                    : Math.Min(candidate.BackoffSeconds * 2, MaxBackoffSeconds);
+                updatedDirectory[sessionId] = candidate with
+                {
+                    FirstConfirmedEmptyAt = null,
+                    NextCheckAt = now + newBackoff,
+                    BackoffSeconds = newBackoff
+                };
+                continue;
+            }
+
+            if (candidate.FirstConfirmedEmptyAt == null)
+            {
+                // First confirmation - re-check soon rather than evicting on a single reading.
+                updatedDirectory[sessionId] = candidate with
+                {
+                    FirstConfirmedEmptyAt = now,
+                    NextCheckAt = now + SecondPassDelaySeconds,
+                    BackoffSeconds = 0
+                };
+            }
+            else
+            {
+                // Second consecutive empty confirmation - safe to evict.
+                updatedDirectory.Remove(sessionId);
+                Logger.LogDebug("Evicted idle session {SessionId} from directory", sessionId);
+            }
+        }
+
+        metadata = metadata with { SessionDirectory = updatedDirectory };
+        await SetMetadataAsync(metadata);
+        await StateManager.SaveStateAsync();
     }
 
     /// <summary>
