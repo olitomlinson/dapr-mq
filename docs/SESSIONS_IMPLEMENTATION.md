@@ -142,6 +142,71 @@ public double? ActiveSessionLeaseExpiresAt { get; init; }
 
 REST + gRPC unary for `AcceptSession`/`RenewSessionLease`/`ReleaseSession` (admin/manual operations, matching the existing dual-surface convention), plus a gRPC bidirectional streaming RPC, `ConsumeSession`, for the managed consume loop. `DaprMQGrpcService.ConsumeSession` is a stateless orchestrator (Dapr actors can't hold a stream open across turns) that calls `AcceptSession` server-side, then runs a poll loop against the derived session actor and a lease-renewal check at roughly `lease_seconds/2`, using the stream's own liveness as the heartbeat — on stream close, the server releases the session immediately, materially faster than waiting out the lease TTL. See [API_REFERENCE.md](API_REFERENCE.md#sessions) for the wire format.
 
+## Idle-Drain and Selection Order
+
+Two follow-on gaps. This feature is explicitly modeled on Azure Service Bus (ASB) sessions (see
+Context above), so each is checked against ASB's own behavior rather than assumed.
+
+### 1. Idle-drain (`ConsumeSession` only)
+
+**Problem:** `ConsumeSession`'s poll loop used to run forever on an empty session — `DequeueLocked`
+returning zero items just triggered another 200ms delay and another poll, while the lease kept
+renewing on its own schedule regardless of whether any work had arrived. A consumer genuinely held
+an idle stream, and its lease, indefinitely.
+
+**Fix:** the loop tracks how long it's been continuously empty (`DequeueLocked` returned nothing
+*and* nothing is outstanding/unacked). Once that exceeds `session_idle_timeout_seconds` (new
+`ConsumeSessionStart` field; 0/unset defaults to `lease_seconds`), the server writes a
+`SessionDrained` frame and ends the stream normally — not an error. `ReleaseSession` fires in the
+existing `finally` block exactly as it does on any other stream end, so no new cleanup path exists.
+Client SDKs don't need special handling: `SessionQueueConsumer`/`sessionQueueConsumer.ts` already
+treat a clean stream end as "claim another" (the doc comment on `SessionQueueConsumer` already
+promised this before it was actually implemented).
+
+**Prior art — near-exact match:** ASB's `ServiceBusSessionProcessorOptions.SessionIdleTimeout`:
+*"the maximum amount of time to wait for a message to be received for the currently active
+session. After this time has elapsed, the processor will close the session and attempt to process
+another session. If not specified, the TryTimeout will be used."* Same trigger, same action, same
+default-to-an-existing-timeout convention (`lease_seconds` here plays the role of their
+`TryTimeout`).
+
+**Scope:** only the managed `ConsumeSession` streaming path. Manual `AcceptSession` + `Dequeue` +
+`RenewSessionLease` callers are unaffected — already bounded by the existing lease TTL (max 300s)
+and responsible for their own release; that contract is unrelated and unchanged.
+
+### 2. Any-available selection order — left backlog-blind, on purpose
+
+**Problem:** `AcceptSession`'s any-available scan (first unlocked `SessionDirectory` entry, in
+registration order) has no idea which sessions have pending messages.
+
+**Decision: no change.** A backlog-aware pick — even a cheap boolean flag rather than a live count
+— would require the session's `QueueActor` to report every 0↔nonzero transition back to
+`SessionCoordinatorActor`. Under bursty drain/refill traffic this means frequent cross-actor calls
+concentrated on one actor id, and Dapr actors execute one turn at a time per actor id — exactly the
+contention shape to avoid, multiplied across every session-bearing `QueueActor` in the system. Fix
+1 above bounds the cost of a backlog-blind pick instead: a consumer handed an empty session now
+gives it up quickly (one idle-timeout window) rather than sitting on it indefinitely.
+
+**Confirmed divergence from ASB, not parity:** `AcceptNextSessionAsync` "accepts the next unlocked
+session that contains Active messages" — the broker only ever offers sessions with a pending
+backlog; a session isn't even eligible for accept-next unless it has messages, because ASB's index
+is keyed off live backlog in the first place. This implementation's `SessionDirectory` is
+explicitly not that (see "Storage Model" above) — trading that guarantee away for actor-contention
+avoidance is a deliberate, accepted gap against the system this feature is modeled on.
+
+**Rejected: consumer-fairness / anti-monopoly heuristic.** No consumer-fairness mechanism is
+implemented. There is no `consumerId` concept anywhere in the wire protocol — only an anonymous
+bearer `LeaseId` — so nothing stops one consumer from claiming every session while others sit idle.
+An opt-in anti-monopoly heuristic was designed and fully implemented (tallying per-consumer active
+session counts during `AcceptSession`'s existing scan, declining a claim when a less-loaded
+consumer is visibly active), then deliberately reverted end-to-end at the requester's request
+before merge — not abandoned due to a defect found during implementation or testing. Should this be
+revisited, the reverted design is preserved in this file's git history.
+Matches ASB parity here: ASB itself has no built-in cross-receiver fairness mechanism either — its
+fairness is purely emergent (busy receivers don't ask for more, idle ones do; the exclusive session
+lock is the only enforcement), and `MaxConcurrentSessions` is a per-process concurrency cap only,
+with no cross-process coordination.
+
 ## State Keys (additions)
 
 | State key | Type | Actor type / role |

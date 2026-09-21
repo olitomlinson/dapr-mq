@@ -271,9 +271,15 @@ export class DaprMQClient {
    */
   async *consumeSession(
     queueId: string,
-    options: { sessionId?: string; leaseSeconds?: number; prefetchCount?: number; signal?: AbortSignal } = {},
+    options: {
+      sessionId?: string;
+      leaseSeconds?: number;
+      prefetchCount?: number;
+      sessionIdleTimeoutSeconds?: number;
+      signal?: AbortSignal;
+    } = {},
   ): AsyncGenerator<SessionDelivery, void, void> {
-    const { sessionId, leaseSeconds = 30, prefetchCount = 10, signal } = options;
+    const { sessionId, leaseSeconds = 30, prefetchCount = 10, sessionIdleTimeoutSeconds = 0, signal } = options;
     const call = this.grpcClient.consumeSession();
 
     const onAbort = () => call.cancel();
@@ -285,7 +291,7 @@ export class DaprMQClient {
     call.on("error", (err: Error) => queue.fail(err));
 
     try {
-      call.write({ start: { queueId, sessionId, leaseSeconds, prefetchCount } });
+      call.write({ start: { queueId, sessionId, leaseSeconds, prefetchCount, sessionIdleTimeoutSeconds } });
 
       let assignedSessionId = sessionId ?? "";
 
@@ -318,6 +324,12 @@ export class DaprMQClient {
 
           case "sessionLost":
             throw new SessionLostError(response.sessionLost!.message);
+
+          case "sessionDrained":
+            // Terminal, not an error - end the generator cleanly, same as the stream ending on
+            // its own. SessionQueueConsumer's runSlot loop already treats a clean end as "claim
+            // another".
+            return;
         }
       }
     } finally {

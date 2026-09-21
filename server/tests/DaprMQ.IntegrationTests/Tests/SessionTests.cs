@@ -356,4 +356,58 @@ public class SessionTests(DaprTestFixture fixture)
         var reclaimed = await AcceptSessionSuccessfullyAsync(queueId, sessionId);
         Assert.Equal(sessionId, reclaimed.SessionId);
     }
+
+    [Fact]
+    public async Task ConsumeSession_IdleTimeoutElapsed_EndsStreamWithSessionDrained_AndReleasesImmediately()
+    {
+        var queueId = NewQueueId();
+        var sessionId = "idle-drain-me";
+
+        await EnqueueAsync(queueId, sessionId, new { seq = 1 });
+
+        var client = CreateGrpcClient();
+        using var call = client.ConsumeSession();
+
+        // Long lease (so renewal never interferes) but a short idle timeout - the item is
+        // consumed and acked immediately, then the session sits empty until the idle timeout
+        // fires on its own. No explicit disconnect from the client side.
+        await call.RequestStream.WriteAsync(new ConsumeSessionRequest
+        {
+            Start = new ConsumeSessionStart { QueueId = queueId, SessionId = sessionId, LeaseSeconds = 30, PrefetchCount = 5, SessionIdleTimeoutSeconds = 2 }
+        });
+
+        SessionDrained? drained = null;
+        var delivered = new List<SessionDelivered>();
+
+        var readTask = Task.Run(async () =>
+        {
+            await foreach (var response in call.ResponseStream.ReadAllAsync())
+            {
+                if (response.PayloadCase == ConsumeSessionResponse.PayloadOneofCase.Delivered)
+                {
+                    delivered.Add(response.Delivered);
+                    await call.RequestStream.WriteAsync(new ConsumeSessionRequest
+                    {
+                        Ack = new ConsumeSessionAck { LockId = response.Delivered.LockId }
+                    });
+                }
+                else if (response.PayloadCase == ConsumeSessionResponse.PayloadOneofCase.SessionDrained)
+                {
+                    drained = response.SessionDrained;
+                }
+            }
+        });
+
+        var completed = await Task.WhenAny(readTask, Task.Delay(TimeSpan.FromSeconds(15))) == readTask;
+        Assert.True(completed, "ConsumeSession stream did not end with SessionDrained within timeout");
+        await readTask;
+
+        Assert.Single(delivered);
+        Assert.NotNull(drained);
+        Assert.Equal(sessionId, drained!.SessionId);
+
+        // Released immediately once drained - no need to wait out the 30s lease.
+        var reclaimed = await AcceptSessionSuccessfullyAsync(queueId, sessionId);
+        Assert.Equal(sessionId, reclaimed.SessionId);
+    }
 }

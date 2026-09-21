@@ -223,7 +223,8 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
 
     public async IAsyncEnumerable<SessionDelivery> ConsumeSessionAsync(
         string queueId, string? sessionId, int leaseSeconds, int prefetchCount,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default,
+        int sessionIdleTimeoutSeconds = 0)
     {
         using var call = _grpcClient.ConsumeSession(cancellationToken: ct);
         try
@@ -232,7 +233,8 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
             {
                 QueueId = queueId,
                 LeaseSeconds = leaseSeconds,
-                PrefetchCount = prefetchCount
+                PrefetchCount = prefetchCount,
+                SessionIdleTimeoutSeconds = sessionIdleTimeoutSeconds
             };
             if (sessionId != null)
             {

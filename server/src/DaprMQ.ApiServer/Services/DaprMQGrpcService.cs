@@ -601,6 +601,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         var requestedSessionId = start.HasSessionId ? start.SessionId : null;
         var leaseSeconds = start.LeaseSeconds > 0 ? start.LeaseSeconds : 30;
         var prefetchCount = start.PrefetchCount > 0 ? start.PrefetchCount : 10;
+        var sessionIdleTimeoutSeconds = start.SessionIdleTimeoutSeconds > 0 ? start.SessionIdleTimeoutSeconds : leaseSeconds;
 
         _logger.LogDebug($"gRPC ConsumeSession request for queue {start.QueueId}, sessionId={requestedSessionId ?? "<any>"}");
 
@@ -678,6 +679,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
 
         double lastRenewalAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var renewIntervalSeconds = Math.Max(1, leaseSeconds / 2.0);
+        double? emptySince = null;
 
         try
         {
@@ -731,6 +733,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
 
                     if (dequeueResult.Items.Count > 0)
                     {
+                        emptySince = null;
                         foreach (var item in dequeueResult.Items)
                         {
                             Interlocked.Increment(ref outstanding);
@@ -748,6 +751,28 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
 
                         continue;
                     }
+                }
+
+                // Idle-drain: no message and nothing in flight for sessionIdleTimeoutSeconds -
+                // release the session and end the stream (not an error) rather than holding it,
+                // and its lease, indefinitely. Mirrors Azure Service Bus's
+                // ServiceBusSessionProcessorOptions.SessionIdleTimeout.
+                if (Volatile.Read(ref outstanding) == 0)
+                {
+                    double now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                    emptySince ??= now;
+                    if (now - emptySince >= sessionIdleTimeoutSeconds)
+                    {
+                        await responseStream.WriteAsync(new ConsumeSessionResponse
+                        {
+                            SessionDrained = new SessionDrained { SessionId = sessionId }
+                        });
+                        break;
+                    }
+                }
+                else
+                {
+                    emptySince = null;
                 }
 
                 await Task.Delay(TimeSpan.FromMilliseconds(200), cts.Token);

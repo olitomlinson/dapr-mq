@@ -17,6 +17,14 @@ public record SessionQueueConsumerOptions
     public int MaxBackoffSeconds { get; init; } = 60;
     public SessionHandlerFailureAction OnHandlerException { get; init; } = SessionHandlerFailureAction.DeadLetterMessage;
     public TimeSpan DrainTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Max time (seconds) to wait for a message on the currently held session before the server
+    /// treats it as drained and this slot moves on to claim another. 0 = server default (currently
+    /// LeaseSeconds). See DaprMQGrpcService.ConsumeSession's idle-drain and Azure Service Bus's
+    /// ServiceBusSessionProcessorOptions.SessionIdleTimeout, which this mirrors.
+    /// </summary>
+    public int SessionIdleTimeoutSeconds { get; init; } = 0;
 }
 
 public enum SessionHandlerFailureAction
@@ -116,7 +124,8 @@ public sealed class SessionQueueConsumer : IAsyncDisposable
             try
             {
                 await foreach (var delivery in _client.ConsumeSessionAsync(
-                    _queueId, _options.TargetSessionId, _options.LeaseSeconds, _options.PrefetchCount, stopToken))
+                    _queueId, _options.TargetSessionId, _options.LeaseSeconds, _options.PrefetchCount, stopToken,
+                    sessionIdleTimeoutSeconds: _options.SessionIdleTimeoutSeconds))
                 {
                     sessionWasClaimed = true;
                     await HandleDeliveryAsync(delivery, stopToken);

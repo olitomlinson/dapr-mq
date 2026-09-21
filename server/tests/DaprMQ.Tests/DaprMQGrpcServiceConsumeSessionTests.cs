@@ -84,9 +84,16 @@ public class DaprMQGrpcServiceConsumeSessionTests
         ISessionCoordinatorActorInvoker sessionCoordinatorActorInvoker) =>
         new(_mockLogger.Object, queueActorInvoker, sessionCoordinatorActorInvoker);
 
-    private static ConsumeSessionRequest StartRequest(string queueId, string? sessionId = null, int leaseSeconds = 30, int prefetchCount = 5)
+    private static ConsumeSessionRequest StartRequest(
+        string queueId, string? sessionId = null, int leaseSeconds = 30, int prefetchCount = 5, int sessionIdleTimeoutSeconds = 0)
     {
-        var start = new ConsumeSessionStart { QueueId = queueId, LeaseSeconds = leaseSeconds, PrefetchCount = prefetchCount };
+        var start = new ConsumeSessionStart
+        {
+            QueueId = queueId,
+            LeaseSeconds = leaseSeconds,
+            PrefetchCount = prefetchCount,
+            SessionIdleTimeoutSeconds = sessionIdleTimeoutSeconds
+        };
         if (sessionId != null)
         {
             start.SessionId = sessionId;
@@ -246,6 +253,86 @@ public class DaprMQGrpcServiceConsumeSessionTests
 
         Assert.Equal("lock-9", capturedDeadLetter!.LockId);
         Assert.Equal("lease-1", capturedDeadLetter.LeaseId);
+    }
+
+    [Fact]
+    public async Task ConsumeSession_IdleTimeoutElapsed_WritesSessionDrainedAndReleases()
+    {
+        var mockQueueInvoker = new Mock<IQueueActorInvoker>();
+        var mockSessionInvoker = new Mock<ISessionCoordinatorActorInvoker>();
+
+        mockSessionInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.AcceptSessionRequest, ActorModels.AcceptSessionResponse>(
+                It.IsAny<ActorId>(), "AcceptSession", It.IsAny<ActorModels.AcceptSessionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.AcceptSessionResponse { Success = true, SessionId = "s1", LeaseId = "lease-1", LeaseExpiresAt = 12345 });
+
+        // Never returns anything - the session is idle for the life of the test.
+        mockQueueInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.DequeueLockedRequest, ActorModels.DequeueLockedResponse>(
+                It.IsAny<ActorId>(), "DequeueLocked", It.IsAny<ActorModels.DequeueLockedRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.DequeueLockedResponse { IsEmpty = true });
+
+        mockSessionInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.ReleaseSessionRequest, ActorModels.ReleaseSessionResponse>(
+                It.IsAny<ActorId>(), "ReleaseSession", It.IsAny<ActorModels.ReleaseSessionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.ReleaseSessionResponse { Success = true });
+
+        var service = CreateService(mockQueueInvoker.Object, mockSessionInvoker.Object);
+        var reader = new FakeAsyncStreamReader<ConsumeSessionRequest>();
+        var writer = new FakeServerStreamWriter<ConsumeSessionResponse>();
+        // Long lease (so renewal never fires) but a short idle timeout.
+        reader.Add(StartRequest("test-queue", "s1", leaseSeconds: 30, prefetchCount: 5, sessionIdleTimeoutSeconds: 1));
+
+        var task = service.ConsumeSession(reader, writer, _mockContext.Object);
+
+        await task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var drained = Assert.Single(writer.Written, r => r.PayloadCase == ConsumeSessionResponse.PayloadOneofCase.SessionDrained);
+        Assert.Equal("s1", drained.SessionDrained.SessionId);
+        Assert.DoesNotContain(writer.Written, r => r.PayloadCase == ConsumeSessionResponse.PayloadOneofCase.SessionLost
+            || r.PayloadCase == ConsumeSessionResponse.PayloadOneofCase.Error);
+        mockSessionInvoker.Verify(i => i.InvokeMethodAsync<ActorModels.ReleaseSessionRequest, ActorModels.ReleaseSessionResponse>(
+            It.IsAny<ActorId>(),
+            "ReleaseSession",
+            It.Is<ActorModels.ReleaseSessionRequest>(r => r.SessionId == "s1" && r.LeaseId == "lease-1"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ConsumeSession_ItemsKeepArriving_NeverIdleDrains()
+    {
+        var mockQueueInvoker = new Mock<IQueueActorInvoker>();
+        var mockSessionInvoker = new Mock<ISessionCoordinatorActorInvoker>();
+
+        mockSessionInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.AcceptSessionRequest, ActorModels.AcceptSessionResponse>(
+                It.IsAny<ActorId>(), "AcceptSession", It.IsAny<ActorModels.AcceptSessionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.AcceptSessionResponse { Success = true, SessionId = "s1", LeaseId = "lease-1", LeaseExpiresAt = 12345 });
+
+        var dequeueCallCount = 0;
+        mockQueueInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.DequeueLockedRequest, ActorModels.DequeueLockedResponse>(
+                It.IsAny<ActorId>(), "DequeueLocked", It.IsAny<ActorModels.DequeueLockedRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                dequeueCallCount++;
+                return new ActorModels.DequeueLockedResponse
+                {
+                    Items = new List<ActorModels.DequeueLockedItem>
+                    {
+                        new() { ItemJson = "{}", Priority = 1, LockId = $"lock-{dequeueCallCount}", LockExpiresAt = 999 }
+                    }
+                };
+            });
+
+        var service = CreateService(mockQueueInvoker.Object, mockSessionInvoker.Object);
+        var reader = new FakeAsyncStreamReader<ConsumeSessionRequest>();
+        var writer = new FakeServerStreamWriter<ConsumeSessionResponse>();
+        reader.Add(StartRequest("test-queue", "s1", leaseSeconds: 30, prefetchCount: 1000, sessionIdleTimeoutSeconds: 1));
+
+        var task = service.ConsumeSession(reader, writer, _mockContext.Object);
+
+        // Items keep arriving well past the 1s idle timeout - it should never trigger.
+        await Task.Delay(1500);
+        reader.Complete();
+        await task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.DoesNotContain(writer.Written, r => r.PayloadCase == ConsumeSessionResponse.PayloadOneofCase.SessionDrained);
     }
 
     [Fact]

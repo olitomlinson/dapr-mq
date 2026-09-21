@@ -15,6 +15,7 @@ export interface ConsumeSessionStartMessage {
   sessionId?: string;
   leaseSeconds: number;
   prefetchCount: number;
+  sessionIdleTimeoutSeconds?: number;
 }
 
 export interface ConsumeSessionRequestMessage {
@@ -44,12 +45,17 @@ export interface SessionLostMessage {
   message: string;
 }
 
+export interface SessionDrainedMessage {
+  sessionId: string;
+}
+
 export interface ConsumeSessionResponseMessage {
-  payload: "sessionAssigned" | "delivered" | "error" | "sessionLost";
+  payload: "sessionAssigned" | "delivered" | "error" | "sessionLost" | "sessionDrained";
   sessionAssigned?: SessionAssignedMessage;
   delivered?: SessionDeliveredMessage;
   error?: SessionErrorMessage;
   sessionLost?: SessionLostMessage;
+  sessionDrained?: SessionDrainedMessage;
 }
 
 export interface DaprMQGrpcClient extends grpc.Client {

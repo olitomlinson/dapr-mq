@@ -106,6 +106,42 @@ public class DaprMQClientConsumeSessionTests
     }
 
     [Fact]
+    public async Task ConsumeSessionAsync_SessionDrainedFrame_EndsEnumerationWithoutException()
+    {
+        var (client, _, responses) = CreateClientWithFakeStream();
+
+        responses.Add(new ConsumeSessionResponse
+        {
+            SessionAssigned = new SessionAssigned { SessionId = "order-42", LeaseExpiresAt = 1780000200.0 }
+        });
+        responses.Add(new ConsumeSessionResponse
+        {
+            SessionDrained = new SessionDrained { SessionId = "order-42" }
+        });
+        responses.Complete();
+
+        var deliveries = new List<SessionDelivery>();
+        await foreach (var delivery in client.ConsumeSessionAsync("q", null, 30, 10))
+        {
+            deliveries.Add(delivery);
+        }
+
+        Assert.Empty(deliveries);
+    }
+
+    [Fact]
+    public async Task ConsumeSessionAsync_ForwardsIdleTimeoutOnStartFrame()
+    {
+        var (client, requests, responses) = CreateClientWithFakeStream();
+        responses.Complete();
+
+        await foreach (var _ in client.ConsumeSessionAsync("q", null, 30, 10, sessionIdleTimeoutSeconds: 5)) { }
+
+        var start = requests.WrittenSoFar[0].Start;
+        Assert.Equal(5, start.SessionIdleTimeoutSeconds);
+    }
+
+    [Fact]
     public async Task ConsumeSessionAsync_DeadLetterAsync_WritesDeadLetterFrame()
     {
         var (client, requests, responses) = CreateClientWithFakeStream();

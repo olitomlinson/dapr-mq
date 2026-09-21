@@ -18,5 +18,7 @@ public interface IDaprMQClient
 
     Task ReleaseSessionAsync(string queueId, string sessionId, string leaseId, CancellationToken ct = default);
 
-    IAsyncEnumerable<SessionDelivery> ConsumeSessionAsync(string queueId, string? sessionId, int leaseSeconds, int prefetchCount, CancellationToken ct = default);
+    IAsyncEnumerable<SessionDelivery> ConsumeSessionAsync(
+        string queueId, string? sessionId, int leaseSeconds, int prefetchCount, CancellationToken ct = default,
+        int sessionIdleTimeoutSeconds = 0);
 }

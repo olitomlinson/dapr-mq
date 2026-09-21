@@ -401,6 +401,12 @@ message ConsumeSessionStart {
   // How many delivered-but-not-yet-acked/dead-lettered items to keep in flight at once
   // (default: 10).
   int32 prefetch_count = 4;
+
+  // Maximum time (seconds) to wait for a message on the currently claimed session before treating
+  // it as drained: the server closes the session (SessionDrained, then the stream ends) rather
+  // than holding it and its lease indefinitely. 0/unset = default to lease_seconds. Mirrors Azure
+  // Service Bus's ServiceBusSessionProcessorOptions.SessionIdleTimeout.
+  int32 session_idle_timeout_seconds = 5;
 }
 
 // Acknowledge and permanently remove a previously delivered item.
@@ -430,6 +436,12 @@ message ConsumeSessionResponse {
     // maintained afterwards (e.g. a lease renewal failed because the session's QueueActor
     // became unreachable, or the lease was lost to another claimant).
     SessionLost session_lost = 4;
+
+    // Terminal (success path) - no further messages follow. No message arrived within
+    // session_idle_timeout_seconds, so the server released the session and closed the stream.
+    // Not an error: the client's consume loop should treat this the same as the stream ending
+    // cleanly and go claim another session.
+    SessionDrained session_drained = 5;
   }
 }
 
@@ -457,4 +469,10 @@ message SessionError {
 // Terminal - the lease could not be maintained after a successful claim.
 message SessionLost {
   string message = 1;
+}
+
+// Terminal (success path) - the session was idle (no message) for session_idle_timeout_seconds
+// and was released back for another consumer to claim.
+message SessionDrained {
+  string session_id = 1;
 }

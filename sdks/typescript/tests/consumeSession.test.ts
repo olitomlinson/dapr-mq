@@ -62,6 +62,34 @@ describe("DaprMQClient.consumeSession", () => {
     }).rejects.toBeInstanceOf(SessionLostError);
   });
 
+  it("ends enumeration cleanly (no throw) on a sessionDrained frame", async () => {
+    const stream = new FakeDuplexStream();
+    const client = createClient(stream);
+
+    stream.emitData({ payload: "sessionAssigned", sessionAssigned: { sessionId: "order-42", leaseExpiresAt: 1780000200.0 } });
+    stream.emitData({ payload: "sessionDrained", sessionDrained: { sessionId: "order-42" } });
+    stream.emitEnd();
+
+    const deliveries: SessionDelivery[] = [];
+    for await (const delivery of client.consumeSession("q", {})) {
+      deliveries.push(delivery);
+    }
+
+    expect(deliveries).toHaveLength(0);
+  });
+
+  it("forwards sessionIdleTimeoutSeconds on the start frame", async () => {
+    const stream = new FakeDuplexStream();
+    const client = createClient(stream);
+    stream.emitEnd();
+
+    for await (const _ of client.consumeSession("q", { sessionIdleTimeoutSeconds: 5 })) {
+      // drain
+    }
+
+    expect(stream.written[0].start?.sessionIdleTimeoutSeconds).toBe(5);
+  });
+
   it("deadLetter() writes a deadLetter frame", async () => {
     const stream = new FakeDuplexStream();
     const client = createClient(stream);

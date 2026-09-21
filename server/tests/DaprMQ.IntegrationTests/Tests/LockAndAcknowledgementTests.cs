@@ -328,10 +328,10 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
         var enqueueResponse = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/enqueue", enqueueRequest);
         enqueueResponse.EnsureSuccessStatusCode();
 
-        // Dequeue with acknowledgement (creates lock with 3s TTL)
+        // Dequeue with acknowledgement (creates lock with 6s TTL)
         var dequeueLockedRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/dequeue");
         dequeueLockedRequest.Headers.Add("require-ack", "true");
-        dequeueLockedRequest.Headers.Add("ttl-seconds", "3");
+        dequeueLockedRequest.Headers.Add("ttl-seconds", "6");
         var dequeueLockedResponse = await fixture.ApiClient.SendAsync(dequeueLockedRequest);
         dequeueLockedResponse.EnsureSuccessStatusCode();
 
@@ -340,16 +340,21 @@ public class LockAndAcknowledgementTests(DaprTestFixture fixture)
         Assert.NotNull(dequeueLockedResult.Items);
         Assert.Single(dequeueLockedResult.Items);
 
-        // Wait 2 seconds (lock would expire at 3s)
-        await Task.Delay(TimeSpan.FromSeconds(2));
+        // Wait 3 seconds (lock would expire at 6s) - deliberately generous margin before the
+        // original TTL boundary so ordinary HTTP/container scheduling jitter in CI can't tip
+        // ExtendLock's now >= lockData.ExpiresAt check into a false LOCK_EXPIRED (this test used
+        // to leave only ~1s of slack here, which flaked under load).
+        await Task.Delay(TimeSpan.FromSeconds(3));
 
-        // Act - Extend lock by 5 more seconds
-        var extendLockRequest = new ApiExtendLockRequest(dequeueLockedResult.Items[0].LockId, AdditionalTtlSeconds: 5);
+        // Act - Extend lock by 8 more seconds
+        var extendLockRequest = new ApiExtendLockRequest(dequeueLockedResult.Items[0].LockId, AdditionalTtlSeconds: 8);
         var extendLockResponse = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/extend-lock", extendLockRequest);
         extendLockResponse.EnsureSuccessStatusCode();
 
-        // Wait 2 more seconds (original lock would have expired at 3s, but extension keeps it alive)
-        await Task.Delay(TimeSpan.FromSeconds(2));
+        // Wait 5 more seconds (~8s total elapsed): past the original 6s TTL - proving the
+        // extension (new expiry ~14s from lock creation) is what's keeping it alive - while
+        // staying comfortably clear of both boundaries.
+        await Task.Delay(TimeSpan.FromSeconds(5));
 
         // Assert - Acknowledge should still work (lock is still valid)
         var ackRequest = new ApiAcknowledgeRequest(dequeueLockedResult.Items[0].LockId);

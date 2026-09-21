@@ -1,4 +1,10 @@
-import { NoSessionsAvailableError, SessionActorUnavailableError, SessionLockedError, SessionLostError, SessionNotFoundError } from "./errors.js";
+import {
+  NoSessionsAvailableError,
+  SessionActorUnavailableError,
+  SessionLockedError,
+  SessionLostError,
+  SessionNotFoundError,
+} from "./errors.js";
 import type { SessionDelivery } from "./types.js";
 
 export type SessionHandlerFailureAction = "deadLetterMessage" | "abandonSession" | "both";
@@ -14,6 +20,12 @@ export interface SessionQueueConsumerOptions {
   onHandlerException?: SessionHandlerFailureAction;
   /** Milliseconds to wait for in-flight handlers to finish on stop() before closing streams. */
   drainTimeoutMs?: number;
+  /**
+   * Max time (seconds) to wait for a message on the currently held session before the server
+   * treats it as drained and this slot moves on to claim another. 0/unset = server default
+   * (currently leaseSeconds). Mirrors Azure Service Bus's SessionIdleTimeout.
+   */
+  sessionIdleTimeoutSeconds?: number;
 }
 
 interface ResolvedOptions {
@@ -25,6 +37,7 @@ interface ResolvedOptions {
   maxBackoffSeconds: number;
   onHandlerException: SessionHandlerFailureAction;
   drainTimeoutMs: number;
+  sessionIdleTimeoutSeconds: number;
 }
 
 /**
@@ -44,7 +57,13 @@ export interface SessionMessageContext {
 export interface SessionCapableClient {
   consumeSession(
     queueId: string,
-    options: { sessionId?: string; leaseSeconds?: number; prefetchCount?: number; signal?: AbortSignal },
+    options: {
+      sessionId?: string;
+      leaseSeconds?: number;
+      prefetchCount?: number;
+      sessionIdleTimeoutSeconds?: number;
+      signal?: AbortSignal;
+    },
   ): AsyncIterable<SessionDelivery>;
 }
 
@@ -106,6 +125,7 @@ export class SessionQueueConsumer {
       maxBackoffSeconds: options.maxBackoffSeconds ?? 60,
       onHandlerException: options.onHandlerException ?? "deadLetterMessage",
       drainTimeoutMs: options.drainTimeoutMs ?? 30_000,
+      sessionIdleTimeoutSeconds: options.sessionIdleTimeoutSeconds ?? 0,
     };
     this.handler = handler;
   }
@@ -138,6 +158,7 @@ export class SessionQueueConsumer {
           sessionId: this.options.targetSessionId,
           leaseSeconds: this.options.leaseSeconds,
           prefetchCount: this.options.prefetchCount,
+          sessionIdleTimeoutSeconds: this.options.sessionIdleTimeoutSeconds,
           signal: stopSignal,
         });
 
