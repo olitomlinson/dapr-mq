@@ -199,22 +199,29 @@ if (registerActors)
         options.Actors.RegisterActor<DaprMQ.TopicActor>(actorConfig.TopicActorTypeName);
         options.Actors.RegisterActor<DaprMQ.SessionCoordinatorActor>(actorConfig.SessionCoordinatorActorTypeName);
 
-        // Configure actor runtime settings
-        options.ActorIdleTimeout = TimeSpan.FromSeconds(60);
+        // Configure actor runtime settings. Overridable for tests that need to force actors cold
+        // deterministically (e.g. the reentrancy A -> B -> A hazard below only manifests when the
+        // callee is actually deactivated) without waiting out the production default.
+        var actorIdleTimeoutSeconds = builder.Configuration.GetValue<int>("ACTOR_IDLE_TIMEOUT_SECONDS", 60);
+        options.ActorIdleTimeout = TimeSpan.FromSeconds(actorIdleTimeoutSeconds);
+        var actorScanIntervalSeconds = builder.Configuration.GetValue<int?>("ACTOR_SCAN_INTERVAL_SECONDS");
+        if (actorScanIntervalSeconds.HasValue)
+        {
+            options.ActorScanInterval = TimeSpan.FromSeconds(actorScanIntervalSeconds.Value);
+        }
 
-        // KNOWN UNFIXED HAZARD: session actors now self-register with their
-        // SessionCoordinatorActor on every activation (not just once, ever), so a
-        // pruned-but-still-relevant session self-heals. That can trigger the coordinator calling
-        // back into itself mid-turn (SessionCoordinatorActor -> QueueActor -> SessionCoordinatorActor)
-        // whenever SetSessionLease/ClearSessionLease target a currently-cold session actor - an
-        // A -> B -> A call chain that non-reentrant actors deadlock on. Dapr's actor reentrancy
-        // (options.ReentrancyConfig) is the documented fix for exactly this shape, but enabling it
-        // was verified (on both Dapr 1.18.2 and 1.18.4) to break TopicActor's reminder-driven
-        // publish relay entirely - the relay reminder silently never fires once reentrancy is on,
-        // no error logged, consistent with the actor lock not being released after a plain
-        // (non-reentrant-in-practice) call returns. Not usable as a fix here. The deadlock itself
-        // remains unfixed pending a different approach (e.g. making the self-registration call
-        // fire-and-forget instead of awaited).
+        // Session actors self-register with their SessionCoordinatorActor on every activation,
+        // which can call back into itself mid-turn (SessionCoordinatorActor -> QueueActor ->
+        // SessionCoordinatorActor) - an A -> B -> A chain that non-reentrant actors deadlock on.
+        // Actor reentrancy is the documented fix. Previously, enabling it also broke TopicActor's
+        // reminder-driven publish relay (see docs/DAPR_REENTRANCY_REMINDER_ISSUE.md) due to a
+        // Dapr.Actors client-side state manager caching bug, not a daprd/runtime bug: the
+        // "default" state tracker used by activation/reminder/timer callbacks wasn't invalidated
+        // after a reentrancy-scoped method call wrote the same state key, so the reminder's
+        // read-modify-write silently saw stale data and no-op'd. Fixed via patched
+        // Dapr.Actors/Dapr.Actors.AspNetCore 1.18.4-reentrancyfix.1 (nuget-local/, see
+        // NuGet.config) built from JoshVanL/dotnet-sdk branch actors-fix-state, commit fb3a589.
+        options.ReentrancyConfig = new Dapr.Actors.ActorReentrancyConfig { Enabled = true };
         options.JsonSerializerOptions = new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase, // Use camelCase instead of PascalCase

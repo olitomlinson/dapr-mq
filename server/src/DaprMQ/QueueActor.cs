@@ -264,12 +264,13 @@ public class QueueActor : Actor, IQueueActor, IRemindable
     /// already present), so this is safe and cheap to repeat. Best-effort: a failure is logged and
     /// left for the next activation to retry, it never fails activation itself.
     ///
-    /// KNOWN UNFIXED HAZARD: because this now runs (and calls out) on every activation rather
-    /// than once ever, it can trigger a reentrancy deadlock - SessionCoordinatorActor calling
-    /// SetSessionLease/ClearSessionLease on a cold session actor, whose activation calls back into
-    /// the coordinator via this method while the coordinator's own turn is still outstanding
-    /// (A -> B -> A). Dapr actor reentrancy was tried as the fix and rejected - see the note on
-    /// options.ReentrancyConfig in Program.cs for why. Not yet fixed.
+    /// Because this runs (and calls out) on every activation rather than once ever, it can
+    /// trigger a reentrancy deadlock - SessionCoordinatorActor calling SetSessionLease/
+    /// ClearSessionLease on a cold session actor, whose activation calls back into the
+    /// coordinator via this method while the coordinator's own turn is still outstanding
+    /// (A -> B -> A). Fixed by enabling Dapr actor reentrancy - see the note on
+    /// options.ReentrancyConfig in Program.cs, and SessionReentrancyTests for a test that forces
+    /// this exact cold-reactivation path.
     /// </summary>
     private async Task RegisterAsSessionActorIfNeededAsync()
     {

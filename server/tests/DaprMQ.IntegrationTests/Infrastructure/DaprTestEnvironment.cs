@@ -46,7 +46,14 @@ public class DaprTestEnvironment : IAsyncLifetime
     private string _blobStoreTestDirectory;
 
 
-    public async Task InitializeAsync()
+    public Task InitializeAsync() => InitializeAsync(null);
+
+    /// <summary>
+    /// <paramref name="extraApiServerEnvironment"/> lets a dedicated fixture override API server
+    /// settings (e.g. ACTOR_IDLE_TIMEOUT_SECONDS) that the shared fixture leaves at production
+    /// defaults - used by tests that need to force an actor cold deterministically.
+    /// </summary>
+    public async Task InitializeAsync(IReadOnlyDictionary<string, string>? extraApiServerEnvironment)
     {
         // Check if container logs should be redirected to console
         var enableContainerLogs = Environment.GetEnvironmentVariable("ENABLE_CONTAINER_LOGS")?.Equals("true", StringComparison.OrdinalIgnoreCase) ?? false;
@@ -143,6 +150,14 @@ public class DaprTestEnvironment : IAsyncLifetime
             // Short reap TTLs so LargeObjectTests can observe deletion within a reasonable test timeout
             .WithEnvironment("DAPRMQ_BLOB_REAP_BACKSTOP_SECONDS", "30")
             .WithEnvironment("DAPRMQ_BLOB_REAP_POST_DOWNLOAD_SECONDS", "30");
+
+        if (extraApiServerEnvironment != null)
+        {
+            foreach (var (key, value) in extraApiServerEnvironment)
+            {
+                apiServerBuilder = apiServerBuilder.WithEnvironment(key, value);
+            }
+        }
 
         // Conditionally redirect container logs to console
         if (enableContainerLogs)
