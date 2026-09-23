@@ -219,8 +219,13 @@ if (registerActors)
         // "default" state tracker used by activation/reminder/timer callbacks wasn't invalidated
         // after a reentrancy-scoped method call wrote the same state key, so the reminder's
         // read-modify-write silently saw stale data and no-op'd. Fixed via patched
-        // Dapr.Actors/Dapr.Actors.AspNetCore 1.18.4-reentrancyfix.1 (nuget-local/, see
-        // NuGet.config) built from JoshVanL/dotnet-sdk branch actors-fix-state, commit fb3a589.
+        // Dapr.Actors/Dapr.Actors.AspNetCore (nuget-local/, see NuGet.config), built from
+        // JoshVanL/dotnet-sdk PR #1908 (commit fb3a589) with an alternative change on top:
+        // 1.18.4-refreshfix.1 refreshes the default tracker's entry in place with the
+        // value SaveStateAsync just confirmed persisted, instead of evicting it and
+        // forcing the next read to round-trip the state store (see
+        // docs/REENTRANCY_FIX_ROUND_TRIP_IMPACT.md). 1.18.4-reentrancyfix.1 (evict-and-
+        // reload, matching #1908 as-is) is also available in nuget-local/ for comparison.
         options.ReentrancyConfig = new Dapr.Actors.ActorReentrancyConfig { Enabled = true };
         options.JsonSerializerOptions = new JsonSerializerOptions
         {
