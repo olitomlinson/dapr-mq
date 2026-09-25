@@ -117,7 +117,12 @@ jobs:
           dotnet-version: 10.0.x
 
       - name: Run integration tests
-        run: dotnet test server/tests/DaprMQ.IntegrationTests/DaprMQ.IntegrationTests.csproj --configuration Release
+        # QueryCountComparisonTest is a local experiment that needs two hand-built images
+        # (daprmq-api:reentrancyfix / :refreshfix), so it can't run on a fresh runner.
+        run: >
+          dotnet test server/tests/DaprMQ.IntegrationTests/DaprMQ.IntegrationTests.csproj
+          --configuration Release
+          --filter "FullyQualifiedName!~QueryCountComparisonTest"
 
   dotnet:
     name: .NET SDK
