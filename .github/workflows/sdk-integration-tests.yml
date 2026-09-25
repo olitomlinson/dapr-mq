@@ -121,6 +121,9 @@ jobs:
           dotnet-version: 10.0.x
 
       - name: Run integration tests
+        env:
+          # Shared runners are ~2x slower than a dev machine; loosen the bulk throughput ceiling (default 60s).
+          DAPRMQ_BULK_TEST_MAX_SECONDS: '300'
         # QueryCountComparisonTest is a local experiment that needs two hand-built images
         # (daprmq-api:reentrancyfix / :refreshfix), so it can't run on a fresh runner.
         run: >

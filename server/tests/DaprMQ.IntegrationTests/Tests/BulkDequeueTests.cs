@@ -527,7 +527,10 @@ public class BulkDequeueTests(DaprTestFixture fixture)
         Assert.All(ackStatuses, status => Assert.Equal(HttpStatusCode.OK, status));
 
         var elapsedSeconds = stopwatch.Elapsed.TotalSeconds;
-        Assert.True(elapsedSeconds < 60, $"Test took {elapsedSeconds:F2}s (expected <60s for {totalItems} items with parallel dequeues)");
+        // Throughput ceiling is overridable (DAPRMQ_BULK_TEST_MAX_SECONDS) so slower shared CI runners
+        // can loosen it without changing the local default.
+        var maxSeconds = double.TryParse(Environment.GetEnvironmentVariable("DAPRMQ_BULK_TEST_MAX_SECONDS"), out var overrideSeconds) ? overrideSeconds : 60;
+        Assert.True(elapsedSeconds < maxSeconds, $"Test took {elapsedSeconds:F2}s (expected <{maxSeconds}s for {totalItems} items with parallel dequeues)");
     }
 
     [Fact]
