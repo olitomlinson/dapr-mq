@@ -1,0 +1,83 @@
+name: SDK integration tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sdks/**'
+      - 'server/**'
+      - '.github/workflows/sdk-integration-tests.yml'
+  pull_request:
+    paths:
+      - 'sdks/**'
+      - 'server/**'
+      - '.github/workflows/sdk-integration-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-image:
+    name: Build daprmq-api image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t daprmq-api:test -f server/Dockerfile server
+
+      - name: Export image
+        run: docker save daprmq-api:test -o daprmq-api.tar
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: daprmq-api-image
+          path: daprmq-api.tar
+          retention-days: 1
+
+  # Each SDK suite starts its own stack via Testcontainers (see sdks/testing/INTEGRATION_TESTS.md);
+  # the runner only needs Docker and the prebuilt daprmq-api:test image.
+  dotnet:
+    name: .NET SDK
+    needs: build-image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./sdks/testing/actions/load-api-image
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Run integration tests
+        run: dotnet test sdks/dotnet/tests/DaprMQ.Client.IntegrationTests
+
+  python:
+    name: Python SDK
+    needs: build-image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./sdks/testing/actions/load-api-image
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install SDK
+        working-directory: sdks/python
+        run: pip install -e '.[dev]'
+
+      - name: Run integration tests
+        working-directory: sdks/python
+        run: pytest tests/integration -v
+
+  # TypeScript and Java have no integration tests yet - add a job here (checkout, then the
+  # load-api-image action) when their Testcontainers fixtures land.
