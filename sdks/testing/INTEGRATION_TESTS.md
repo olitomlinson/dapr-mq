@@ -26,7 +26,8 @@ Readiness: poll a probe enqueue on the API until it returns 200 (actors register
 **Running**
 - .NET: `dotnet test` in `sdks/dotnet/tests/DaprMQ.Client.IntegrationTests` (Testcontainers for .NET).
 - Python: `pytest tests/integration` in `sdks/python` (`testcontainers` package; fixture in `tests/integration/conftest.py`).
-- TypeScript / Java: use `testcontainers` (node) / Testcontainers for Java with the same stack.
+- TypeScript: `npm run test:integration` in `sdks/typescript` (`testcontainers` package; fixture in `tests/integration/daprmqServer.ts`, needs Node ≥ 22 with testcontainers 12 / ≥ 18 with the pinned 10.x).
+- Java: Testcontainers for Java with the same stack.
 
 ## Coverage matrix
 
@@ -84,7 +85,7 @@ Legend: ✅ implemented and passing · ⬜ not yet
 | C-09 | Lease lost mid-stream surfaces `SessionLost` | ⬜ | ⬜ | ⬜ | ⬜ |
 | **SessionQueueConsumer (high-level)** | | | | | |
 | K-01 | Handler success auto-acks; queue ends empty | ⬜ | ⬜ | ⬜ | ⬜ |
-| K-02 | Multi-session: per-session FIFO preserved and slow session doesn't stall fast one (`MaxConcurrentSessions` ≥ 2) | ✅ | ✅ | ⬜ | ⬜ |
+| K-02 | Multi-session: per-session FIFO preserved and slow session doesn't stall fast one (`MaxConcurrentSessions` ≥ 2) | ✅ | ✅ | ✅ | ⬜ |
 | K-03 | Handler throws + `DeadLetterMessage` → item dead-lettered, session continues | ⬜ | ⬜ | ⬜ | ⬜ |
 | K-04 | Handler throws + `AbandonSession` → session released, item redelivered | ⬜ | ⬜ | ⬜ | ⬜ |
 | K-05 | Handler throws + `Both` → item dead-lettered and session abandoned | ⬜ | ⬜ | ⬜ | ⬜ |
@@ -105,5 +106,5 @@ Topics/pub-sub, HTTP sink, and large-object offload are server features with no 
 
 ## Notes
 
-- Python, TypeScript and Java currently have unit tests only; their columns start empty.
+- Java currently has unit tests only; their columns start empty.
 - Scenarios relying on TTL expiry (L-02, L-03, S-08, C-09) should use the shortest TTL the server accepts and poll with a timeout rather than fixed sleeps.
