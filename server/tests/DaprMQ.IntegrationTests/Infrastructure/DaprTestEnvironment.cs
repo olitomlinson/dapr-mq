@@ -362,6 +362,23 @@ public class DaprTestEnvironment : IAsyncLifetime
         return (await stdoutTask) + (await stderrTask);
     }
 
+    /// <summary>
+    /// Whether an actor state key is actually persisted in the state store right now - reads the
+    /// Postgres row directly, bypassing any Dapr.Actors in-process tracker cache. Dapr's
+    /// postgresql/v2 actor keys are "{appId}||{actorType}||{actorId}||{stateName}".
+    /// </summary>
+    public async Task<bool> ActorStateExistsAsync(string actorType, string actorId, string stateName)
+    {
+        var key = $"daprmq-api||{actorType}||{actorId}||{stateName}".Replace("'", "''");
+        var result = await _postgresContainer!.ExecAsync(new[]
+        {
+            "psql", "-U", "postgres", "-d", "actor_state", "-tAc",
+            $"SELECT COUNT(*) FROM daprmq_state WHERE key = '{key}';"
+        });
+
+        return long.Parse(result.Stdout.Trim()) > 0;
+    }
+
     public async Task DisposeAsync()
     {
         ApiClient?.Dispose();

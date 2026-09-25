@@ -14,8 +14,9 @@ COPY nuget-local/ ./nuget-local/
 
 # Restore and build
 WORKDIR /src/src/DaprMQ.ApiServer
-RUN dotnet restore -p:DaprActorsSdkVersion=$DaprActorsSdkVersion
-RUN dotnet publish -c Release -o /app/publish -p:DaprActorsSdkVersion=$DaprActorsSdkVersion
+# Only pass the property when set - an empty global property would override the csproj default.
+RUN dotnet restore ${DaprActorsSdkVersion:+-p:DaprActorsSdkVersion=$DaprActorsSdkVersion}
+RUN dotnet publish -c Release -o /app/publish ${DaprActorsSdkVersion:+-p:DaprActorsSdkVersion=$DaprActorsSdkVersion}
 
 # Runtime stage
 FROM mcr.microsoft.com/dotnet/aspnet:10.0

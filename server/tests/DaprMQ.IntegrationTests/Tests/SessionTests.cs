@@ -410,4 +410,31 @@ public class SessionTests(DaprTestFixture fixture)
         var reclaimed = await AcceptSessionSuccessfullyAsync(queueId, sessionId);
         Assert.Equal(sessionId, reclaimed.SessionId);
     }
+
+    [Fact]
+    public async Task SessionLease_ExpiresAfterDirectorySweepSawItAbsent_ExpiryReminderStillReapsLockRecord()
+    {
+        var queueId = NewQueueId();
+        var sessionId = "swept-then-leased";
+
+        // First enqueue activates this queue's SessionCoordinatorActor via RegisterSession. Its
+        // directory-sweep reminder is registered with dueTime 0 and the new directory entry is due
+        // immediately, so the sweep (a reminder - default state tracker) reads
+        // session-lock_{sessionId} while it doesn't exist yet, caching "not found".
+        await EnqueueAsync(queueId, sessionId, new { seq = 1 });
+        await Task.Delay(TimeSpan.FromSeconds(3));
+
+        // AcceptSession (a reentrancy-scoped method call - its own tracker) creates the lock.
+        await AcceptSessionSuccessfullyAsync(queueId, sessionId, leaseSeconds: 2);
+        Assert.True(await fixture.Environment.ActorStateExistsAsync("SessionCoordinatorActor", queueId, $"session-lock_{sessionId}"));
+
+        // The lease-expiry reminder (default tracker again) must see the lock and reap it. With
+        // Dapr.Actors 1.18.9, SyncDefaultTracker skips the cached "not found" entry, so the
+        // reminder still believes the lock is absent and leaves the expired record behind.
+        await Task.Delay(TimeSpan.FromSeconds(6));
+        Assert.False(
+            await fixture.Environment.ActorStateExistsAsync("SessionCoordinatorActor", queueId, $"session-lock_{sessionId}"),
+            "Expired session-lock record was not reaped by the lease-expiry reminder - the default " +
+            "state tracker likely served a stale \"not found\" cached by the directory sweep.");
+    }
 }
