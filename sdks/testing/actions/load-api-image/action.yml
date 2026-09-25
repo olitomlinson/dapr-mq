@@ -1,0 +1,12 @@
+name: Load daprmq-api image
+description: Downloads the daprmq-api image artifact built by the build-image job and loads it into the local Docker daemon.
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: daprmq-api-image
+    - name: Load image
+      shell: bash
+      run: docker load -i daprmq-api.tar
