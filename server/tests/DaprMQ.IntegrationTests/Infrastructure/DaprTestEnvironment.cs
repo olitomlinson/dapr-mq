@@ -270,7 +270,7 @@ public class DaprTestEnvironment : IAsyncLifetime
         await Task.Delay(TimeSpan.FromSeconds(5));
 
         // Initialize HTTP clients
-        ApiClient = new HttpClient { BaseAddress = new Uri(ApiServerUrl) };
+        ApiClient = new HttpClient { BaseAddress = new Uri(ApiServerUrl), Timeout = TimeSpan.FromMinutes(5) };
         DaprSidecarClient = new HttpClient { BaseAddress = new Uri(DaprHttpEndpoint) };
     }
 
