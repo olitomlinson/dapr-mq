@@ -1,17 +1,12 @@
 name: Integration tests
 
 on:
+  # No `paths:` filter here on purpose: the `changes` job decides what runs, so PRs touching only
+  # other folders still report the `gate` check (a required check would otherwise hang as
+  # "expected"). Such PRs run just the lightweight detect + gate jobs.
   push:
     branches: [main]
-    paths:
-      - 'sdks/**'
-      - 'server/**'
-      - '.github/workflows/sdk-integration-tests.yml'
   pull_request:
-    paths:
-      - 'sdks/**'
-      - 'server/**'
-      - '.github/workflows/sdk-integration-tests.yml'
   workflow_dispatch:
   schedule:
     - cron: '0 3 * * *' # nightly full run (scheduled runs only fire from the default branch)
