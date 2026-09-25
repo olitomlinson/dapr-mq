@@ -13,6 +13,8 @@ on:
       - 'server/**'
       - '.github/workflows/sdk-integration-tests.yml'
   workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * *' # nightly full run (scheduled runs only fire from the default branch)
 
 permissions:
   contents: read
@@ -26,7 +28,7 @@ jobs:
   #   server/**                      -> build image, server integration tests, ALL SDK suites
   #   sdks/<sdk>/**                  -> build image (cached), only that SDK's suite
   #   sdks/testing/** or this file   -> everything (shared harness changed)
-  #   workflow_dispatch              -> everything
+  #   workflow_dispatch / nightly    -> everything
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
@@ -58,7 +60,7 @@ jobs:
         id: decide
         run: |
           all=false
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ steps.filter.outputs.shared }}" == "true" ]]; then
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "schedule" || "${{ steps.filter.outputs.shared }}" == "true" ]]; then
             all=true
           fi
           server=$all; dotnet=$all; python=$all
@@ -164,6 +166,20 @@ jobs:
       - name: Run integration tests
         working-directory: sdks/python
         run: pytest tests/integration -v
+
+  # Single required check for branch protection: the jobs above are conditional, so requiring them
+  # individually would block PRs where they're legitimately skipped. Skipped = fine; failed or
+  # cancelled = fail.
+  gate:
+    name: Integration tests gate
+    needs: [changes, build-image, server, dotnet, python]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any needed job failed or was cancelled
+        run: |
+          echo '${{ toJSON(needs) }}'
+          [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "false" ]]
 
   # TypeScript and Java have no integration tests yet - add a job here (checkout, then the
   # load-api-image action) plus a filter/output in `changes` when their Testcontainers fixtures land.
