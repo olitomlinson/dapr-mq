@@ -31,6 +31,7 @@ jobs:
       server: ${{ steps.decide.outputs.server }}
       dotnet: ${{ steps.decide.outputs.dotnet }}
       python: ${{ steps.decide.outputs.python }}
+      typescript: ${{ steps.decide.outputs.typescript }}
       image: ${{ steps.decide.outputs.image }}
     steps:
       - uses: actions/checkout@v4
@@ -47,6 +48,8 @@ jobs:
               - 'sdks/dotnet/**'
             python:
               - 'sdks/python/**'
+            typescript:
+              - 'sdks/typescript/**'
             shared:
               - 'sdks/testing/**'
               - '.github/workflows/sdk-integration-tests.yml'
@@ -58,16 +61,18 @@ jobs:
           if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "schedule" || "${{ steps.filter.outputs.shared }}" == "true" ]]; then
             all=true
           fi
-          server=$all; dotnet=$all; python=$all
-          [[ "${{ steps.filter.outputs.server }}" == "true" ]] && server=true && dotnet=true && python=true
+          server=$all; dotnet=$all; python=$all; typescript=$all
+          [[ "${{ steps.filter.outputs.server }}" == "true" ]] && server=true && dotnet=true && python=true && typescript=true
           [[ "${{ steps.filter.outputs.dotnet }}" == "true" ]] && dotnet=true
           [[ "${{ steps.filter.outputs.python }}" == "true" ]] && python=true
+          [[ "${{ steps.filter.outputs.typescript }}" == "true" ]] && typescript=true
           image=false
-          [[ $server == true || $dotnet == true || $python == true ]] && image=true
+          [[ $server == true || $dotnet == true || $python == true || $typescript == true ]] && image=true
           {
             echo "server=$server"
             echo "dotnet=$dotnet"
             echo "python=$python"
+            echo "typescript=$typescript"
             echo "image=$image"
           } | tee -a "$GITHUB_OUTPUT"
 
@@ -165,12 +170,36 @@ jobs:
         working-directory: sdks/python
         run: pytest tests/integration -v
 
+  typescript:
+    name: TypeScript SDK
+    needs: [changes, build-image]
+    if: needs.changes.outputs.typescript == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./sdks/testing/actions/load-api-image
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: sdks/typescript/package-lock.json
+
+      - name: Install SDK
+        working-directory: sdks/typescript
+        run: npm ci
+
+      - name: Run integration tests
+        working-directory: sdks/typescript
+        run: npm run test:integration
+
   # Single required check for branch protection: the jobs above are conditional, so requiring them
   # individually would block PRs where they're legitimately skipped. Skipped = fine; failed or
   # cancelled = fail.
   gate:
     name: Integration tests gate
-    needs: [changes, build-image, server, dotnet, python]
+    needs: [changes, build-image, server, dotnet, python, typescript]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -179,5 +208,5 @@ jobs:
           echo '${{ toJSON(needs) }}'
           [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "false" ]]
 
-  # TypeScript and Java have no integration tests yet - add a job here (checkout, then the
-  # load-api-image action) plus a filter/output in `changes` when their Testcontainers fixtures land.
+  # Java has no integration tests yet - add a job here (checkout, then the load-api-image action)
+  # plus a filter/output in `changes` when its Testcontainers fixture lands.
