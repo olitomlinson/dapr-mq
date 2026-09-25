@@ -31,7 +31,7 @@ API_IMAGE = os.environ.get("DAPRMQ_API_IMAGE", "daprmq-api:test")
 DAPR_VERSION = "1.18.4"
 POSTGRES_PASSWORD = "test_password"
 COMPONENTS_DIR = Path(__file__).resolve().parents[4] / "server" / "tests" / "DaprMQ.IntegrationTests" / "dapr-components"
-STARTUP_TIMEOUT_SECONDS = 120
+STARTUP_TIMEOUT_SECONDS = 90
 
 
 @dataclass(frozen=True)
