@@ -41,6 +41,8 @@ jobs:
       - uses: dorny/paths-filter@v3
         id: filter
         with:
+          # Pushes: diff against the previous commit (default would be main). PRs: default (PR base).
+          base: ${{ github.event_name == 'push' && github.event.before || '' }}
           filters: |
             server:
               - 'server/**'
