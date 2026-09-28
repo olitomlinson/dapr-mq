@@ -169,6 +169,7 @@ public class SessionQueueActorTests
         });
         var blobReapConfig = new BlobReapConfig { BackstopSeconds = 86400, PostDownloadSeconds = 86400 };
         var idempotencyConfig = new IdempotencyConfig { TtlSeconds = 86400 };
+        var lockConfig = new LockConfig { MaxDeliveryCount = 10, SweepBatchSize = 200 };
 
         var actorHost = ActorHost.CreateForTest<QueueActor>(testOptions);
         var actor = new QueueActor(
@@ -178,7 +179,8 @@ public class SessionQueueActorTests
             mockSessionCoordinatorInvoker.Object,
             tokenIssuer,
             blobReapConfig,
-            idempotencyConfig);
+            idempotencyConfig,
+            lockConfig);
 
         var stateManagerProperty = typeof(Actor).GetProperty("StateManager");
         stateManagerProperty?.SetValue(actor, mockStateManager.Object);

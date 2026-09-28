@@ -4,6 +4,21 @@ using Dapr.Actors;
 namespace DaprMQ;
 
 /// <summary>
+/// A session actor's liveness as read straight from its persisted state. Reported as the underlying
+/// facts rather than a single bool so the coordinator's decision is auditable, and so a future
+/// policy change (say, acting on a lapsed lease) needs no second shape change here.
+/// </summary>
+public readonly record struct SessionActorState(int ItemCount, int LockCount, double? LeaseExpiresAt)
+{
+    /// <summary>
+    /// A session is only finished once it holds neither queued nor locked items. Locked items count:
+    /// under session-scoped locking they outlive individual messages, so ignoring them would let the
+    /// directory sweep evict a session that still owns work.
+    /// </summary>
+    public bool IsEmpty => ItemCount == 0 && LockCount == 0;
+}
+
+/// <summary>
 /// Reads a QueueActor's persisted state directly from the state store via Dapr's actor-state
 /// data-plane API, bypassing actor placement/activation entirely - used by
 /// SessionCoordinatorActor's directory sweep so checking a candidate for liveness never risks
@@ -12,12 +27,11 @@ namespace DaprMQ;
 public interface IQueueActorStateReader
 {
     /// <summary>
-    /// True if the session actor at <paramref name="actorId"/> currently has zero items across
-    /// all its priority queues. Throws on a failed or inconclusive read (network/HTTP error, or a
-    /// missing metadata key) rather than guessing - callers must treat that as "unknown", never as
-    /// "empty".
+    /// Reads the session actor at <paramref name="actorId"/>. Throws on a failed or inconclusive read
+    /// (network/HTTP error, or a missing metadata key) rather than guessing - callers must treat that
+    /// as "unknown", never as "empty".
     /// </summary>
-    Task<bool> IsSessionEmptyAsync(ActorId actorId, CancellationToken cancellationToken = default);
+    Task<SessionActorState> ReadSessionStateAsync(ActorId actorId, CancellationToken cancellationToken = default);
 }
 
 /// <inheritdoc cref="IQueueActorStateReader" />
@@ -40,7 +54,7 @@ public class QueueActorStateReader : IQueueActorStateReader
     }
 
     /// <inheritdoc />
-    public async Task<bool> IsSessionEmptyAsync(ActorId actorId, CancellationToken cancellationToken = default)
+    public async Task<SessionActorState> ReadSessionStateAsync(ActorId actorId, CancellationToken cancellationToken = default)
     {
         var client = _httpClientFactory.CreateClient();
         var url = $"{_daprHttpEndpoint}/v1.0/actors/{_actorType}/{actorId.GetId()}/state/metadata";
@@ -62,6 +76,9 @@ public class QueueActorStateReader : IQueueActorStateReader
         var metadata = JsonSerializer.Deserialize<ActorMetadata>(body, DeserializeOptions)
             ?? throw new InvalidOperationException($"Failed to deserialize metadata state for actor '{actorId.GetId()}'");
 
-        return metadata.Queues.Values.Sum(q => q.Count) == 0;
+        return new SessionActorState(
+            metadata.Queues.Values.Sum(q => q.Count),
+            metadata.LockCount,
+            metadata.ActiveSessionLeaseExpiresAt);
     }
 }

@@ -645,20 +645,57 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                     var req = requestStream.Current;
                     if (req.PayloadCase == ConsumeSessionRequest.PayloadOneofCase.Ack)
                     {
-                        await _queueActorInvoker.InvokeMethodAsync<ActorModels.AcknowledgeRequest, ActorModels.AcknowledgeResponse>(
+                        var ackResult = await _queueActorInvoker.InvokeMethodAsync<ActorModels.AcknowledgeRequest, ActorModels.AcknowledgeResponse>(
                             sessionActorId,
                             ActorMethodNames.Acknowledge,
                             new ActorModels.AcknowledgeRequest { LockId = req.Ack.LockId, LeaseId = leaseId },
                             cts.Token);
+
+                        // Surface a rejected settlement rather than letting it look like success. The
+                        // item is still outstanding server-side, so a silent failure here would leave
+                        // the client believing it had completed a message it had not.
+                        if (!ackResult.Success)
+                        {
+                            _logger.LogWarning(
+                                "Acknowledge rejected for lock {LockId} on session {SessionId}: {ErrorCode} {Message}",
+                                req.Ack.LockId, sessionId, ackResult.ErrorCode, ackResult.Message);
+
+                            await responseStream.WriteAsync(new ConsumeSessionResponse
+                            {
+                                Error = new SessionError
+                                {
+                                    ErrorCode = ackResult.ErrorCode ?? "ACK_FAILED",
+                                    Message = ackResult.Message ?? "Failed to acknowledge message"
+                                }
+                            });
+                        }
+
                         Interlocked.Decrement(ref outstanding);
                     }
                     else if (req.PayloadCase == ConsumeSessionRequest.PayloadOneofCase.DeadLetter)
                     {
-                        await _queueActorInvoker.InvokeMethodAsync<ActorModels.DeadLetterRequest, ActorModels.DeadLetterResponse>(
+                        var dlqResult = await _queueActorInvoker.InvokeMethodAsync<ActorModels.DeadLetterRequest, ActorModels.DeadLetterResponse>(
                             sessionActorId,
                             ActorMethodNames.DeadLetter,
                             new ActorModels.DeadLetterRequest { LockId = req.DeadLetter.LockId, LeaseId = leaseId },
                             cts.Token);
+
+                        if (dlqResult.Status != "SUCCESS")
+                        {
+                            _logger.LogWarning(
+                                "DeadLetter rejected for lock {LockId} on session {SessionId}: {ErrorCode} {Message}",
+                                req.DeadLetter.LockId, sessionId, dlqResult.ErrorCode, dlqResult.Message);
+
+                            await responseStream.WriteAsync(new ConsumeSessionResponse
+                            {
+                                Error = new SessionError
+                                {
+                                    ErrorCode = dlqResult.ErrorCode ?? "DEAD_LETTER_FAILED",
+                                    Message = dlqResult.Message ?? "Failed to dead-letter message"
+                                }
+                            });
+                        }
+
                         Interlocked.Decrement(ref outstanding);
                     }
                 }

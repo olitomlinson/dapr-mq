@@ -54,7 +54,7 @@ public class SessionCoordinatorActorTests
     /// Creates and activates a SessionCoordinatorActor with the given actor id (default:
     /// "orders", matching a queue's own QueueActor id). SetSessionLease/ClearSessionLease calls
     /// the mocked IQueueActorInvoker makes resolve via setSessionLeaseSucceeds. The mocked
-    /// IQueueActorStateReader defaults every session to "empty" (IsSessionEmptyAsync returns
+    /// IQueueActorStateReader defaults every session to "empty" (ReadSessionStateAsync reports
     /// true) - sweep-specific tests override individual ActorIds as needed.
     /// </summary>
     private async Task<(SessionCoordinatorActor actor, Mock<IQueueActorInvoker> mockQueueActorInvoker, Mock<IQueueActorStateReader> mockStateReader)> CreateActorAsync(
@@ -88,8 +88,8 @@ public class SessionCoordinatorActorTests
             .ReturnsAsync(new ClearSessionLeaseResponse { Success = true });
 
         var mockStateReader = new Mock<IQueueActorStateReader>();
-        mockStateReader.Setup(r => r.IsSessionEmptyAsync(It.IsAny<ActorId>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(true);
+        mockStateReader.Setup(r => r.ReadSessionStateAsync(It.IsAny<ActorId>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SessionActorState(0, 0, null));
 
         var actorHost = ActorHost.CreateForTest<SessionCoordinatorActor>(testOptions);
         var actor = new SessionCoordinatorActor(actorHost, mockQueueActorInvoker.Object, mockStateReader.Object);
@@ -514,7 +514,7 @@ public class SessionCoordinatorActorTests
 
         await actor.ReceiveReminderAsync(SweepReminderName, Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.Zero);
 
-        mockStateReader.Verify(r => r.IsSessionEmptyAsync(It.IsAny<ActorId>(), It.IsAny<CancellationToken>()), Times.Never());
+        mockStateReader.Verify(r => r.ReadSessionStateAsync(It.IsAny<ActorId>(), It.IsAny<CancellationToken>()), Times.Never());
 
         var metadata = await GetDirectoryMetadataAsync(mockStateManager);
         Assert.True(metadata.SessionDirectory.ContainsKey("order-42"));
@@ -527,10 +527,10 @@ public class SessionCoordinatorActorTests
         var (mockStateManager, _) = CreateMockStateManager();
         var (actor, _, mockStateReader) = await CreateActorAsync(mockStateManager, actorId: "orders");
         await SeedDirectoryAsync(actor, "order-42");
-        mockStateReader.Setup(r => r.IsSessionEmptyAsync(
+        mockStateReader.Setup(r => r.ReadSessionStateAsync(
                 It.Is<ActorId>(id => id.GetId() == "orders-session-order-42"),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync(true);
+            .ReturnsAsync(new SessionActorState(0, 0, null));
 
         await actor.ReceiveReminderAsync(SweepReminderName, Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.Zero);
 
@@ -556,10 +556,10 @@ public class SessionCoordinatorActorTests
                 }
             }
         };
-        mockStateReader.Setup(r => r.IsSessionEmptyAsync(
+        mockStateReader.Setup(r => r.ReadSessionStateAsync(
                 It.Is<ActorId>(id => id.GetId() == "orders-session-order-42"),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync(true);
+            .ReturnsAsync(new SessionActorState(0, 0, null));
 
         await actor.ReceiveReminderAsync(SweepReminderName, Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.Zero);
 
@@ -580,10 +580,10 @@ public class SessionCoordinatorActorTests
                 ["order-42"] = new SweepCandidate { NextCheckAt = 0, BackoffSeconds = 3600 }
             }
         };
-        mockStateReader.Setup(r => r.IsSessionEmptyAsync(
+        mockStateReader.Setup(r => r.ReadSessionStateAsync(
                 It.Is<ActorId>(id => id.GetId() == "orders-session-order-42"),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync(false);
+            .ReturnsAsync(new SessionActorState(1, 0, null));
 
         await actor.ReceiveReminderAsync(SweepReminderName, Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.Zero);
 
@@ -596,12 +596,39 @@ public class SessionCoordinatorActorTests
     }
 
     [Fact]
+    public async Task Sweep_SessionHoldingOnlyLockedItems_IsRetained_AndNotActivated()
+    {
+        // An abandoned consumer leaves its items inside locks, not in the queues. Evicting the entry
+        // would make the session unclaimable and strand those items, so it must be treated as
+        // non-empty - and the sweep must still not activate the actor to work that out.
+        var (mockStateManager, stateData) = CreateMockStateManager();
+        var (actor, mockQueueInvoker, mockStateReader) = await CreateActorAsync(mockStateManager, actorId: "orders");
+        await SeedDirectoryAsync(actor, "order-42");
+
+        mockStateReader.Setup(r => r.ReadSessionStateAsync(
+                It.Is<ActorId>(id => id.GetId() == "orders-session-order-42"),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SessionActorState(0, 2, DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 1));
+
+        await actor.ReceiveReminderAsync(SweepReminderName, Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.Zero);
+        await actor.ReceiveReminderAsync(SweepReminderName, Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.Zero);
+
+        var metadata = await GetDirectoryMetadataAsync(mockStateManager);
+        Assert.True(metadata.SessionDirectory.ContainsKey("order-42"));
+        Assert.Null(metadata.SessionDirectory["order-42"].FirstConfirmedEmptyAt);
+
+        mockQueueInvoker.Verify(i => i.InvokeMethodAsync<It.IsAnyType, It.IsAnyType>(
+            It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<It.IsAnyType>(), It.IsAny<CancellationToken>()),
+            Times.Never());
+    }
+
+    [Fact]
     public async Task Sweep_StateReaderThrows_LeavesCandidateUntouched_NoEviction()
     {
         var (mockStateManager, _) = CreateMockStateManager();
         var (actor, _, mockStateReader) = await CreateActorAsync(mockStateManager, actorId: "orders");
         await SeedDirectoryAsync(actor, "order-42");
-        mockStateReader.Setup(r => r.IsSessionEmptyAsync(
+        mockStateReader.Setup(r => r.ReadSessionStateAsync(
                 It.Is<ActorId>(id => id.GetId() == "orders-session-order-42"),
                 It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("state store unavailable"));
@@ -636,10 +663,10 @@ public class SessionCoordinatorActorTests
 
         await actor.ReleaseSession(new ReleaseSessionRequest { SessionId = "order-42", LeaseId = claim.LeaseId! });
 
-        mockStateReader.Setup(r => r.IsSessionEmptyAsync(
+        mockStateReader.Setup(r => r.ReadSessionStateAsync(
                 It.Is<ActorId>(id => id.GetId() == "orders-session-order-42"),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync(true);
+            .ReturnsAsync(new SessionActorState(0, 0, null));
 
         await actor.ReceiveReminderAsync(SweepReminderName, Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.Zero);
 
@@ -672,8 +699,8 @@ public class SessionCoordinatorActorTests
         };
         stateData["metadata"] = new SessionCoordinatorMetadata { SessionDirectory = directory };
 
-        mockStateReader.Setup(r => r.IsSessionEmptyAsync(It.IsAny<ActorId>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(true);
+        mockStateReader.Setup(r => r.ReadSessionStateAsync(It.IsAny<ActorId>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SessionActorState(0, 0, null));
 
         await actor.ReceiveReminderAsync(SweepReminderName, Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.Zero);
 

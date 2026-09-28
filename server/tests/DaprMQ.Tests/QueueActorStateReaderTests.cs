@@ -31,7 +31,7 @@ public class QueueActorStateReaderTests
     }
 
     [Fact]
-    public async Task IsSessionEmptyAsync_AllQueuesZeroCount_ReturnsTrue()
+    public async Task ReadSessionStateAsync_AllQueuesZeroCount_ReportsEmpty()
     {
         var metadata = new ActorMetadata
         {
@@ -43,13 +43,13 @@ public class QueueActorStateReaderTests
         };
         var reader = CreateReader(JsonResponse(metadata), out _);
 
-        var result = await reader.IsSessionEmptyAsync(new ActorId("orders-session-42"));
+        var result = await reader.ReadSessionStateAsync(new ActorId("orders-session-42"));
 
-        Assert.True(result);
+        Assert.True(result.IsEmpty);
     }
 
     [Fact]
-    public async Task IsSessionEmptyAsync_NonZeroCount_ReturnsFalse()
+    public async Task ReadSessionStateAsync_NonZeroCount_ReportsNotEmpty()
     {
         var metadata = new ActorMetadata
         {
@@ -60,33 +60,56 @@ public class QueueActorStateReaderTests
         };
         var reader = CreateReader(JsonResponse(metadata), out _);
 
-        var result = await reader.IsSessionEmptyAsync(new ActorId("orders-session-42"));
+        var result = await reader.ReadSessionStateAsync(new ActorId("orders-session-42"));
 
-        Assert.False(result);
+        Assert.False(result.IsEmpty);
     }
 
     [Fact]
-    public async Task IsSessionEmptyAsync_NoQueuesAtAll_ReturnsTrue()
+    public async Task ReadSessionStateAsync_NoQueuesAtAll_ReportsEmpty()
     {
         var metadata = new ActorMetadata { Queues = new Dictionary<int, QueueMetadata>() };
         var reader = CreateReader(JsonResponse(metadata), out _);
 
-        var result = await reader.IsSessionEmptyAsync(new ActorId("orders-session-42"));
+        var result = await reader.ReadSessionStateAsync(new ActorId("orders-session-42"));
 
-        Assert.True(result);
+        Assert.True(result.IsEmpty);
     }
 
     [Fact]
-    public async Task IsSessionEmptyAsync_NonSuccessStatusCode_Throws()
+    public async Task ReadSessionStateAsync_OutstandingLocksOnly_ReportsNotEmpty()
+    {
+        // A session whose consumer died holds its items inside locks, not in the queues. Reporting it
+        // empty would let the coordinator evict its directory entry and make those items
+        // undiscoverable - nothing could ever claim the session again to get them back.
+        var metadata = new ActorMetadata
+        {
+            Queues = new Dictionary<int, QueueMetadata>(),
+            LockCount = 2,
+            ActiveSessionLeaseId = "lease-1",
+            ActiveSessionLeaseExpiresAt = 1000
+        };
+        var reader = CreateReader(JsonResponse(metadata), out _);
+
+        var result = await reader.ReadSessionStateAsync(new ActorId("orders-session-42"));
+
+        Assert.False(result.IsEmpty);
+        Assert.Equal(0, result.ItemCount);
+        Assert.Equal(2, result.LockCount);
+        Assert.Equal(1000, result.LeaseExpiresAt);
+    }
+
+    [Fact]
+    public async Task ReadSessionStateAsync_NonSuccessStatusCode_Throws()
     {
         var response = new HttpResponseMessage(HttpStatusCode.InternalServerError);
         var reader = CreateReader(response, out _);
 
-        await Assert.ThrowsAnyAsync<Exception>(() => reader.IsSessionEmptyAsync(new ActorId("orders-session-42")));
+        await Assert.ThrowsAnyAsync<Exception>(() => reader.ReadSessionStateAsync(new ActorId("orders-session-42")));
     }
 
     [Fact]
-    public async Task IsSessionEmptyAsync_EmptyBody_Throws()
+    public async Task ReadSessionStateAsync_EmptyBody_Throws()
     {
         var response = new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -94,16 +117,16 @@ public class QueueActorStateReaderTests
         };
         var reader = CreateReader(response, out _);
 
-        await Assert.ThrowsAnyAsync<Exception>(() => reader.IsSessionEmptyAsync(new ActorId("orders-session-42")));
+        await Assert.ThrowsAnyAsync<Exception>(() => reader.ReadSessionStateAsync(new ActorId("orders-session-42")));
     }
 
     [Fact]
-    public async Task IsSessionEmptyAsync_RequestsExpectedUrl()
+    public async Task ReadSessionStateAsync_RequestsExpectedUrl()
     {
         var metadata = new ActorMetadata { Queues = new Dictionary<int, QueueMetadata>() };
         var reader = CreateReader(JsonResponse(metadata), out var mockHandler);
 
-        await reader.IsSessionEmptyAsync(new ActorId("orders-session-42"));
+        await reader.ReadSessionStateAsync(new ActorId("orders-session-42"));
 
         mockHandler.Protected().Verify(
             "SendAsync",

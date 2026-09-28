@@ -15,6 +15,7 @@ public class QueueActorBlobOffloadTests
     });
     private readonly BlobReapConfig _blobReapConfig = new() { BackstopSeconds = 86400, PostDownloadSeconds = 86400 };
     private readonly IdempotencyConfig _idempotencyConfig = new() { TtlSeconds = 86400 };
+    private readonly LockConfig _lockConfig = new() { MaxDeliveryCount = 10, SweepBatchSize = 200 };
 
     private Mock<IActorStateManager> CreateMockStateManager()
     {
@@ -72,7 +73,7 @@ public class QueueActorBlobOffloadTests
         var mockSessionCoordinatorActorInvoker = new Mock<ISessionCoordinatorActorInvoker>();
 
         var actorHost = ActorHost.CreateForTest<QueueActor>(testOptions);
-        var actor = new QueueActor(actorHost, mockInvoker.Object, mockReaperInvoker.Object, mockSessionCoordinatorActorInvoker.Object, _tokenIssuer, _blobReapConfig, _idempotencyConfig);
+        var actor = new QueueActor(actorHost, mockInvoker.Object, mockReaperInvoker.Object, mockSessionCoordinatorActorInvoker.Object, _tokenIssuer, _blobReapConfig, _idempotencyConfig, _lockConfig);
 
         typeof(Actor).GetProperty("StateManager")?.SetValue(actor, mockStateManager.Object);
 

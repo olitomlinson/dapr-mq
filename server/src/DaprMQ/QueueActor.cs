@@ -26,6 +26,19 @@ public record ActorMetadata
     /// </summary>
     public string? ActiveSessionLeaseId { get; init; }
     public double? ActiveSessionLeaseExpiresAt { get; init; }
+
+    /// <summary>
+    /// Expiry buckets that currently hold at least one outstanding lock id, each the key suffix of a
+    /// "locks_exp_{bucket}" state entry. Dapr actor state has no key enumeration, so without this the
+    /// sweep could not find a lock it wasn't handed the id for. Only bucket numbers are kept here -
+    /// the ids themselves live in the bucket entries, so this stays small (bounded by
+    /// MaxLockTtlSeconds / LockBucketWidthSeconds) even with thousands of locks outstanding, which
+    /// matters because every operation reads this blob.
+    ///
+    /// Always empty on a session actor: its locks are scoped to the session lease rather than to a
+    /// per-item expiry, so they are indexed in the single "locks_session" entry instead.
+    /// </summary>
+    public List<long> LockExpiryBuckets { get; init; } = new();
 }
 
 /// <summary>
@@ -56,6 +69,15 @@ public record QueueMetadata
 public record QueueSegmentItem
 {
     public required string ItemJson { get; init; }
+
+    /// <summary>
+    /// How many times this item has been handed out and then reclaimed by a lock or session-lease
+    /// expiry. Never required, so a first delivery is simply the default 0. Once it exceeds
+    /// LockConfig.MaxDeliveryCount the item is dead-lettered instead of requeued, which is what stops
+    /// a poison message cycling forever. Note this counts *detected* lapses: expiry is swept lazily,
+    /// so escalation tracks consumer activity rather than wall-clock time.
+    /// </summary>
+    public int DeliveryCount { get; init; }
 }
 
 /// <summary>
@@ -71,6 +93,12 @@ public record LockState
     public required int HeadSegment { get; init; }  // Kept for debugging/backward compat
     public required string ItemJson { get; init; }  // Stores dequeued item
     public required bool CompetingConsumerMode { get; init; }  // Whether competing consumers are enabled for this lock
+
+    /// <summary>
+    /// Carried through from the queued item so the count survives the dequeue -> lock -> requeue round
+    /// trip rather than resetting each time the item is locked. See QueueSegmentItem.DeliveryCount.
+    /// </summary>
+    public int DeliveryCount { get; init; }
 }
 
 /// <summary>
@@ -87,7 +115,7 @@ public record IdempotencyMarker
 /// QueueActor - A FIFO queue-based Dapr actor with priority support.
 /// Implements segmented storage (100 items per segment) for scalable queue operations.
 /// </summary>
-public class QueueActor : Actor, IQueueActor, IRemindable
+public class QueueActor : Actor, IQueueActor
 {
     private readonly IQueueActorInvoker _actorInvoker;
     private readonly IBlobReaperActorInvoker _blobReaperActorInvoker;
@@ -95,10 +123,21 @@ public class QueueActor : Actor, IQueueActor, IRemindable
     private readonly IObjectClaimTokenIssuer _objectClaimTokenIssuer;
     private readonly BlobReapConfig _blobReapConfig;
     private readonly IdempotencyConfig _idempotencyConfig;
+    private readonly LockConfig _lockConfig;
 
     private const int MaxSegmentSize = 100;
     private const int MinLockTtlSeconds = 1;
     private const int MaxLockTtlSeconds = 300;
+
+    /// <summary>
+    /// Granularity of the lock expiry index. Sets how many buckets a full 300s of outstanding locks
+    /// can span (300/5 = 60 metadata entries at most), not how promptly a lock expires - see
+    /// ExpiryBucketFor for why the floor/re-check scheme keeps expiry exact.
+    /// </summary>
+    private const int LockBucketWidthSeconds = 5;
+
+    /// <summary>Index of a session actor's lease-scoped locks; see ActorMetadata.LockExpiryBuckets.</summary>
+    private const string SessionLockIndexKey = "locks_session";
     private const int LockIdLength = 11;
     private const int MaxIdempotencyKeyLength = 128;
 
@@ -111,6 +150,96 @@ public class QueueActor : Actor, IQueueActor, IRemindable
 
     private static bool IsQueueCorrupted(ActorMetadata metadata) =>
         !string.IsNullOrEmpty(metadata.ErrorMessage);
+
+    /// <summary>True if this actor's own id marks it as a per-session queue actor.</summary>
+    private bool IsSessionActor() => Id.GetId().IndexOf(SessionActorIdMarker, StringComparison.Ordinal) > 0;
+
+    /// <summary>
+    /// The index entry a lock expiring at <paramref name="expiresAt"/> belongs to. Floor, not ceiling:
+    /// the sweep treats a bucket as due from its *earliest* possible expiry and then re-checks each
+    /// lock's own ExpiresAt, so a lock is never resolved late. Ceiling would hold a bucket back until
+    /// every lock in it had certainly expired, delaying a short-TTL lock by up to the bucket width.
+    /// </summary>
+    private static long ExpiryBucketFor(double expiresAt) =>
+        (long)Math.Floor(expiresAt / LockBucketWidthSeconds) * LockBucketWidthSeconds;
+
+    private static string ExpiryBucketKey(long bucket) => $"locks_exp_{bucket}";
+
+    /// <summary>
+    /// Adds lock ids to the index, staged (no save). On a session actor everything goes in the single
+    /// "locks_session" entry; otherwise ids are grouped into their expiry bucket. Ids are appended in
+    /// dequeue order, which is the original FIFO order, so a bulk requeue can replay them faithfully.
+    /// </summary>
+    private async Task<ActorMetadata> IndexLocksAsync(ActorMetadata metadata, IEnumerable<string> lockIds, double expiresAt)
+    {
+        if (IsSessionActor())
+        {
+            var existing = await StateManager.TryGetStateAsync<List<string>>(SessionLockIndexKey);
+            var ids = existing.HasValue ? new List<string>(existing.Value) : new List<string>();
+            ids.AddRange(lockIds);
+            await StateManager.SetStateAsync(SessionLockIndexKey, ids);
+            return metadata;
+        }
+
+        long bucket = ExpiryBucketFor(expiresAt);
+        string key = ExpiryBucketKey(bucket);
+
+        var bucketState = await StateManager.TryGetStateAsync<List<string>>(key);
+        var bucketIds = bucketState.HasValue ? new List<string>(bucketState.Value) : new List<string>();
+        bucketIds.AddRange(lockIds);
+        await StateManager.SetStateAsync(key, bucketIds);
+
+        if (metadata.LockExpiryBuckets.Contains(bucket))
+        {
+            return metadata;
+        }
+
+        var buckets = new List<long>(metadata.LockExpiryBuckets) { bucket };
+        buckets.Sort();
+        return metadata with { LockExpiryBuckets = buckets };
+    }
+
+    /// <summary>
+    /// Removes a lock id from a *session* actor's index, staged (no save).
+    ///
+    /// Deliberately not done for the bucketed (plain-queue) index. There, settling is the hot path and
+    /// a bucket can hold every lock created in one TTL window - with a bulk dequeue that is thousands
+    /// of ids, so rewriting the list on each settle is O(n) per ack and O(n^2) over a batch, which is
+    /// enough to stall the actor. Instead the bucketed index is an over-approximation maintained
+    /// solely by the sweep, which already skips ids whose lock has gone. Settling stays O(1).
+    ///
+    /// A session's index can't use that trick: it has no expiry bucket to age out, so under a
+    /// long-lived lease it would accumulate an entry per message ever delivered. Its length is bounded
+    /// by the consumer's outstanding prefetch instead, which is small, so pruning here is cheap.
+    /// </summary>
+    private async Task DeindexSessionLockAsync(string lockId)
+    {
+        if (!IsSessionActor())
+        {
+            return;
+        }
+
+        var existing = await StateManager.TryGetStateAsync<List<string>>(SessionLockIndexKey);
+        if (!existing.HasValue)
+        {
+            return;
+        }
+
+        var ids = new List<string>(existing.Value);
+        if (!ids.Remove(lockId))
+        {
+            return;
+        }
+
+        if (ids.Count == 0)
+        {
+            await StateManager.RemoveStateAsync(SessionLockIndexKey);
+        }
+        else
+        {
+            await StateManager.SetStateAsync(SessionLockIndexKey, ids);
+        }
+    }
 
     /// <summary>
     /// Guard for Dequeue/DequeueLocked/Acknowledge/ExtendLock/DeadLetter: if this actor is a session
@@ -155,7 +284,8 @@ public class QueueActor : Actor, IQueueActor, IRemindable
         ISessionCoordinatorActorInvoker sessionCoordinatorActorInvoker,
         IObjectClaimTokenIssuer objectClaimTokenIssuer,
         BlobReapConfig blobReapConfig,
-        IdempotencyConfig idempotencyConfig) : base(host)
+        IdempotencyConfig idempotencyConfig,
+        LockConfig lockConfig) : base(host)
     {
         _actorInvoker = queueActorInvoker ?? throw new ArgumentNullException(nameof(queueActorInvoker));
         _blobReaperActorInvoker = blobReaperActorInvoker ?? throw new ArgumentNullException(nameof(blobReaperActorInvoker));
@@ -163,6 +293,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
         _objectClaimTokenIssuer = objectClaimTokenIssuer ?? throw new ArgumentNullException(nameof(objectClaimTokenIssuer));
         _blobReapConfig = blobReapConfig ?? throw new ArgumentNullException(nameof(blobReapConfig));
         _idempotencyConfig = idempotencyConfig ?? throw new ArgumentNullException(nameof(idempotencyConfig));
+        _lockConfig = lockConfig ?? throw new ArgumentNullException(nameof(lockConfig));
     }
 
     /// <summary>
@@ -316,6 +447,10 @@ public class QueueActor : Actor, IQueueActor, IRemindable
     /// </summary>
     public async Task<SetSessionLeaseResponse> SetSessionLease(SetSessionLeaseRequest request)
     {
+        // A new consumer claiming this session is the trigger that returns a dead consumer's locked
+        // items, so this must run before the incoming lease overwrites the lapsed one.
+        await SweepExpiredLocksAsync();
+
         var metadata = await GetMetadataAsync();
         metadata = metadata with
         {
@@ -345,10 +480,356 @@ public class QueueActor : Actor, IQueueActor, IRemindable
     }
 
     /// <summary>
+    /// Resolves locks whose TTL has lapsed, requeueing their items so they can be delivered again.
+    /// Replaces the per-lock "lock-{lockId}" reminders: there is no scheduled trigger at all, so this
+    /// runs at the top of the operations that could otherwise observe a stale lock (and on activation).
+    ///
+    /// Called before the LockCount gate in Dequeue and before the concurrency checks in DequeueLocked -
+    /// that ordering is load-bearing, since a queue whose locks have all expired would otherwise keep
+    /// reporting itself locked and never recover.
+    ///
+    /// Self-contained: it commits its own batch, so callers just invoke it and then re-read metadata.
+    /// Bounded by LockConfig.SweepBatchSize so one operation can't stall behind a huge backlog; any
+    /// remainder is picked up by the next operation.
+    /// </summary>
+    private async Task SweepExpiredLocksAsync()
+    {
+        // Session actors don't expire locks per item - their locks are scoped to the session lease
+        // and are resolved in bulk when that lapses.
+        if (IsSessionActor())
+        {
+            await ReclaimLapsedSessionLocksAsync();
+            return;
+        }
+
+        var metadata = await GetMetadataAsync();
+        if (metadata.LockExpiryBuckets.Count == 0)
+        {
+            return; // fast path: nothing outstanding, and no extra state read to discover that
+        }
+
+        double now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+        // Oldest first, so a backlog capped by SweepBatchSize still drains in expiry order.
+        var dueBuckets = metadata.LockExpiryBuckets.Where(b => now >= b).OrderBy(b => b).ToList();
+        if (dueBuckets.Count == 0)
+        {
+            return;
+        }
+
+        int budget = Math.Max(1, _lockConfig.SweepBatchSize);
+        int expired = 0;
+        var emptiedBuckets = new List<long>();
+
+        foreach (var bucket in dueBuckets)
+        {
+            if (budget <= 0)
+            {
+                break;
+            }
+
+            string bucketKey = ExpiryBucketKey(bucket);
+            var bucketState = await StateManager.TryGetStateAsync<List<string>>(bucketKey);
+            if (!bucketState.HasValue)
+            {
+                emptiedBuckets.Add(bucket); // index entry with no backing list - drop it
+                continue;
+            }
+
+            var survivors = new List<string>();
+            var ids = bucketState.Value;
+
+            for (int i = 0; i < ids.Count; i++)
+            {
+                string lockId = ids[i];
+
+                if (budget <= 0)
+                {
+                    // Out of budget: everything not yet examined stays for the next operation.
+                    survivors.AddRange(ids.Skip(i));
+                    break;
+                }
+
+                var lockState = await StateManager.TryGetStateAsync<LockState>($"{lockId}-lock");
+                if (!lockState.HasValue)
+                {
+                    continue; // already acknowledged/dead-lettered; drop the stale index entry
+                }
+
+                // A bucket is due from its earliest possible expiry, so it can hold locks that have
+                // not lapsed yet (and locks extended into a later expiry). Check each one.
+                if (now < lockState.Value.ExpiresAt)
+                {
+                    survivors.Add(lockId);
+                    continue;
+                }
+
+                budget--;
+                expired++;
+                await ExpireLockAsync(lockId, lockState.Value);
+            }
+
+            if (survivors.Count == 0)
+            {
+                await StateManager.RemoveStateAsync(bucketKey);
+                emptiedBuckets.Add(bucket);
+            }
+            else if (survivors.Count != ids.Count)
+            {
+                await StateManager.SetStateAsync(bucketKey, survivors);
+            }
+        }
+
+        if (expired == 0 && emptiedBuckets.Count == 0)
+        {
+            return; // nothing changed - don't write
+        }
+
+        // Re-read: ExpireLockAsync staged queue/metadata updates of its own.
+        metadata = await GetMetadataAsync();
+        var buckets = metadata.LockExpiryBuckets.Where(b => !emptiedBuckets.Contains(b)).ToList();
+        await SetMetadataAsync(metadata with
+        {
+            LockCount = Math.Max(0, metadata.LockCount - expired),
+            LockExpiryBuckets = buckets
+        });
+        await StateManager.SaveStateAsync();
+    }
+
+    /// <summary>
+    /// Returns every outstanding lock held by this session to the queue, in one batch, once the
+    /// session lease has lapsed. This is the session equivalent of per-item expiry: the lease is the
+    /// only authority, mirroring Azure Service Bus where the session lock is "an umbrella for the
+    /// message locks" and individual messages are never renewed.
+    ///
+    /// Self-healing by design. The coordinator's lease-expiry reminder only deletes its own record and
+    /// never notifies this actor, and ClearSessionLease is best-effort, so the session actor decides
+    /// for itself by comparing the synced expiry against now. A cold session actor resolves on its next
+    /// activation - which is whenever someone actually wants the items.
+    /// </summary>
+    private async Task ReclaimLapsedSessionLocksAsync()
+    {
+        var metadata = await GetMetadataAsync();
+        if (metadata.LockCount == 0)
+        {
+            return;
+        }
+
+        // A lease that is still live keeps its locks, however old their nominal ExpiresAt is.
+        double now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        bool leaseLive = metadata.ActiveSessionLeaseId != null
+            && metadata.ActiveSessionLeaseExpiresAt.HasValue
+            && now < metadata.ActiveSessionLeaseExpiresAt.Value;
+        if (leaseLive)
+        {
+            return;
+        }
+
+        var indexState = await StateManager.TryGetStateAsync<List<string>>(SessionLockIndexKey);
+        if (!indexState.HasValue || indexState.Value.Count == 0)
+        {
+            return;
+        }
+
+        // The index is appended in dequeue order, which is the original FIFO order, so replaying it
+        // in order is what lets the restore put the session back exactly as the consumer found it.
+        var restored = new List<(string ItemJson, int Priority, int DeliveryCount)>();
+        var deadLettered = new List<string>();
+
+        foreach (var lockId in indexState.Value)
+        {
+            var lockState = await StateManager.TryGetStateAsync<LockState>($"{lockId}-lock");
+            if (!lockState.HasValue)
+            {
+                continue;
+            }
+
+            int deliveryCount = lockState.Value.DeliveryCount + 1;
+            if (deliveryCount > _lockConfig.MaxDeliveryCount)
+            {
+                deadLettered.Add(lockId);
+                continue;
+            }
+
+            restored.Add((lockState.Value.ItemJson, lockState.Value.Priority, deliveryCount));
+            await StateManager.RemoveStateAsync($"{lockId}-lock");
+        }
+
+        await RequeueFrontInternal(restored);
+
+        await StateManager.RemoveStateAsync(SessionLockIndexKey);
+
+        metadata = await GetMetadataAsync();
+        await SetMetadataAsync(metadata with
+        {
+            LockCount = Math.Max(0, metadata.LockCount - (restored.Count + deadLettered.Count)),
+            ActiveSessionLeaseId = null,
+            ActiveSessionLeaseExpiresAt = null
+        });
+        await StateManager.SaveStateAsync();
+
+        Logger.LogInformation(
+            "Session lease lapsed on {ActorId}; restored {Restored} locked item(s) to the front",
+            Id.GetId(), restored.Count);
+
+        // Cross-actor, so kept out of the batch above and committed per item - see DeadLetterExpiredLockAsync.
+        foreach (var lockId in deadLettered)
+        {
+            var lockState = await StateManager.TryGetStateAsync<LockState>($"{lockId}-lock");
+            if (lockState.HasValue)
+            {
+                await DeadLetterExpiredLockAsync(lockId, lockState.Value);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Restores items to the *front* of their priority queue, preserving their relative order, by
+    /// allocating fresh segments below the live range (HeadSegment-k .. HeadSegment-1) rather than
+    /// trying to prepend into a Queue&lt;T&gt;, which only supports appending.
+    ///
+    /// Service Bus parity: an abandoned session's messages go back to the head of the retrieval order,
+    /// so the next consumer sees the session's original FIFO sequence rather than finding the
+    /// unacked messages stranded behind everything enqueued since.
+    ///
+    /// Segment numbers are free to go negative - every consumer of them is relative arithmetic, and the
+    /// offload/load ranges always sit ahead of head, so a restored segment is never offload-eligible.
+    /// Staged only; the caller commits.
+    /// </summary>
+    private async Task RequeueFrontInternal(List<(string ItemJson, int Priority, int DeliveryCount)> items)
+    {
+        if (items.Count == 0)
+        {
+            return;
+        }
+
+        var metadata = await GetMetadataAsync();
+
+        foreach (var group in items.GroupBy(i => i.Priority).OrderBy(g => g.Key))
+        {
+            int priority = group.Key;
+            var ordered = group.ToList();
+
+            // A drained priority has had its entry removed entirely, which is the usual case when a
+            // consumer had locked everything. Count back from 0 so the restore still lands below the
+            // live range instead of special-casing segment 0.
+            metadata.Queues.TryGetValue(priority, out var queueMeta);
+            int headSegment = queueMeta?.HeadSegment ?? 0;
+            int tailSegment = queueMeta?.TailSegment ?? headSegment - 1;
+            int count = queueMeta?.Count ?? 0;
+
+            // Chunk into segment-sized runs, earliest items in the lowest-numbered segment so a
+            // head-to-tail read returns them in their original order.
+            int chunks = (ordered.Count + MaxSegmentSize - 1) / MaxSegmentSize;
+            int firstSegment = headSegment - chunks;
+
+            for (int c = 0; c < chunks; c++)
+            {
+                var chunk = ordered.Skip(c * MaxSegmentSize).Take(MaxSegmentSize);
+                var segmentQueue = new Queue<QueueSegmentItem>();
+                foreach (var item in chunk)
+                {
+                    segmentQueue.Enqueue(new QueueSegmentItem
+                    {
+                        ItemJson = item.ItemJson,
+                        DeliveryCount = item.DeliveryCount
+                    });
+                }
+
+                await StateManager.SetStateAsync($"queue_{priority}_seg_{firstSegment + c}", segmentQueue);
+            }
+
+            queueMeta = (queueMeta ?? new QueueMetadata()) with
+            {
+                HeadSegment = firstSegment,
+                TailSegment = Math.Max(tailSegment, firstSegment + chunks - 1),
+                Count = count + ordered.Count
+            };
+            metadata = metadata with
+            {
+                Queues = new Dictionary<int, QueueMetadata>(metadata.Queues) { [priority] = queueMeta }
+            };
+        }
+
+        await SetMetadataAsync(metadata);
+    }
+
+    /// <summary>
+    /// Requeues one expired lock's item and removes the lock, staged (no save) - the sweep commits the
+    /// whole batch in one go. Plain queues requeue to the tail, matching the behaviour the per-lock
+    /// reminder had.
+    /// </summary>
+    private async Task ExpireLockAsync(string lockId, LockState lockData)
+    {
+        int deliveryCount = lockData.DeliveryCount + 1;
+
+        if (deliveryCount > _lockConfig.MaxDeliveryCount)
+        {
+            await DeadLetterExpiredLockAsync(lockId, lockData);
+            return;
+        }
+
+        bool requeued = await EnqueueInternal(lockData.ItemJson, lockData.Priority, deliveryCount);
+        if (!requeued)
+        {
+            // Keep the lock rather than dropping the item; a later sweep retries it. Unlike the old
+            // fire-once reminder, the index means this is actually reachable again.
+            Logger.LogError("Failed to requeue expired lock {LockId}; leaving it for a later sweep", lockId);
+            return;
+        }
+
+        await StateManager.RemoveStateAsync($"{lockId}-lock");
+        Logger.LogInformation(
+            "Expired lock {LockId}, requeued at priority {Priority} (delivery {DeliveryCount})",
+            lockId, lockData.Priority, deliveryCount);
+    }
+
+    /// <summary>
+    /// Routes a poison item out to the dead-letter queue instead of requeueing it.
+    ///
+    /// Unlike the rest of the sweep this reaches another actor, and does so *before* the local state
+    /// commit - so it commits per item rather than sharing the sweep's batch. Batching would mean a
+    /// failure partway through left earlier items already in the DLQ with nothing committed locally,
+    /// duplicating them on the retry. DLQ-first ordering is kept deliberately: at-least-once beats
+    /// risking loss.
+    /// </summary>
+    private async Task DeadLetterExpiredLockAsync(string lockId, LockState lockData)
+    {
+        try
+        {
+            var result = await _actorInvoker.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
+                new ActorId($"{Id.GetId()}-deadletter"),
+                "Enqueue",
+                new EnqueueRequest
+                {
+                    Items = [new EnqueueItem { ItemJson = lockData.ItemJson, Priority = lockData.Priority }]
+                });
+
+            if (!result.Success)
+            {
+                Logger.LogError("DLQ enqueue rejected for lock {LockId}; leaving it for a later sweep", lockId);
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "DLQ enqueue failed for lock {LockId}; leaving it for a later sweep", lockId);
+            return;
+        }
+
+        await StateManager.RemoveStateAsync($"{lockId}-lock");
+        await StateManager.SaveStateAsync();
+
+        Logger.LogWarning(
+            "Lock {LockId} exceeded MaxDeliveryCount {MaxDeliveryCount}; dead-lettered",
+            lockId, _lockConfig.MaxDeliveryCount);
+    }
+
+    /// <summary>
     /// Internal enqueue that stages changes without committing.
     /// Returns true if enqueue succeeded, false otherwise.
     /// </summary>
-    private async Task<bool> EnqueueInternal(string itemJson, int priority)
+    private async Task<bool> EnqueueInternal(string itemJson, int priority, int deliveryCount = 0)
     {
         // Validation
         if (string.IsNullOrEmpty(itemJson))
@@ -399,7 +880,8 @@ public class QueueActor : Actor, IQueueActor, IRemindable
         // Append item to segment (FIFO)
         var segmentItem = new QueueSegmentItem
         {
-            ItemJson = itemJson
+            ItemJson = itemJson,
+            DeliveryCount = deliveryCount
         };
         segmentQueue.Enqueue(segmentItem);
 
@@ -632,6 +1114,10 @@ public class QueueActor : Actor, IQueueActor, IRemindable
     /// </summary>
     public async Task<DequeueResponse> Dequeue(DequeueRequest request)
     {
+        // Before anything reads LockCount: a queue whose locks have all lapsed must serve, not report
+        // itself locked.
+        await SweepExpiredLocksAsync();
+
         var metadata = await GetMetadataAsync();
 
         // Check for corrupted state
@@ -669,7 +1155,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
         // Dequeue up to Count items
         for (int i = 0; i < request.Count; i++)
         {
-            var (response, priority, itemJson) = await DequeueWithPriorityAsync();
+            var (response, priority, itemJson, _) = await DequeueWithPriorityAsync();
 
             // If locked, return what we have so far with lock info
             if (response.Locked)
@@ -734,9 +1220,10 @@ public class QueueActor : Actor, IQueueActor, IRemindable
     /// - response: Contains only metadata (Locked, IsEmpty, Message, LockExpiresAt)
     /// - priority: The priority level the item was dequeued from
     /// - itemJson: The JSON string of the dequeued item (null if none)
+    /// - deliveryCount: How many times the item has already been reclaimed by an expiry
     /// </summary>
     /// <param name="skipLockCheck">If true, skip the lock check (used for competing consumers)</param>
-    private async Task<(DequeueResponse response, int priority, string? itemJson)> DequeueWithPriorityAsync(bool skipLockCheck = false)
+    private async Task<(DequeueResponse response, int priority, string? itemJson, int deliveryCount)> DequeueWithPriorityAsync(bool skipLockCheck = false)
     {
 
         var metadata = await GetMetadataAsync();
@@ -754,13 +1241,13 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                         Locked = true,
                         IsEmpty = false,
                         Message = "Queue is locked by another operation"
-                    }, -1, null);
+                    }, -1, null, 0);
                 }
             }
 
             if (metadata.Queues.Count == 0)
             {
-                return (new DequeueResponse { Locked = false, IsEmpty = true }, -1, null);
+                return (new DequeueResponse { Locked = false, IsEmpty = true }, -1, null, 0);
             }
 
             // Find lowest priority with items
@@ -798,6 +1285,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                 var segmentQueue = segment.Value;
                 var segmentItem = segmentQueue.Dequeue();
                 var itemJson = segmentItem.ItemJson;
+                var deliveryCount = segmentItem.DeliveryCount;
 
                 // Handle segment cleanup
                 if (segmentQueue.Count == 0)
@@ -830,7 +1318,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                         Logger.LogDebug($"Dequeued item from priority {priority}, count now {count}");
 
                         // Return item JSON string directly with priority
-                        return (new DequeueResponse { Locked = false, IsEmpty = false }, priority, itemJson);
+                        return (new DequeueResponse { Locked = false, IsEmpty = false }, priority, itemJson, deliveryCount);
                     }
                     else
                     {
@@ -846,7 +1334,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                         Logger.LogDebug($"Dequeued last item from priority {priority}, queue now empty");
 
                         // Return item JSON string directly with priority
-                        return (new DequeueResponse { Locked = false, IsEmpty = false }, priority, itemJson);
+                        return (new DequeueResponse { Locked = false, IsEmpty = false }, priority, itemJson, deliveryCount);
                     }
                 }
                 else
@@ -866,11 +1354,11 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                     Logger.LogDebug($"Dequeued item from priority {priority}, count now {count}");
 
                     // Return item JSON string directly with priority
-                    return (new DequeueResponse { Locked = false, IsEmpty = false }, priority, itemJson);
+                    return (new DequeueResponse { Locked = false, IsEmpty = false }, priority, itemJson, deliveryCount);
                 }
             }
 
-            return (new DequeueResponse { Locked = false, IsEmpty = true }, -1, null);
+            return (new DequeueResponse { Locked = false, IsEmpty = true }, -1, null, 0);
         }
         catch (InvalidOperationException)
         {
@@ -880,7 +1368,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
         catch (Exception ex)
         {
             Logger.LogError(ex, "Error in DequeueAsync");
-            return (new DequeueResponse { Locked = false, IsEmpty = true }, -1, null);
+            return (new DequeueResponse { Locked = false, IsEmpty = true }, -1, null, 0);
         }
     }
 
@@ -899,83 +1387,13 @@ public class QueueActor : Actor, IQueueActor, IRemindable
     }
 
     /// <summary>
-    /// Reminder callback for auto-expiring locks.
-    /// Implements IRemindable interface.
-    /// </summary>
-    public async Task ReceiveReminderAsync(string reminderName, byte[] state, TimeSpan dueTime, TimeSpan period)
-    {
-        try
-        {
-            if (reminderName.StartsWith("lock-"))
-            {
-                string lockId = reminderName[5..];
-                Logger.LogDebug("Reminder fired for lock {LockId}, re-queueing item", lockId);
-
-                // Retrieve lock state to get item and priority
-                var lockState = await StateManager.TryGetStateAsync<LockState>($"{lockId}-lock");
-
-                if (lockState.HasValue)
-                {
-                    // Re-queue the item at original priority using EnqueueInternal (stages without saving)
-                    try
-                    {
-                        bool success = await EnqueueInternal(lockState.Value.ItemJson, lockState.Value.Priority);
-
-                        if (!success)
-                        {
-                            Logger.LogError(
-                                "Failed to re-queue expired lock {LockId}. Item: {ItemJson}",
-                                lockId,
-                                lockState.Value.ItemJson);
-                            // Keep lock state - don't clean up on enqueue failure
-                            return;
-                        }
-
-                        Logger.LogInformation(
-                            "Re-queued expired lock {LockId} at priority {Priority}",
-                            lockId,
-                            lockState.Value.Priority);
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.LogError(ex,
-                            "Exception re-queueing expired lock {LockId}. Item: {ItemJson}",
-                            lockId,
-                            lockState.Value.ItemJson);
-                        // Keep lock state - don't clean up on exception
-                        return;
-                    }
-
-                    // Stage lock removal and metadata update (only after successful re-queue)
-                    await StateManager.RemoveStateAsync($"{lockId}-lock");
-
-                    // Decrement lock counter
-                    var metadata = await GetMetadataAsync();
-                    await SetMetadataAsync(metadata with { LockCount = metadata.LockCount - 1 });
-
-                    // Single atomic save: enqueue + lock cleanup + metadata update
-                    await StateManager.SaveStateAsync();
-
-                    Logger.LogDebug("Lock {LockId} auto-expired and cleaned up", lockId);
-                }
-                else
-                {
-                    // Lock already acknowledged - reminder not unregistered. No action needed.
-                    Logger.LogDebug("Lock {LockId} already acknowledged, skipping cleanup", lockId);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.LogError(ex, "Error in ReceiveReminderAsync for reminder {ReminderName}", reminderName);
-        }
-    }
-
-    /// <summary>
     /// Dequeue items with acknowledgement requirement (creates a lock).
     /// </summary>
     public async Task<DequeueLockedResponse> DequeueLocked(DequeueLockedRequest request)
     {
+        // Before MaxConcurrency capacity and the legacy single-lock gate are computed, so neither is
+        // sized against locks that are already dead.
+        await SweepExpiredLocksAsync();
 
         var metadata = await GetMetadataAsync();
 
@@ -1038,13 +1456,19 @@ public class QueueActor : Actor, IQueueActor, IRemindable
             var lockedItems = new List<DequeueLockedItem>();
             var newLockIds = new List<string>();
             double nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            double lockExpiresAt = nowUnix + ttlSeconds;
+
+            // On a session actor the lease is the authority and per-item TTL means nothing, so mirror
+            // the lease expiry instead. The client still gets a meaningful LockExpiresAt, but nothing
+            // here consults it - see ReclaimLapsedSessionLocksAsync.
+            double lockExpiresAt = IsSessionActor() && metadata.ActiveSessionLeaseExpiresAt.HasValue
+                ? metadata.ActiveSessionLeaseExpiresAt.Value
+                : nowUnix + ttlSeconds;
 
             for (int i = 0; i < count; i++)
             {
                 // Dequeue item (removes from queue) and store in lock
                 // Skip lock check to allow parallel locks
-                var (dequeueResult, priority, itemJson) = await DequeueWithPriorityAsync(skipLockCheck: true);
+                var (dequeueResult, priority, itemJson, deliveryCount) = await DequeueWithPriorityAsync(skipLockCheck: true);
 
                 // If queue is empty, return partial results
                 if (itemJson == null)
@@ -1063,7 +1487,8 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                     Priority = priority,
                     HeadSegment = 0,  // No longer used but kept for backward compat
                     ItemJson = itemJson!,
-                    CompetingConsumerMode = request.AllowCompetingConsumers
+                    CompetingConsumerMode = request.AllowCompetingConsumers,
+                    DeliveryCount = deliveryCount
                 };
 
                 await StateManager.SetStateAsync($"{lockId}-lock", lockData);
@@ -1103,27 +1528,11 @@ public class QueueActor : Actor, IQueueActor, IRemindable
             metadata = await GetMetadataAsync();
             // Save all state atomically - increment lock counter
             metadata = metadata with { LockCount = metadata.LockCount + lockedItems.Count };
+            // Index the whole batch in one write: every lock here shares lockExpiresAt, so they share
+            // a bucket. This is what makes these locks findable again without a per-lock reminder.
+            metadata = await IndexLocksAsync(metadata, newLockIds, lockExpiresAt);
             await SetMetadataAsync(metadata);
             await StateManager.SaveStateAsync();
-
-            // Register reminders for auto-expiry (gracefully degrades if scheduler unavailable)
-            foreach (var lockId in newLockIds)
-            {
-                try
-                {
-                    await RegisterReminderAsync(
-                        $"lock-{lockId}",
-                        null,
-                        TimeSpan.FromSeconds(ttlSeconds),
-                        TimeSpan.FromMilliseconds(-1)); // -1 means fire once
-                    Logger.LogDebug("Registered reminder for lock {LockId} with TTL {TtlSeconds}s", lockId, ttlSeconds);
-                }
-                catch (Exception ex)
-                {
-                    // Scheduler service not available - lock expiry will rely on manual checks
-                    Logger.LogDebug(ex, "Reminder registration failed for lock {LockId} (scheduler unavailable)", lockId);
-                }
-            }
 
             Logger.LogInformation("Created {Count} locks with TTL {TtlSeconds}s, expires at {LockExpiresAt}", lockedItems.Count, ttlSeconds, lockExpiresAt);
 
@@ -1190,25 +1599,30 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                 };
             }
 
+            // On a plain queue the per-item TTL is the authority, so an expired lock can no longer be
+            // settled - its item is already on its way back to the queue. Matches ExtendLock and
+            // DeadLetter, which have always refused here. Session actors are exempt: their locks are
+            // governed by the lease (checked above), and LockState.ExpiresAt is only informational,
+            // so a renewed lease must not be second-guessed by a stale per-item value.
+            if (!IsSessionActor() && DateTimeOffset.UtcNow.ToUnixTimeSeconds() >= lockState.Value.ExpiresAt)
+            {
+                return new AcknowledgeResponse
+                {
+                    Success = false,
+                    Message = "Lock has expired",
+                    ErrorCode = "LOCK_EXPIRED"
+                };
+            }
+
             // Note: Item already dequeued during DequeueLocked - just remove lock state
             // Remove lock and decrement counter
             await StateManager.RemoveStateAsync($"{lockId}-lock");
 
+            await DeindexSessionLockAsync(lockId);
             await SetMetadataAsync(metadata with { LockCount = metadata.LockCount - 1 });
 
             await StateManager.SaveStateAsync();
 
-            // Unregister reminder (best effort - may not exist if scheduler unavailable)
-            try
-            {
-                await UnregisterReminderAsync($"lock-{lockId}");
-                Logger.LogDebug("Unregistered reminder for lock {LockId}", lockId);
-            }
-            catch (Exception ex)
-            {
-                // Reminder might not exist or scheduler unavailable - this is OK
-                Logger.LogDebug(ex, "Failed to unregister reminder for lock {LockId}", lockId);
-            }
 
             // Acknowledge is the finalization point for DequeueLocked items - if the item's payload
             // was offloaded to an object store, schedule deletion of the underlying blob.
@@ -1311,35 +1725,19 @@ public class QueueActor : Actor, IQueueActor, IRemindable
             // Update lock state with new expiry
             var updatedLock = lockData with { ExpiresAt = newExpiresAt };
             await StateManager.SetStateAsync($"{lockId}-lock", updatedLock);
+
+            // File the id under its new expiry bucket so the sweep will still find it once the
+            // extension runs out. The old entry is left behind on purpose: the sweep checks each
+            // lock's real ExpiresAt and simply keeps a not-yet-expired id as a survivor, so a stale
+            // duplicate costs one string rather than an O(n) rewrite of a potentially huge bucket.
+            if (!IsSessionActor() && ExpiryBucketFor(newExpiresAt) != ExpiryBucketFor(lockData.ExpiresAt))
+            {
+                metadata = await IndexLocksAsync(metadata, [lockId], newExpiresAt);
+                await SetMetadataAsync(metadata);
+            }
+
             await StateManager.SaveStateAsync();
 
-            // Update reminder with new TTL (best effort)
-            try
-            {
-                await UnregisterReminderAsync($"lock-{lockId}");
-            }
-            catch (Exception ex)
-            {
-                Logger.LogDebug(ex, "Failed to unregister old reminder for lock {LockId}", lockId);
-            }
-
-            try
-            {
-                double newTtlSeconds = newExpiresAt - now;
-                if (newTtlSeconds > 0)
-                {
-                    await RegisterReminderAsync(
-                        $"lock-{lockId}",
-                        null,
-                        TimeSpan.FromSeconds(newTtlSeconds),
-                        TimeSpan.FromMilliseconds(-1)); // -1 means fire once
-                    Logger.LogDebug("Updated reminder for lock {LockId} with new TTL", lockId);
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.LogDebug(ex, "Failed to register updated reminder for lock {LockId}", lockId);
-            }
 
             Logger.LogDebug($"Extended lock {lockId} by {request.AdditionalTtlSeconds}s, new expiry: {newExpiresAt}");
 
@@ -1455,6 +1853,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
             // Remove lock and decrement counter
             await StateManager.RemoveStateAsync($"{lockId}-lock");
 
+            await DeindexSessionLockAsync(lockId);
             await SetMetadataAsync(metadata with { LockCount = metadata.LockCount - 1 });
 
             await StateManager.SaveStateAsync();
