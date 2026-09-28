@@ -137,20 +137,23 @@ public class DeadLetterTests(DaprTestFixture fixture)
         Assert.NotNull(dequeueLockedResult.Items);
         Assert.Single(dequeueLockedResult.Items);
 
-        // Wait for lock to expire and reminder to clean it up
+        // Wait for the lock's TTL to elapse. Expiry is swept lazily, so nothing has touched this
+        // actor in the meantime and the lock record is still there - just expired.
         await Task.Delay(TimeSpan.FromSeconds(2.5));
 
-        // Act - Try to deadletter with expired lock (that has been cleaned up by reminder)
+        // Act - Try to deadletter with expired lock
         var deadLetterRequest = new ApiDeadLetterRequest(dequeueLockedResult.Items[0].LockId);
         var deadLetterResponse = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/deadletter", deadLetterRequest);
 
-        // Assert - Should return 404 Not Found (lock was cleaned up by reminder after expiry)
-        Assert.Equal(HttpStatusCode.NotFound, deadLetterResponse.StatusCode);
+        // Assert - 410 Gone: the lock is expired and its item is on its way back to the queue, so it
+        // can no longer be settled. (Previously 404, because the per-lock reminder had already
+        // deleted the record by now; with lazy expiry the record survives and reports the real reason.)
+        Assert.Equal(HttpStatusCode.Gone, deadLetterResponse.StatusCode);
 
         var deadLetterResult = await deadLetterResponse.Content.ReadFromJsonAsync<ApiDeadLetterResponse>();
         Assert.NotNull(deadLetterResult);
         Assert.False(deadLetterResult.Success);
-        Assert.Equal("LOCK_NOT_FOUND", deadLetterResult.ErrorCode);
+        Assert.Equal("LOCK_EXPIRED", deadLetterResult.ErrorCode);
     }
 
     [Fact]
@@ -277,7 +280,8 @@ public class DeadLetterTests(DaprTestFixture fixture)
         var lockId = dequeueResponse.Success.LockId[0];
         await Task.Delay(TimeSpan.FromSeconds(2.5));
 
-        // Act & Assert - Lock expired and was cleaned up by reminder, so it's not found
+        // Act & Assert - the lock is expired but, with lazy expiry, still on record, so the failure
+        // reports the actual reason rather than a bare "not found".
         var ex = await Assert.ThrowsAsync<RpcException>(async () =>
             await client.DeadLetterAsync(new DeadLetterRequest
             {
@@ -285,6 +289,6 @@ public class DeadLetterTests(DaprTestFixture fixture)
                 LockId = lockId
             }));
 
-        Assert.Equal(StatusCode.NotFound, ex.StatusCode);
+        Assert.Equal(StatusCode.FailedPrecondition, ex.StatusCode);
     }
 }

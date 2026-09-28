@@ -59,7 +59,9 @@
 
 **HTTP mappings:** Empty→204, Locked→423, NotFound/Expired→410, Validation→400, ActorNotFound→404
 
-**State keys:** `queue_{priority}_seg_{segmentNum}`, `metadata_{priority}`, `locks`
+**State keys:** `metadata` (one blob per actor), `queue_{priority}_seg_{segmentNum}`, `{lockId}-lock`, `idem_{key}`, plus the lock index: `locks_exp_{bucket}` on a plain queue, `locks_session` on a session actor
+
+**Lock expiry:** no reminder or timer. Locks are swept lazily at the top of Dequeue/DequeueLocked/SetSessionLease and on activation, using the index to find them. Plain queues expire per-item TTL and requeue to the tail; session actors hold locks for the life of the lease and bulk-restore to the *front* when it lapses. `DeliveryCount` increments per expiry, and past `MaxDeliveryCount` the item is dead-lettered.
 
 **Sessions:** AcceptSession/RenewSessionLease/ReleaseSession, actor id `{queueId}-session-{sessionId}`. Lease via `LeaseId` header on Dequeue/Ack/ExtendLock/DeadLetter.
 

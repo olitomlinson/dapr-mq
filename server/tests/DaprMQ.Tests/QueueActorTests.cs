@@ -7,6 +7,59 @@ namespace DaprMQ.Tests;
 
 public class QueueActorTests
 {
+    /// <summary>
+    /// Drives lock expiry the way it now happens: back-date the lock so it reads as lapsed, move its
+    /// index entry into the due bucket, then run an operation that sweeps. Replaces the old
+    /// "fire the lock-{id} reminder" trigger, which no longer exists - and unlike that reminder, the
+    /// sweep genuinely checks ExpiresAt, so a lock has to actually be lapsed for anything to happen.
+    /// </summary>
+    private static async Task ExpireLockViaSweepAsync(Mock<IActorStateManager> sm, QueueActor actor, string lockId)
+    {
+        const int bucketWidth = 5;
+        static long BucketFor(double at) => (long)Math.Floor(at / bucketWidth) * bucketWidth;
+
+        var existing = await sm.Object.TryGetStateAsync<LockState>($"{lockId}-lock");
+        if (existing.HasValue)
+        {
+            double expiresAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 1;
+            long oldBucket = BucketFor(existing.Value.ExpiresAt);
+            long newBucket = BucketFor(expiresAt);
+
+            await sm.Object.SetStateAsync($"{lockId}-lock", existing.Value with { ExpiresAt = expiresAt });
+
+            if (oldBucket != newBucket)
+            {
+                var oldIds = await sm.Object.TryGetStateAsync<List<string>>($"locks_exp_{oldBucket}");
+                if (oldIds.HasValue)
+                {
+                    oldIds.Value.Remove(lockId);
+                    if (oldIds.Value.Count == 0)
+                    {
+                        await sm.Object.RemoveStateAsync($"locks_exp_{oldBucket}");
+                    }
+                }
+
+                var newIds = await sm.Object.TryGetStateAsync<List<string>>($"locks_exp_{newBucket}");
+                var ids = newIds.HasValue ? newIds.Value : new List<string>();
+                ids.Add(lockId);
+                await sm.Object.SetStateAsync($"locks_exp_{newBucket}", ids);
+
+                var metadata = await sm.Object.GetStateAsync<ActorMetadata>("metadata");
+                var buckets = new List<long>(metadata.LockExpiryBuckets);
+                buckets.Remove(oldBucket);
+                if (!buckets.Contains(newBucket))
+                {
+                    buckets.Add(newBucket);
+                }
+                buckets.Sort();
+                await sm.Object.SetStateAsync("metadata", metadata with { LockExpiryBuckets = buckets });
+            }
+        }
+
+        // Count = 0 sweeps without consuming anything.
+        await actor.Dequeue(new Interfaces.DequeueRequest { Count = 0 });
+    }
+
     private Mock<IActorStateManager> CreateMockStateManager()
     {
         var mock = new Mock<IActorStateManager>();
@@ -120,7 +173,7 @@ public class QueueActorTests
         return mock;
     }
 
-    private async Task<QueueActor> CreateActorAsync(Mock<IActorStateManager> mockStateManager, Mock<IBlobReaperActorInvoker>? mockBlobReaperActorInvoker = null, IdempotencyConfig? idempotencyConfig = null)
+    private async Task<QueueActor> CreateActorAsync(Mock<IActorStateManager> mockStateManager, Mock<IBlobReaperActorInvoker>? mockBlobReaperActorInvoker = null, IdempotencyConfig? idempotencyConfig = null, LockConfig? lockConfig = null)
     {
         // Create mock timer manager that no-ops timer registration
         var mockTimerManager = new Mock<ActorTimerManager>();
@@ -160,9 +213,10 @@ public class QueueActorTests
         });
         var blobReapConfig = new BlobReapConfig { BackstopSeconds = 86400, PostDownloadSeconds = 86400 };
         idempotencyConfig ??= new IdempotencyConfig { TtlSeconds = 86400 };
+        lockConfig ??= new LockConfig { MaxDeliveryCount = 10, SweepBatchSize = 200 };
 
         var actorHost = ActorHost.CreateForTest<QueueActor>(testOptions);
-        var actor = new QueueActor(actorHost, mockInvoker.Object, mockBlobReaperActorInvoker.Object, mockSessionCoordinatorActorInvoker.Object, tokenIssuer, blobReapConfig, idempotencyConfig);
+        var actor = new QueueActor(actorHost, mockInvoker.Object, mockBlobReaperActorInvoker.Object, mockSessionCoordinatorActorInvoker.Object, tokenIssuer, blobReapConfig, idempotencyConfig, lockConfig);
 
         // Use reflection to set the StateManager property
         var stateManagerProperty = typeof(Actor).GetProperty("StateManager");
@@ -926,7 +980,7 @@ public class QueueActorTests
     }
 
     [Fact]
-    public async Task DequeueLocked_ExpiredLock_ReminderCleansUpAndAllowsNewLock()
+    public async Task DequeueLocked_ExpiredLock_SweepCleansUpAndAllowsNewLock()
     {
         // With Phase 2 reminders: expired locks are cleaned by reminder callback, not by DequeueLocked
 
@@ -956,7 +1010,7 @@ public class QueueActorTests
         await mockStateManager.Object.SetStateAsync("metadata", metadata with { LockCount = 1 });
 
         // Act - Simulate reminder cleanup (reminder would fire automatically in production)
-        await actor.ReceiveReminderAsync($"lock-{expiredLockId}", Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.Zero);
+        await ExpireLockViaSweepAsync(mockStateManager, actor, expiredLockId);
 
         // Now DequeueLocked should succeed
         var result = await actor.DequeueLocked(new DequeueLockedRequest { TtlSeconds = 30 });
@@ -1058,7 +1112,7 @@ public class QueueActorTests
 
         // Wait for lock to expire, then simulate reminder cleanup
         await Task.Delay(1100);
-        await actor.ReceiveReminderAsync($"lock-{dequeueResult.LockId}", Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.Zero);
+        await ExpireLockViaSweepAsync(mockStateManager, actor, dequeueResult.LockId);
 
         // Dequeue again - should get same item (remained at priority 1 due to lock-in-place)
         var secondDequeue = await actor.Dequeue(new Interfaces.DequeueRequest());
@@ -1154,7 +1208,7 @@ public class QueueActorTests
 
         // Wait for lock to expire, then simulate reminder cleanup (re-queues Item-A at end)
         await Task.Delay(1100);
-        await actor.ReceiveReminderAsync($"lock-{dequeueResult.LockId}", Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.Zero);
+        await ExpireLockViaSweepAsync(mockStateManager, actor, dequeueResult.LockId);
 
         // Assert - Dequeue should return B, C, D, A (A was re-queued at end)
         var firstDequeue = await actor.Dequeue(new Interfaces.DequeueRequest());
@@ -1349,7 +1403,7 @@ public class QueueActorTests
 
         // Let lock expire, then simulate reminder cleanup (re-queues P1-A at end of priority 1)
         await Task.Delay(1100);
-        await actor.ReceiveReminderAsync($"lock-{dequeueResult.LockId}", Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.Zero);
+        await ExpireLockViaSweepAsync(mockStateManager, actor, dequeueResult.LockId);
 
         // Assert - Dequeue all items: B, C, D, A (at end of priority 1), then P2-A
         var dequeue1 = await actor.Dequeue(new Interfaces.DequeueRequest());
@@ -1787,7 +1841,7 @@ public class QueueActorTests
     }
 
     [Fact]
-    public async Task ReceiveReminderAsync_WithValidLock_CleansUpLockState()
+    public async Task Sweep_WithExpiredLock_CleansUpLockState()
     {
         // Arrange
         var mockStateManager = CreateMockStateManager();
@@ -1810,7 +1864,7 @@ public class QueueActorTests
         await mockStateManager.Object.SetStateAsync("metadata", metadata with { LockCount = 1 });
 
         // Act - Simulate reminder callback
-        await actor.ReceiveReminderAsync($"lock-{lockId}", Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.Zero);
+        await ExpireLockViaSweepAsync(mockStateManager, actor, lockId);
 
         // Assert - Lock state should be removed and lock count should be 0
         var lockState = await mockStateManager.Object.TryGetStateAsync<LockState>($"{lockId}-lock");
@@ -1821,7 +1875,7 @@ public class QueueActorTests
     }
 
     [Fact]
-    public async Task ReceiveReminderAsync_WithNonLockReminder_DoesNothing()
+    public async Task Sweep_LeavesAnUnexpiredLockAlone()
     {
         // Arrange
         var mockStateManager = CreateMockStateManager();
@@ -1843,8 +1897,8 @@ public class QueueActorTests
         var metadata = await mockStateManager.Object.GetStateAsync<ActorMetadata>("metadata");
         await mockStateManager.Object.SetStateAsync("metadata", metadata with { LockCount = 1 });
 
-        // Act - Simulate reminder callback with non-lock reminder name
-        await actor.ReceiveReminderAsync("some-other-reminder", new byte[0], TimeSpan.Zero, TimeSpan.Zero);
+        // Act - sweep runs, but this lock has 30s left on it
+        await actor.Dequeue(new Interfaces.DequeueRequest { Count = 0 });
 
         // Assert - Lock state and lock count should still exist
         var lockState = await mockStateManager.Object.TryGetStateAsync<LockState>($"{lockId}-lock");
@@ -1855,7 +1909,7 @@ public class QueueActorTests
     }
 
     [Fact]
-    public async Task DequeueLocked_RegistersReminder_WithCorrectTtl()
+    public async Task DequeueLocked_SetsLockExpiry_FromTtl()
     {
         // Arrange
         var mockStateManager = CreateMockStateManager();
@@ -1883,7 +1937,7 @@ public class QueueActorTests
     }
 
     [Fact]
-    public async Task DequeueLocked_LockExpiration_ReminderWillAutoCleanup()
+    public async Task DequeueLocked_LockExpiration_SweepCleansUp()
     {
         // This test documents the expected behavior with reminders enabled.
         // When a lock expires, the reminder callback will automatically clean up lock state.
@@ -1905,7 +1959,7 @@ public class QueueActorTests
 
         // Simulate reminder firing after TTL
         await Task.Delay(1100); // Wait for expiration
-        await actor.ReceiveReminderAsync($"lock-{dequeueResult.LockId}", Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.Zero);
+        await ExpireLockViaSweepAsync(mockStateManager, actor, dequeueResult.LockId);
 
         // Assert - Lock state should be cleaned up
         var lockState = await mockStateManager.Object.TryGetStateAsync<LockState>($"{dequeueResult.LockId}-lock");
@@ -1914,7 +1968,7 @@ public class QueueActorTests
     }
 
     [Fact]
-    public async Task ReceiveReminderAsync_RequeuesExpiredLock_AtOriginalPriority()
+    public async Task Sweep_RequeuesExpiredLock_AtOriginalPriority()
     {
         // Arrange
         var mockStateManager = CreateMockStateManager();
@@ -1936,7 +1990,7 @@ public class QueueActorTests
         Assert.Empty(dequeueEmpty.Items); // Queue should be empty
 
         // Act - Simulate reminder firing (lock expires and re-queues)
-        await actor.ReceiveReminderAsync($"lock-{dequeueResult.LockId}", Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.Zero);
+        await ExpireLockViaSweepAsync(mockStateManager, actor, dequeueResult.LockId);
 
         // Assert - Item should be re-queued at original priority 2
         var dequeueResult2 = await actor.Dequeue(new Interfaces.DequeueRequest());
@@ -2017,7 +2071,7 @@ public class QueueActorTests
     }
 
     [Fact]
-    public async Task ExtendLock_UpdatesReminder_WithNewTtl()
+    public async Task ExtendLock_UpdatesExpiry_WithNewTtl()
     {
         // Arrange
         var mockStateManager = CreateMockStateManager();
@@ -2055,7 +2109,7 @@ public class QueueActorTests
     }
 
     [Fact]
-    public async Task ExtendLock_PreviousReminderReplaced_NewReminderScheduled()
+    public async Task ExtendLock_ReplacesPreviousExpiry()
     {
         // This test documents the expected behavior:
         // ExtendLock should unregister the old reminder and register a new one
@@ -2082,7 +2136,7 @@ public class QueueActorTests
 
         // Simulate old reminder firing (should do nothing since lock state is updated)
         await Task.Delay(5100);
-        await actor.ReceiveReminderAsync($"lock-{dequeueResult.LockId}", Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.Zero);
+        await ExpireLockViaSweepAsync(mockStateManager, actor, dequeueResult.LockId);
 
         // Assert - Lock should still exist because reminder was replaced
         // (In real scenario, old reminder would be unregistered and wouldn't fire)
@@ -2231,7 +2285,7 @@ public class QueueActorTests
     }
 
     [Fact]
-    public async Task ReceiveReminderAsync_RemovesFromRegistry()
+    public async Task Sweep_RemovesExpiredLockFromRegistry()
     {
         // Arrange - create lock
         var mockStateManager = CreateMockStateManager();
@@ -2251,7 +2305,7 @@ public class QueueActorTests
         string lockId = dequeueResult.LockId!;
 
         // Act - trigger reminder (simulating lock expiry)
-        await actor.ReceiveReminderAsync($"lock-{lockId}", Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.FromMilliseconds(-1));
+        await ExpireLockViaSweepAsync(mockStateManager, actor, lockId);
 
         // Assert - lock count updated to 0
         var metadata = await mockStateManager.Object.GetStateAsync<ActorMetadata>("metadata");
@@ -2700,7 +2754,7 @@ public class QueueActorTests
     }
 
     [Fact]
-    public async Task ReceiveReminderAsync_WhenLockAlreadyAcknowledged_DoesNotDoubleDecrementLockCount()
+    public async Task Sweep_WhenLockAlreadyAcknowledged_DoesNotDoubleDecrementLockCount()
     {
         // Arrange
         var mockStateManager = CreateMockStateManager();
@@ -2733,9 +2787,9 @@ public class QueueActorTests
         var lockState = await mockStateManager.Object.TryGetStateAsync<LockState>($"{lockId}-lock");
         Assert.False(lockState.HasValue);
 
-        // Act - Simulate reminder firing after lock already acknowledged
-        // (This happens when UnregisterReminderAsync fails in AcknowledgeAsync)
-        await actor.ReceiveReminderAsync($"lock-{lockId}", Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.Zero);
+        // Act - sweep after the lock was already acknowledged. A stale index entry can outlive its
+        // lock, so the sweep must treat a missing lock as nothing to do.
+        await ExpireLockViaSweepAsync(mockStateManager, actor, lockId);
 
         // Assert - Lock count should still be 0 (not -1)
         metadata = await mockStateManager.Object.GetStateAsync<ActorMetadata>("metadata");

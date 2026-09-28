@@ -176,6 +176,15 @@ var idempotencyConfig = new IdempotencyConfig
 };
 builder.Services.AddSingleton(idempotencyConfig);
 
+// Item-lock expiry is swept lazily (no reminder/timer), so these bound per-operation work and
+// poison-message escalation rather than any background tick.
+var lockConfig = new LockConfig
+{
+    MaxDeliveryCount = builder.Configuration.GetValue("DAPRMQ_MAX_DELIVERY_COUNT", 10),
+    SweepBatchSize = builder.Configuration.GetValue("DAPRMQ_LOCK_SWEEP_BATCH_SIZE", 200)
+};
+builder.Services.AddSingleton(lockConfig);
+
 // Add Swagger/OpenAPI
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
@@ -213,19 +222,15 @@ if (registerActors)
         // Session actors self-register with their SessionCoordinatorActor on every activation,
         // which can call back into itself mid-turn (SessionCoordinatorActor -> QueueActor ->
         // SessionCoordinatorActor) - an A -> B -> A chain that non-reentrant actors deadlock on.
-        // Actor reentrancy is the documented fix. Previously, enabling it also broke TopicActor's
-        // reminder-driven publish relay (see docs/DAPR_REENTRANCY_REMINDER_ISSUE.md) due to a
-        // Dapr.Actors client-side state manager caching bug, not a daprd/runtime bug: the
-        // "default" state tracker used by activation/reminder/timer callbacks wasn't invalidated
-        // after a reentrancy-scoped method call wrote the same state key, so the reminder's
-        // read-modify-write silently saw stale data and no-op'd. Fixed via patched
-        // Dapr.Actors/Dapr.Actors.AspNetCore (nuget-local/, see NuGet.config), built from
-        // JoshVanL/dotnet-sdk PR #1908 (commit fb3a589) with an alternative change on top:
-        // 1.18.4-refreshfix.1 refreshes the default tracker's entry in place with the
-        // value SaveStateAsync just confirmed persisted, instead of evicting it and
-        // forcing the next read to round-trip the state store (see
-        // docs/REENTRANCY_FIX_ROUND_TRIP_IMPACT.md). 1.18.4-reentrancyfix.1 (evict-and-
-        // reload, matching #1908 as-is) is also available in nuget-local/ for comparison.
+        // Actor reentrancy is the documented fix.
+        //
+        // Historical note: enabling it once broke TopicActor's reminder-driven publish relay via a
+        // Dapr.Actors client-side state-manager caching bug (the "default" tracker used by
+        // activation/reminder/timer callbacks wasn't invalidated after a reentrancy-scoped call
+        // wrote the same key, so a read-modify-write silently saw stale data). That required a
+        // locally-built SDK for a while; it is fixed upstream as of the pinned Dapr version, so no
+        // local package source is needed. Kept only as context for
+        // docs/DAPR_REENTRANCY_REMINDER_ISSUE.md and docs/REENTRANCY_FIX_ROUND_TRIP_IMPACT.md.
         options.ReentrancyConfig = new Dapr.Actors.ActorReentrancyConfig { Enabled = true };
         options.JsonSerializerOptions = new JsonSerializerOptions
         {

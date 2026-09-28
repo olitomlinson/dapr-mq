@@ -474,7 +474,13 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
             try
             {
                 string sessionActorId = $"{Id.GetId()}{SessionActorIdMarker}{sessionId}";
-                isEmpty = await _queueActorStateReader.IsSessionEmptyAsync(new ActorId(sessionActorId));
+                var sessionState = await _queueActorStateReader.ReadSessionStateAsync(new ActorId(sessionActorId));
+
+                // Counts locked items as well as queued ones. A session abandoned mid-consumption
+                // holds its items inside locks, and evicting it would leave nothing able to claim the
+                // session and get them back. The entry is retained until a consumer reclaims it,
+                // which is what returns those items - the sweep deliberately never activates it here.
+                isEmpty = sessionState.IsEmpty;
             }
             catch (Exception ex)
             {

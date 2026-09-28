@@ -42,6 +42,17 @@ public class QueueActorRaceConditionTests
                 return new ConditionalValue<Queue<QueueSegmentItem>>(false, null);
             });
 
+        // Lock expiry index entries ("locks_exp_{bucket}" / "locks_session").
+        mock.Setup(m => m.TryGetStateAsync<List<string>>(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string key, CancellationToken ct) =>
+            {
+                if (stateData.ContainsKey(key) && stateData[key] is List<string> list)
+                {
+                    return new ConditionalValue<List<string>>(true, list);
+                }
+                return new ConditionalValue<List<string>>(false, null);
+            });
+
         mock.Setup(m => m.GetStateAsync<ActorMetadata>(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((string key, CancellationToken ct) =>
             {
@@ -108,9 +119,10 @@ public class QueueActorRaceConditionTests
         });
         var blobReapConfig = new BlobReapConfig { BackstopSeconds = 86400, PostDownloadSeconds = 86400 };
         var idempotencyConfig = new IdempotencyConfig { TtlSeconds = 86400 };
+        var lockConfig = new LockConfig { MaxDeliveryCount = 10, SweepBatchSize = 200 };
 
         var actorHost = ActorHost.CreateForTest<QueueActor>(testOptions);
-        var actor = new QueueActor(actorHost, mockInvoker.Object, mockBlobReaperActorInvoker.Object, mockSessionCoordinatorActorInvoker.Object, tokenIssuer, blobReapConfig, idempotencyConfig);
+        var actor = new QueueActor(actorHost, mockInvoker.Object, mockBlobReaperActorInvoker.Object, mockSessionCoordinatorActorInvoker.Object, tokenIssuer, blobReapConfig, idempotencyConfig, lockConfig);
 
         var stateManagerProperty = typeof(Actor).GetProperty("StateManager");
         stateManagerProperty?.SetValue(actor, mockStateManager.Object);
@@ -126,35 +138,61 @@ public class QueueActorRaceConditionTests
     }
 
     [Fact]
-    public async Task ReceiveReminderAsync_CallsSaveStateTwice_CreatesRaceCondition()
+    public async Task Sweep_CommitsOnceRegardlessOfHowManyLocksExpire()
     {
-        // Arrange
+        // The per-lock reminders this replaced each woke up and committed on their own, so N expiries
+        // meant N separate write batches. The sweep resolves the whole backlog in one commit - which
+        // is also what keeps the requeue and the LockCount decrement atomic with each other.
         var mockStateManager = CreateMockStateManager();
         var actor = await CreateActorAsync(mockStateManager);
 
-        // Enqueue an item and lock it
-        string itemJson = "{\"id\":1,\"data\":\"test\"}";
         await actor.Enqueue(new EnqueueRequest
         {
-            Items = [new EnqueueItem { ItemJson = itemJson, Priority = 1 }]
+            Items = Enumerable.Range(0, 3)
+                .Select(i => new EnqueueItem { ItemJson = $"{{\"id\":{i}}}", Priority = 1 })
+                .ToList()
         });
 
-        var dequeueResult = await actor.DequeueLocked(new DequeueLockedRequest { TtlSeconds = 1 });
-        string lockId = dequeueResult.Items[0].LockId!;
+        var dequeueResult = await actor.DequeueLocked(new DequeueLockedRequest
+        {
+            Count = 3,
+            TtlSeconds = 30,
+            AllowCompetingConsumers = true
+        });
+        Assert.Equal(3, dequeueResult.Items.Count);
 
-        // Reset SaveStateAsync invocation count
+        // One batch shares one expiry, so all three sit in a single bucket - back-date the whole bucket.
+        const int bucketWidth = 5;
+        double originalExpiry = dequeueResult.Items[0].LockExpiresAt;
+        double expiredAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 1;
+        long oldBucket = (long)Math.Floor(originalExpiry / bucketWidth) * bucketWidth;
+        long newBucket = (long)Math.Floor(expiredAt / bucketWidth) * bucketWidth;
+
+        foreach (var item in dequeueResult.Items)
+        {
+            var lockState = await mockStateManager.Object.TryGetStateAsync<LockState>($"{item.LockId}-lock");
+            await mockStateManager.Object.SetStateAsync($"{item.LockId}-lock", lockState.Value with { ExpiresAt = expiredAt });
+        }
+
+        await mockStateManager.Object.RemoveStateAsync($"locks_exp_{oldBucket}");
+        await mockStateManager.Object.SetStateAsync(
+            $"locks_exp_{newBucket}", dequeueResult.Items.Select(i => i.LockId!).ToList());
+        var metadata = await mockStateManager.Object.GetStateAsync<ActorMetadata>("metadata");
+        await mockStateManager.Object.SetStateAsync("metadata", metadata with { LockExpiryBuckets = [newBucket] });
+
         mockStateManager.Invocations.Clear();
 
-        // Act - Simulate reminder firing (should only call SaveStateAsync ONCE)
-        await actor.ReceiveReminderAsync($"lock-{lockId}", Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.Zero);
+        // Count = 0 so the only commits are the sweep's batch plus Dequeue's own trailing commit.
+        await actor.Dequeue(new DequeueRequest { Count = 0 });
 
-        // Assert - Should only have ONE SaveStateAsync call for atomicity
         var saveStateCalls = mockStateManager.Invocations
-            .Where(i => i.Method.Name == "SaveStateAsync")
-            .Count();
+            .Count(i => i.Method.Name == "SaveStateAsync");
 
-        // EXPECTED: 1 (atomic batch)
-        // ACTUAL: 2 (Enqueue calls SaveStateAsync, then ReceiveReminderAsync calls it again)
-        Assert.Equal(1, saveStateCalls); // This will FAIL, demonstrating the race condition
+        Assert.Equal(2, saveStateCalls);
+
+        // And all three really were resolved in that one batch.
+        metadata = await mockStateManager.Object.GetStateAsync<ActorMetadata>("metadata");
+        Assert.Equal(0, metadata.LockCount);
+        Assert.Equal(3, metadata.Queues[1].Count);
     }
 }
