@@ -17,6 +17,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SessionQueueConsumerTest {
 
+    private void awaitFrames(FakeRequestObserver requestObserver, int count) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (requestObserver.sent.size() < count && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertEquals(count, requestObserver.sent.size());
+    }
+
     private SessionStream streamDeliveringOneItem(FakeRequestObserver requestObserver, String lockId) {
         AtomicReference<StreamObserver<ConsumeSessionResponse>> captured = new AtomicReference<>();
         SessionStream.StreamFactory factory = observer -> {
@@ -82,6 +90,9 @@ class SessionQueueConsumerTest {
         consumer.start();
         try {
             assertTrue(handled.await(2, TimeUnit.SECONDS));
+            // Wait for the dead-letter frame itself: stop() sets `stopping`, and handleDelivery
+            // rethrows instead of dead-lettering once that is set.
+            awaitFrames(requestObserver, 2);
         } finally {
             consumer.stop();
         }

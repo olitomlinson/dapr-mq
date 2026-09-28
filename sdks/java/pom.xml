@@ -22,6 +22,7 @@
     <jackson.version>2.18.1</jackson.version>
     <junit.version>5.11.3</junit.version>
     <mockito.version>5.14.2</mockito.version>
+    <testcontainers.version>1.21.4</testcontainers.version>
 
     <!--
       Single source of truth for the wire contract stays
@@ -39,6 +40,13 @@
         <groupId>io.grpc</groupId>
         <artifactId>grpc-bom</artifactId>
         <version>${grpc.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.testcontainers</groupId>
+        <artifactId>testcontainers-bom</artifactId>
+        <version>${testcontainers.version}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
@@ -108,6 +116,19 @@
       <artifactId>grpc-inprocess</artifactId>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <!-- Gives Testcontainers somewhere to log startup failures; without it SLF4J is a no-op. -->
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <version>2.0.16</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <!-- Integration tests only (*IT) - they start their own throwaway stack; see sdks/testing/INTEGRATION_TESTS.md. -->
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
@@ -141,9 +162,25 @@
       </plugin>
 
       <plugin>
+        <!-- Unit tests (*Test). Integration tests are named *IT, which surefire ignores. -->
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.5.2</version>
+      </plugin>
+
+      <plugin>
+        <!-- Integration tests (*IT), run by `mvn verify` / `mvn failsafe:integration-test`. -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <version>3.5.2</version>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>
