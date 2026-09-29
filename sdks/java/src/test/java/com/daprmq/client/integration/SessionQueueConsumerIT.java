@@ -44,6 +44,15 @@ class SessionQueueConsumerIT {
 
     @Test
     void K02_MultiSession_PreservesPerSessionOrder_AndIsolatesThroughput() throws Exception {
+        try {
+            k02();
+        } catch (Throwable t) {
+            server.dumpLogs(); // the client exception rarely says why; daprd's log does
+            throw t;
+        }
+    }
+
+    private void k02() throws Exception {
         String queueId = "java-it-" + UUID.randomUUID().toString().replace("-", "");
 
         try (DaprMQClient client = DaprMQClient.create(server.httpUrl(), server.grpcAddress())) {

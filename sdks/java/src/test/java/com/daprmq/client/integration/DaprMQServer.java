@@ -18,7 +18,9 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 
 /**
@@ -37,6 +39,9 @@ public final class DaprMQServer implements AutoCloseable {
     private static final String POSTGRES_PASSWORD = "test_password";
     private static final Duration STARTUP_TIMEOUT = Duration.ofSeconds(90);
 
+    /** Buffered stdout/stderr of the containers worth reading when a test fails, keyed by alias. */
+    private static final Map<String, StringBuffer> LOGS = new ConcurrentHashMap<>();
+
     private final List<GenericContainer<?>> containers;
     private final Network network;
     private final String httpUrl;
@@ -47,6 +52,17 @@ public final class DaprMQServer implements AutoCloseable {
         this.network = network;
         this.httpUrl = httpUrl;
         this.grpcAddress = grpcAddress;
+    }
+
+    /**
+     * Prints the API server's and sidecar's output. A failing scenario usually says far more from
+     * daprd's side (actor placement, lock timeouts) than from the client exception.
+     */
+    public void dumpLogs() {
+        LOGS.forEach((alias, buffer) -> {
+            System.out.println("===== " + alias + " =====");
+            System.out.println(buffer);
+        });
     }
 
     public String httpUrl() {
@@ -90,7 +106,7 @@ public final class DaprMQServer implements AutoCloseable {
                     .withCommand("./scheduler", "--port", "50006", "--log-level", "info", "--etcd-data-dir", "/data/dapr-scheduler"));
             sleep(2000); // no health probe for placement/scheduler; same grace period as the .NET fixture
 
-            GenericContainer<?> api = container(API_IMAGE, network, "api-server")
+            GenericContainer<?> api = capturingLogs(container(API_IMAGE, network, "api-server"), "api-server")
                     .withExposedPorts(5000, 5001)
                     .withEnv("ASPNETCORE_URLS", "http://+:5000")
                     .withEnv("REGISTER_ACTORS", "true")
@@ -101,7 +117,7 @@ public final class DaprMQServer implements AutoCloseable {
                     .withEnv("HTTP_SINK_ACTOR_TYPE_NAME", "HttpSinkActor");
             start(containers, api);
 
-            start(containers, container("daprio/daprd:" + DAPR_VERSION, network, "dapr-sidecar")
+            start(containers, capturingLogs(container("daprio/daprd:" + DAPR_VERSION, network, "dapr-sidecar"), "dapr-sidecar")
                     .withFileSystemBind(componentsDir, "/tmp/dapr-components", BindMode.READ_ONLY)
                     .withFileSystemBind(blobstoreDir, "/tmp/blobstore", BindMode.READ_WRITE)
                     .withCommand(
@@ -147,6 +163,11 @@ public final class DaprMQServer implements AutoCloseable {
                 .withNetworkAliases(alias)
                 .withStartupTimeout(STARTUP_TIMEOUT)
                 .withLogConsumer((OutputFrame frame) -> { /* container logs stay out of the test output */ });
+    }
+
+    private static GenericContainer<?> capturingLogs(GenericContainer<?> container, String alias) {
+        StringBuffer buffer = LOGS.computeIfAbsent(alias, k -> new StringBuffer());
+        return container.withLogConsumer((OutputFrame frame) -> buffer.append(frame.getUtf8String()));
     }
 
     private static void start(List<GenericContainer<?>> containers, GenericContainer<?> container) {
