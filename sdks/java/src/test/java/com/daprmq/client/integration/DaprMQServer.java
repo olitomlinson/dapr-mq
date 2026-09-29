@@ -105,8 +105,9 @@ public final class DaprMQServer implements AutoCloseable {
                     .withFileSystemBind(schedulerDir, "/data/dapr-scheduler", BindMode.READ_WRITE)
                     .withCommand("./scheduler", "--port", "50006", "--log-level", "info", "--etcd-data-dir", "/data/dapr-scheduler"));
             sleep(2000); // no health probe for placement/scheduler; same grace period as the .NET fixture
+            requireRunning(containers, "dapr-placement", "dapr-scheduler");
 
-            GenericContainer<?> api = capturingLogs(container(API_IMAGE, network, "api-server"), "api-server")
+            GenericContainer<?> api = container(API_IMAGE, network, "api-server")
                     .withExposedPorts(5000, 5001)
                     .withEnv("ASPNETCORE_URLS", "http://+:5000")
                     .withEnv("REGISTER_ACTORS", "true")
@@ -117,7 +118,7 @@ public final class DaprMQServer implements AutoCloseable {
                     .withEnv("HTTP_SINK_ACTOR_TYPE_NAME", "HttpSinkActor");
             start(containers, api);
 
-            start(containers, capturingLogs(container("daprio/daprd:" + DAPR_VERSION, network, "dapr-sidecar"), "dapr-sidecar")
+            start(containers, container("daprio/daprd:" + DAPR_VERSION, network, "dapr-sidecar")
                     .withFileSystemBind(componentsDir, "/tmp/dapr-components", BindMode.READ_ONLY)
                     .withFileSystemBind(blobstoreDir, "/tmp/blobstore", BindMode.READ_WRITE)
                     .withCommand(
@@ -158,16 +159,31 @@ public final class DaprMQServer implements AutoCloseable {
     }
 
     private static GenericContainer<?> container(String image, Network network, String alias) {
+        StringBuffer buffer = LOGS.computeIfAbsent(alias, k -> new StringBuffer());
         return new GenericContainer<>(image)
                 .withNetwork(network)
                 .withNetworkAliases(alias)
                 .withStartupTimeout(STARTUP_TIMEOUT)
-                .withLogConsumer((OutputFrame frame) -> { /* container logs stay out of the test output */ });
+                // Buffered rather than printed: only a failing test dumps them, via dumpLogs().
+                .withLogConsumer((OutputFrame frame) -> buffer.append(frame.getUtf8String()));
     }
 
-    private static GenericContainer<?> capturingLogs(GenericContainer<?> container, String alias) {
-        StringBuffer buffer = LOGS.computeIfAbsent(alias, k -> new StringBuffer());
-        return container.withLogConsumer((OutputFrame frame) -> buffer.append(frame.getUtf8String()));
+    /**
+     * Neither placement nor scheduler exposes a port or a health endpoint, so Testcontainers'
+     * start() returns as soon as the container is created - a process that dies immediately after
+     * goes unnoticed, and its network alias disappears with it. daprd then spends the rest of the
+     * run failing to resolve that alias, and the first actor call that needs it hangs until it is
+     * cancelled. Fail here instead, with the container's own output.
+     */
+    private static void requireRunning(List<GenericContainer<?>> containers, String... aliases) {
+        for (String alias : aliases) {
+            for (GenericContainer<?> container : containers) {
+                if (container.getNetworkAliases().contains(alias) && !container.isRunning()) {
+                    throw new IllegalStateException(
+                            alias + " exited during startup. Its output was:\n" + container.getLogs());
+                }
+            }
+        }
     }
 
     private static void start(List<GenericContainer<?>> containers, GenericContainer<?> container) {
@@ -215,10 +231,18 @@ public final class DaprMQServer implements AutoCloseable {
         throw new IllegalStateException("Could not locate " + relative + " above " + Paths.get("").toAbsolutePath());
     }
 
+    /**
+     * The scheduler and sidecar containers write here as a non-root user, so the directory has to
+     * be world-writable. Permissions are set after creation, not via asFileAttribute: creation-time
+     * modes are masked by the process umask (0755 under the usual 022), which is enough on macOS
+     * where bind mounts ignore it, but leaves the scheduler unable to open its etcd data dir on
+     * Linux - it then exits, taking its network alias with it.
+     */
     private static String worldWritableDir(String prefix) {
         try {
-            return Files.createTempDirectory(prefix, PosixFilePermissions.asFileAttribute(
-                    PosixFilePermissions.fromString("rwxrwxrwx"))).toString();
+            Path path = Files.createTempDirectory(prefix);
+            Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rwxrwxrwx"));
+            return path.toString();
         } catch (IOException e) {
             throw new IllegalStateException("Could not create temp dir " + prefix, e);
         }
