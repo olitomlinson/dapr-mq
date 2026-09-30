@@ -174,3 +174,28 @@ dotnet test tests/DaprMQ.IntegrationTests/DaprMQ.IntegrationTests.csproj \
   --filter "FullyQualifiedName~QueryCountComparisonTest"
 # Group the per-statement logs by state name as described in REENTRANCY_FIX_EMPIRICAL_COMPARISON.md.
 ```
+
+---
+
+## Resolution
+
+**Closed** (confirmed 2026-09-30). Everything this page tracks has landed; it stands as a record of
+the retest rather than as open work.
+
+- All three upstream fixes (#1912, #1913, #1914) were confirmed on 1.18.9 and remain in place.
+- The one regression the retest found — `NotFound` entries not synced after a reentrant save — was
+  filed as [#1915](https://github.com/dapr/dotnet-sdk/issues/1915), fixed by
+  [#1916](https://github.com/dapr/dotnet-sdk/pull/1916) and released in 1.18.10.
+- DaprMQ is on 1.18.10 ([DaprMQ.csproj:8](../../../server/src/DaprMQ/DaprMQ.csproj#L8)), the local
+  `1.18.9-notfoundfix.1` build is gone from `server/nuget-local/`, and the Dockerfile's empty-
+  property bug (the side fix above) is still fixed.
+
+Suite counts have moved on since this page was written (338 unit / 82 server integration / 38 SDK
+unit / 55 SDK integration as of 2026-09-30), so treat the numbers above as a snapshot of the retest,
+not as current totals.
+
+One thing this page called correctly that is **still open**: the "Impact on DaprMQ" section warned
+that `SessionCoordinatorActor.SweepDirectoryAsync` was exposed to stale `NotFound` reads of
+`session-lock_{id}`. The 1.18.10 fix addresses that specific mechanism, but a separate, unexplained
+session-actor state rollback remains open — see
+[../session-actor-state-rollback-on-lease-expiry.md](../session-actor-state-rollback-on-lease-expiry.md).

@@ -285,6 +285,60 @@ public class SessionCoordinatorActorTests
     }
 
     [Fact]
+    public async Task AcceptSession_AnyAvailableMode_PrefersLeastRecentlyClaimedSession()
+    {
+        var (mockStateManager, _) = CreateMockStateManager();
+        var (actor, _, _) = await CreateActorAsync(mockStateManager);
+        await SeedDirectoryAsync(actor, "order-42", "order-43");
+
+        // order-42 is claimed then released, so it has been serviced more recently than order-43,
+        // which has never been claimed at all.
+        var first = await actor.AcceptSession(new AcceptSessionRequest { SessionId = "order-42" });
+        await actor.ReleaseSession(new ReleaseSessionRequest { SessionId = "order-42", LeaseId = first.LeaseId! });
+
+        var result = await actor.AcceptSession(new AcceptSessionRequest());
+
+        Assert.True(result.Success);
+        Assert.Equal("order-43", result.SessionId);
+    }
+
+    [Fact]
+    public async Task AcceptSession_AnyAvailableMode_RotatesAcrossAllSessions()
+    {
+        var (mockStateManager, _) = CreateMockStateManager();
+        var (actor, _, _) = await CreateActorAsync(mockStateManager);
+        await SeedDirectoryAsync(actor, "order-42", "order-43", "order-44");
+
+        // A single-slot consumer claiming and releasing in a tight loop must reach every session,
+        // not keep landing on whichever one is first in directory order.
+        var claimed = new List<string>();
+        for (int i = 0; i < 3; i++)
+        {
+            var claim = await actor.AcceptSession(new AcceptSessionRequest());
+            Assert.True(claim.Success);
+            claimed.Add(claim.SessionId!);
+            await actor.ReleaseSession(new ReleaseSessionRequest { SessionId = claim.SessionId!, LeaseId = claim.LeaseId! });
+        }
+
+        Assert.Equal(new[] { "order-42", "order-43", "order-44" }, claimed.Order().ToArray());
+    }
+
+    [Fact]
+    public async Task AcceptSession_RecordsLastClaimedAtOnTheDirectoryEntry()
+    {
+        var (mockStateManager, stateData) = CreateMockStateManager();
+        var (actor, _, _) = await CreateActorAsync(mockStateManager);
+        await SeedDirectoryAsync(actor, "order-42");
+
+        double before = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var result = await actor.AcceptSession(new AcceptSessionRequest { SessionId = "order-42" });
+        Assert.True(result.Success);
+
+        var metadata = (SessionCoordinatorMetadata)stateData["metadata"];
+        Assert.True(metadata.SessionDirectory["order-42"].LastClaimedAt >= before);
+    }
+
+    [Fact]
     public async Task AcceptSession_WhenSyncFails_ReturnsSessionActorUnavailable_AndDoesNotWriteLocalState()
     {
         var (mockStateManager, _) = CreateMockStateManager();

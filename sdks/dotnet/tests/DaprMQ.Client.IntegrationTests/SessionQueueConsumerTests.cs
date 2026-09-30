@@ -387,15 +387,18 @@ public class SessionQueueConsumerTests(DaprTestFixture fixture) : IntegrationTes
     {
         var queueId = NewQueueId();
         const int sessionCount = 4;
+        const int itemsPerSession = 10;
         const int maxConcurrentSessions = 2;
+        const int totalItems = sessionCount * itemsPerSession;
         for (var i = 1; i <= sessionCount; i++)
         {
-            await EnqueueSessionAsync(queueId, $"s{i}", 10);
+            await EnqueueSessionAsync(queueId, $"s{i}", itemsPerSession);
         }
 
         var active = new ConcurrentDictionary<string, byte>();
         var peakConcurrency = 0;
         var handledCount = 0;
+        var allHandled = new TaskCompletionSource();
 
         await using var consumer = new SessionQueueConsumer(
             CreateClient(), queueId, Options(maxConcurrentSessions: maxConcurrentSessions, prefetchCount: 1),
@@ -414,28 +417,42 @@ public class SessionQueueConsumerTests(DaprTestFixture fixture) : IntegrationTes
 
                 await Task.Delay(150, ct);
                 active.TryRemove(ctx.SessionId, out _);
-                Interlocked.Increment(ref handledCount);
+                if (Interlocked.Increment(ref handledCount) == totalItems)
+                {
+                    allHandled.TrySetResult();
+                }
             });
 
         await consumer.StartAsync();
         try
         {
-            // A fixed observation window rather than "until everything is handled": with more
-            // sessions than slots, the later sessions are never reached at all (see the skipped
-            // K-11 for why), so waiting for a full drain would hang. The cap is what's under test
-            // here, and several seconds of steady delivery is ample to catch a breach of it.
-            await Task.Delay(TimeSpan.FromSeconds(8));
+            // Waits for a full drain of every session, not a fixed observation window. With more
+            // sessions than slots this used to hang - the later sessions were never reached at all
+            // - so the cap could only be observed over a few seconds of steady delivery. Fixed by
+            // least-recently-claimed claim ordering (see K-11), so the consumer now works through
+            // all four sessions, and the cap is asserted over the whole run rather than a sample of
+            // it.
+            await allHandled.Task.WaitAsync(TimeSpan.FromSeconds(60));
+            // Extra dwell time: a breach of the cap after the last item would still be caught.
+            await Task.Delay(SettleMilliseconds);
         }
         finally
         {
             await consumer.StopAsync();
         }
 
-        Assert.True(Volatile.Read(ref handledCount) > 0, "no items were handled at all");
+        Assert.Equal(totalItems, Volatile.Read(ref handledCount));
         Assert.True(peakConcurrency <= maxConcurrentSessions,
             $"observed {peakConcurrency} sessions in flight at once, cap is {maxConcurrentSessions}");
         // Guards against the cap being trivially satisfied by never running two sessions at all.
         Assert.Equal(maxConcurrentSessions, peakConcurrency);
+
+        // Every session was reached and emptied - the cap bounds concurrency, it does not strand
+        // the sessions beyond it.
+        for (var i = 1; i <= sessionCount; i++)
+        {
+            Assert.Empty(await RemainingOnSessionAsync(queueId, $"s{i}"));
+        }
     }
 
     [Fact]
@@ -557,23 +574,13 @@ public class SessionQueueConsumerTests(DaprTestFixture fixture) : IntegrationTes
     }
 
     // K-11 asserts that SessionIdleTimeoutSeconds lets a consumer move on to another session.
-    // It does end the drained session's stream on schedule (C-06 proves that much), but the slot
-    // then re-claims the *same* session rather than moving on, so a consumer never reaches any
-    // session beyond its first MaxConcurrentSessions.
-    //
-    // Cause: an untargeted AcceptSession returns the first entry in the coordinator's session
-    // directory without a live lease, with no regard for whether that session actually has items
-    // (SessionCoordinatorActor.AcceptSession's "any-available" branch). A drained session stays in
-    // the directory - eviction needs two confirmed-empty sweeps at least SecondPassDelaySeconds
-    // (300s) apart - so it stays first in line and is handed straight back to the next claimant.
-    //
-    // Measured: a MaxConcurrentSessions = 1 consumer against three sessions of two items each
-    // handled only the first session's two items in 30 seconds and never saw the other two
-    // sessions at all.
-    //
-    // Left skipped rather than rewritten to assert the current behaviour, because the current
-    // behaviour is the bug. Unskip once claim selection prefers a non-empty session (or rotates).
-    [Fact(Skip = "Blocked on server-side session starvation - see the comment above this test.")]
+    // Previously skipped: a drained session was re-claimed by the same slot forever, so a consumer
+    // never reached any session beyond its first MaxConcurrentSessions. An untargeted AcceptSession
+    // returned the first unleased directory entry in insertion order, and a drained session stays
+    // in the directory long enough (eviction needs two confirmed-empty sweeps 300s apart) to keep
+    // winning. Unblocked by SweepCandidate.LastClaimedAt, which orders the any-available branch
+    // least-recently-claimed first, so a just-serviced session goes to the back of the line.
+    [Fact]
     public async Task K11_SessionIdleTimeout_LetsTheConsumerMoveOnToAnotherSession()
     {
         var queueId = NewQueueId();

@@ -226,6 +226,23 @@ public class SessionQueueActorTests
     }
 
     [Fact]
+    public async Task Activation_WithSessionDeadLetterActorId_DoesNotAttemptRegistration()
+    {
+        // A session queue's DLQ actor id is "{queueId}-session-{sessionId}-deadletter", which
+        // still contains the session marker - so naive parsing registers a phantom session
+        // "order-42-deadletter" in the coordinator directory, and an any-available claim can then
+        // hand a consumer its own dead-lettered items back as if they were a live session.
+        var (mockStateManager, _) = CreateMockStateManager();
+        var (actor, mockSessionCoordinatorInvoker) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42-deadletter");
+
+        mockSessionCoordinatorInvoker.Verify(i => i.InvokeMethodAsync<RegisterSessionRequest, RegisterSessionResponse>(
+            It.IsAny<ActorId>(),
+            It.IsAny<string>(),
+            It.IsAny<RegisterSessionRequest>(),
+            It.IsAny<CancellationToken>()), Times.Never());
+    }
+
+    [Fact]
     public async Task Activation_WhenReactivatedAfterAlreadyRegistering_RegistersAgain()
     {
         // Simulates a session actor deactivating (idle timeout) and later reactivating - e.g.

@@ -94,7 +94,7 @@ Legend: ✅ implemented and passing · ⬜ not yet
 | K-08 | Empty queue backs off (min→max) and picks up sessions enqueued later | ✅ | ⬜ | ⬜ | ⬜ |
 | K-09 | `Stop` drains in-flight handlers within `DrainTimeout` and releases sessions | ✅ | ⬜ | ⬜ | ⬜ |
 | K-10 | External cancellation token stops the consumer | ✅ | ⬜ | ⬜ | ⬜ |
-| K-11 | `SessionIdleTimeoutSeconds` lets the consumer move on to another session | ⬜ | ⬜ | ⬜ | ⬜ |
+| K-11 | `SessionIdleTimeoutSeconds` lets the consumer move on to another session | ✅ | ⬜ | ⬜ | ⬜ |
 | **Client lifecycle** | | | | | |
 | X-01 | Construct from options (HTTP + gRPC addresses) and perform a round trip | ✅ | ⬜ | ⬜ | ⬜ |
 | X-02 | Dispose/close is idempotent and cancels in-flight streams | ✅ | ⬜ | ⬜ | ⬜ |
@@ -125,4 +125,7 @@ Found while implementing the .NET column; the row text above now matches what th
 ### Blocked rows
 
 - **C-09** (lease lost mid-stream, [issue](../../docs/issues/consume-session-lease-loss-has-no-test-seam.md)) - the server emits `SessionLost` only when its own background `RenewSessionLease` fails, and it renews every `leaseSeconds/2` against a lease whose id `ConsumeSession` never exposes to the client. With no supported way to invalidate that lease from an SDK, the only lever is racing the renewal interval against expiry at `leaseSeconds = 1`, which lands either side of the boundary on sub-second timing. Needs a server-side seam (e.g. a test-only lease revocation hook) before any SDK can cover it.
-- **K-11** (idle timeout lets the consumer move on, [issue](../../docs/issues/session-starvation-beyond-max-concurrent-sessions.md)) - blocked on **session starvation**. The idle timeout does end the drained session's stream (C-06 proves that), but the slot then re-claims the *same* session instead of moving on, so a consumer never reaches any session beyond its first `MaxConcurrentSessions`. An untargeted `AcceptSession` returns the first directory entry without a live lease, with no regard for whether that session has items, and a drained session is not evicted for at least `SecondPassDelaySeconds` (300s) - so it stays first in line and is handed straight back. Measured: a `MaxConcurrentSessions = 1` consumer against three sessions of two items each handled only the first session's two items in 30 seconds and never saw the other two. Unskip once claim selection prefers a non-empty session (or rotates).
+
+### Previously blocked, now unblocked
+
+- **K-11** (idle timeout lets the consumer move on, [issue](../../docs/issues/resolved/session-starvation-beyond-max-concurrent-sessions.md)) - was blocked on **session starvation**: the idle timeout ended the drained session's stream, but the slot re-claimed the *same* session instead of moving on, so a consumer never reached any session beyond its first `MaxConcurrentSessions`. Fixed 2026-09-30 - an untargeted `AcceptSession` now picks the least-recently-claimed directory entry (`SweepCandidate.LastClaimedAt`) rather than the first one in insertion order, so a just-serviced session goes to the back of the line. Unskipped and passing.
