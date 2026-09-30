@@ -54,6 +54,8 @@
 **Priority:** 0=fast lane, 1+=normal. Lower first.
 
 **Locks:** In-place with `LockId`. Enables DLQ routing (`{id}-deadletter`), lock extension, FIFO preservation.
+An expired lock's item returns to the position it was taken from, not the tail: every item carries a monotonic
+`Sequence` stamped at enqueue, and the expiry sweep merges reclaimed items back into the head segment by it.
 
 **Error codes:** `QueueEmpty`, `Locked`, `LockNotFound`, `LockExpired`, `ValidationError`, `ActorNotFound` ([Models.cs](server/src/DaprMQ.Interfaces/Models.cs))
 

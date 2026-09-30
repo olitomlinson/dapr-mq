@@ -39,6 +39,15 @@ public record ActorMetadata
     /// per-item expiry, so they are indexed in the single "locks_session" entry instead.
     /// </summary>
     public List<long> LockExpiryBuckets { get; init; } = new();
+
+    /// <summary>
+    /// Next value to stamp on an enqueued item, incremented once per item. Actor-wide rather than
+    /// per-priority: the count-desync repair in DequeueWithPriorityAsync drops a priority's
+    /// QueueMetadata outright, which would reset a counter living there and reissue numbers already
+    /// in use. Sparse within any one priority as a result, which is fine - the restore only ever
+    /// compares these, never indexes by them.
+    /// </summary>
+    public long NextSequence { get; init; } = 0;
 }
 
 /// <summary>
@@ -71,6 +80,15 @@ public record QueueSegmentItem
     public required string ItemJson { get; init; }
 
     /// <summary>
+    /// Monotonic position stamp, taken from ActorMetadata.NextSequence at enqueue and never
+    /// reassigned - a restored item keeps the number it was given. Within a priority, queue order is
+    /// Sequence order, which is what lets an expired lock's item be merged back into the exact
+    /// position it left from regardless of how the expiries were batched. Required rather than
+    /// defaulted: an unstamped item would silently sort equal to every other unstamped item.
+    /// </summary>
+    public required long Sequence { get; init; }
+
+    /// <summary>
     /// How many times this item has been handed out and then reclaimed by a lock or session-lease
     /// expiry. Never required, so a first delivery is simply the default 0. Once it exceeds
     /// LockConfig.MaxDeliveryCount the item is dead-lettered instead of requeued, which is what stops
@@ -93,6 +111,13 @@ public record LockState
     public required int HeadSegment { get; init; }  // Kept for debugging/backward compat
     public required string ItemJson { get; init; }  // Stores dequeued item
     public required bool CompetingConsumerMode { get; init; }  // Whether competing consumers are enabled for this lock
+
+    /// <summary>
+    /// The item's QueueSegmentItem.Sequence, carried across the dequeue -> lock -> restore round trip
+    /// so expiry can put it back where it came from. Not required: a lock planted directly in state
+    /// (tests, repair tooling) restores ahead of everything, which is the safe direction.
+    /// </summary>
+    public long Sequence { get; init; }
 
     /// <summary>
     /// Carried through from the queued item so the count survives the dequeue -> lock -> requeue round
@@ -533,6 +558,12 @@ public class QueueActor : Actor, IQueueActor
 
         int budget = Math.Max(1, _lockConfig.SweepBatchSize);
         int expired = 0;
+
+        // Collected across every due bucket and restored in one merge at the end, rather than put
+        // back one at a time: RestoreInOrderInternal rewrites the head segment, so doing it per item
+        // would rewrite it once per lock for no gain.
+        var restored = new List<(QueueSegmentItem Item, int Priority)>();
+        var deadLettered = new List<string>();
         var emptiedBuckets = new List<long>();
 
         foreach (var bucket in dueBuckets)
@@ -580,7 +611,18 @@ public class QueueActor : Actor, IQueueActor
 
                 budget--;
                 expired++;
-                await ExpireLockAsync(lockId, lockState.Value);
+
+                int deliveryCount = lockState.Value.DeliveryCount + 1;
+                if (deliveryCount > _lockConfig.MaxDeliveryCount)
+                {
+                    // Left in state for now - dead-lettering reaches another actor, so it runs after
+                    // this sweep's local commit.
+                    deadLettered.Add(lockId);
+                    continue;
+                }
+
+                restored.Add((ReclaimedItem(lockState.Value, deliveryCount), lockState.Value.Priority));
+                await StateManager.RemoveStateAsync($"{lockId}-lock");
             }
 
             if (survivors.Count == 0)
@@ -599,7 +641,16 @@ public class QueueActor : Actor, IQueueActor
             return; // nothing changed - don't write
         }
 
-        // Re-read: ExpireLockAsync staged queue/metadata updates of its own.
+        await RestoreInOrderInternal(restored);
+
+        if (restored.Count > 0)
+        {
+            Logger.LogInformation(
+                "Sweep expired {Expired} lock(s); restored {Restored} item(s) to their original positions",
+                expired, restored.Count);
+        }
+
+        // Re-read: the restore staged queue/metadata updates of its own.
         metadata = await GetMetadataAsync();
         var buckets = metadata.LockExpiryBuckets.Where(b => !emptiedBuckets.Contains(b)).ToList();
         await SetMetadataAsync(metadata with
@@ -608,6 +659,17 @@ public class QueueActor : Actor, IQueueActor
             LockExpiryBuckets = buckets
         });
         await StateManager.SaveStateAsync();
+
+        // Cross-actor, so kept out of the batch above and committed per item - see
+        // DeadLetterExpiredLockAsync.
+        foreach (var lockId in deadLettered)
+        {
+            var lockState = await StateManager.TryGetStateAsync<LockState>($"{lockId}-lock");
+            if (lockState.HasValue)
+            {
+                await DeadLetterExpiredLockAsync(lockId, lockState.Value);
+            }
+        }
     }
 
     /// <summary>
@@ -645,9 +707,9 @@ public class QueueActor : Actor, IQueueActor
             return;
         }
 
-        // The index is appended in dequeue order, which is the original FIFO order, so replaying it
-        // in order is what lets the restore put the session back exactly as the consumer found it.
-        var restored = new List<(string ItemJson, int Priority, int DeliveryCount)>();
+        // Ordering comes from each item's Sequence rather than the index order, so a session that
+        // lapses more than once still hands its items back exactly as the consumer found them.
+        var restored = new List<(QueueSegmentItem Item, int Priority)>();
         var deadLettered = new List<string>();
 
         foreach (var lockId in indexState.Value)
@@ -665,11 +727,11 @@ public class QueueActor : Actor, IQueueActor
                 continue;
             }
 
-            restored.Add((lockState.Value.ItemJson, lockState.Value.Priority, deliveryCount));
+            restored.Add((ReclaimedItem(lockState.Value, deliveryCount), lockState.Value.Priority));
             await StateManager.RemoveStateAsync($"{lockId}-lock");
         }
 
-        await RequeueFrontInternal(restored);
+        await RestoreInOrderInternal(restored);
 
         await StateManager.RemoveStateAsync(SessionLockIndexKey);
 
@@ -683,7 +745,7 @@ public class QueueActor : Actor, IQueueActor
         await StateManager.SaveStateAsync();
 
         Logger.LogInformation(
-            "Session lease lapsed on {ActorId}; restored {Restored} locked item(s) to the front",
+            "Session lease lapsed on {ActorId}; restored {Restored} locked item(s) to their original positions",
             Id.GetId(), restored.Count);
 
         // Cross-actor, so kept out of the batch above and committed per item - see DeadLetterExpiredLockAsync.
@@ -698,19 +760,25 @@ public class QueueActor : Actor, IQueueActor
     }
 
     /// <summary>
-    /// Restores items to the *front* of their priority queue, preserving their relative order, by
-    /// allocating fresh segments below the live range (HeadSegment-k .. HeadSegment-1) rather than
-    /// trying to prepend into a Queue&lt;T&gt;, which only supports appending.
+    /// Returns reclaimed items to the exact position they were taken from, by merging them into the
+    /// head segment in Sequence order.
     ///
-    /// Service Bus parity: an abandoned session's messages go back to the head of the retrieval order,
-    /// so the next consumer sees the session's original FIFO sequence rather than finding the
-    /// unacked messages stranded behind everything enqueued since.
+    /// Sequence is what makes this independent of *how* the reclaim arrives. Restoring "to the front"
+    /// is only correct for a single uncapped batch: a backlog split by SweepBatchSize, or locks
+    /// lapsing across separate sweeps, hands back a later run after an earlier one is already back in
+    /// the queue, and prepending each run would reverse them. Merging by Sequence gets the same
+    /// answer whatever the arrival order.
+    ///
+    /// The head segment is always the right place to merge into, and the work is bounded by it. An
+    /// item in a segment beyond the head has never been dequeued (restores only ever write at or
+    /// below the head), so everything that *has* been dequeued - which is every item reaching this
+    /// method - carries a lower Sequence than anything past the head segment.
     ///
     /// Segment numbers are free to go negative - every consumer of them is relative arithmetic, and the
     /// offload/load ranges always sit ahead of head, so a restored segment is never offload-eligible.
     /// Staged only; the caller commits.
     /// </summary>
-    private async Task RequeueFrontInternal(List<(string ItemJson, int Priority, int DeliveryCount)> items)
+    private async Task RestoreInOrderInternal(List<(QueueSegmentItem Item, int Priority)> items)
     {
         if (items.Count == 0)
         {
@@ -722,32 +790,43 @@ public class QueueActor : Actor, IQueueActor
         foreach (var group in items.GroupBy(i => i.Priority).OrderBy(g => g.Key))
         {
             int priority = group.Key;
-            var ordered = group.ToList();
 
             // A drained priority has had its entry removed entirely, which is the usual case when a
-            // consumer had locked everything. Count back from 0 so the restore still lands below the
-            // live range instead of special-casing segment 0.
+            // consumer had locked everything. Falling back to segment 0 keeps the restore in the live
+            // range instead of special-casing an absent queue.
             metadata.Queues.TryGetValue(priority, out var queueMeta);
             int headSegment = queueMeta?.HeadSegment ?? 0;
             int tailSegment = queueMeta?.TailSegment ?? headSegment - 1;
             int count = queueMeta?.Count ?? 0;
 
-            // Chunk into segment-sized runs, earliest items in the lowest-numbered segment so a
-            // head-to-tail read returns them in their original order.
-            int chunks = (ordered.Count + MaxSegmentSize - 1) / MaxSegmentSize;
-            int firstSegment = headSegment - chunks;
+            string headKey = $"queue_{priority}_seg_{headSegment}";
+            var headState = await StateManager.TryGetStateAsync<Queue<QueueSegmentItem>>(headKey);
+            var headItems = headState.HasValue ? headState.Value.ToList() : new List<QueueSegmentItem>();
+
+            // The batch arrives in whatever order the buckets were walked, so it gets sorted; the
+            // head segment is already in Sequence order, so combining the two is a linear merge.
+            var restored = group.Select(i => i.Item).OrderBy(i => i.Sequence).ToList();
+            var merged = new List<QueueSegmentItem>(restored.Count + headItems.Count);
+            int r = 0, h = 0;
+            while (r < restored.Count || h < headItems.Count)
+            {
+                merged.Add(h >= headItems.Count || (r < restored.Count && restored[r].Sequence <= headItems[h].Sequence)
+                    ? restored[r++]
+                    : headItems[h++]);
+            }
+
+            // Lay the merged run out ending on the original head slot, so anything already sitting in
+            // later segments still follows it. Overflow spills into HeadSegment-1, -2, ...
+            int chunks = (merged.Count + MaxSegmentSize - 1) / MaxSegmentSize;
+            int firstSegment = headSegment - (chunks - 1);
 
             for (int c = 0; c < chunks; c++)
             {
-                var chunk = ordered.Skip(c * MaxSegmentSize).Take(MaxSegmentSize);
+                var chunk = merged.Skip(c * MaxSegmentSize).Take(MaxSegmentSize);
                 var segmentQueue = new Queue<QueueSegmentItem>();
                 foreach (var item in chunk)
                 {
-                    segmentQueue.Enqueue(new QueueSegmentItem
-                    {
-                        ItemJson = item.ItemJson,
-                        DeliveryCount = item.DeliveryCount
-                    });
+                    segmentQueue.Enqueue(item);
                 }
 
                 await StateManager.SetStateAsync($"queue_{priority}_seg_{firstSegment + c}", segmentQueue);
@@ -756,8 +835,8 @@ public class QueueActor : Actor, IQueueActor
             queueMeta = (queueMeta ?? new QueueMetadata()) with
             {
                 HeadSegment = firstSegment,
-                TailSegment = Math.Max(tailSegment, firstSegment + chunks - 1),
-                Count = count + ordered.Count
+                TailSegment = Math.Max(tailSegment, headSegment),
+                Count = count + restored.Count
             };
             metadata = metadata with
             {
@@ -769,34 +848,17 @@ public class QueueActor : Actor, IQueueActor
     }
 
     /// <summary>
-    /// Requeues one expired lock's item and removes the lock, staged (no save) - the sweep commits the
-    /// whole batch in one go. Plain queues requeue to the tail, matching the behaviour the per-lock
-    /// reminder had.
+    /// Rebuilds the queue entry a lock was holding, with its delivery count advanced for the lapse
+    /// that is putting it back. Sequence is carried through untouched - that is what lets the restore
+    /// find the item's original position.
     /// </summary>
-    private async Task ExpireLockAsync(string lockId, LockState lockData)
-    {
-        int deliveryCount = lockData.DeliveryCount + 1;
-
-        if (deliveryCount > _lockConfig.MaxDeliveryCount)
+    private static QueueSegmentItem ReclaimedItem(LockState lockData, int deliveryCount) =>
+        new()
         {
-            await DeadLetterExpiredLockAsync(lockId, lockData);
-            return;
-        }
-
-        bool requeued = await EnqueueInternal(lockData.ItemJson, lockData.Priority, deliveryCount);
-        if (!requeued)
-        {
-            // Keep the lock rather than dropping the item; a later sweep retries it. Unlike the old
-            // fire-once reminder, the index means this is actually reachable again.
-            Logger.LogError("Failed to requeue expired lock {LockId}; leaving it for a later sweep", lockId);
-            return;
-        }
-
-        await StateManager.RemoveStateAsync($"{lockId}-lock");
-        Logger.LogInformation(
-            "Expired lock {LockId}, requeued at priority {Priority} (delivery {DeliveryCount})",
-            lockId, lockData.Priority, deliveryCount);
-    }
+            ItemJson = lockData.ItemJson,
+            DeliveryCount = deliveryCount,
+            Sequence = lockData.Sequence
+        };
 
     /// <summary>
     /// Routes a poison item out to the dead-letter queue instead of requeueing it.
@@ -843,7 +905,7 @@ public class QueueActor : Actor, IQueueActor
     /// Internal enqueue that stages changes without committing.
     /// Returns true if enqueue succeeded, false otherwise.
     /// </summary>
-    private async Task<bool> EnqueueInternal(string itemJson, int priority, int deliveryCount = 0)
+    private async Task<bool> EnqueueInternal(string itemJson, int priority)
     {
         // Validation
         if (string.IsNullOrEmpty(itemJson))
@@ -895,9 +957,11 @@ public class QueueActor : Actor, IQueueActor
         var segmentItem = new QueueSegmentItem
         {
             ItemJson = itemJson,
-            DeliveryCount = deliveryCount
+            DeliveryCount = 0,
+            Sequence = metadata.NextSequence
         };
         segmentQueue.Enqueue(segmentItem);
+        metadata = metadata with { NextSequence = metadata.NextSequence + 1 };
 
         // Update metadata (count and pointers)
         count++;
@@ -1169,7 +1233,8 @@ public class QueueActor : Actor, IQueueActor
         // Dequeue up to Count items
         for (int i = 0; i < request.Count; i++)
         {
-            var (response, priority, itemJson, _) = await DequeueWithPriorityAsync();
+            var (response, priority, segmentItem) = await DequeueWithPriorityAsync();
+            var itemJson = segmentItem?.ItemJson;
 
             // If locked, return what we have so far with lock info
             if (response.Locked)
@@ -1233,11 +1298,10 @@ public class QueueActor : Actor, IQueueActor
     /// Returns a tuple where:
     /// - response: Contains only metadata (Locked, IsEmpty, Message, LockExpiresAt)
     /// - priority: The priority level the item was dequeued from
-    /// - itemJson: The JSON string of the dequeued item (null if none)
-    /// - deliveryCount: How many times the item has already been reclaimed by an expiry
+    /// - item: The dequeued segment entry - payload, delivery count and Sequence (null if none)
     /// </summary>
     /// <param name="skipLockCheck">If true, skip the lock check (used for competing consumers)</param>
-    private async Task<(DequeueResponse response, int priority, string? itemJson, int deliveryCount)> DequeueWithPriorityAsync(bool skipLockCheck = false)
+    private async Task<(DequeueResponse response, int priority, QueueSegmentItem? item)> DequeueWithPriorityAsync(bool skipLockCheck = false)
     {
 
         var metadata = await GetMetadataAsync();
@@ -1255,13 +1319,13 @@ public class QueueActor : Actor, IQueueActor
                         Locked = true,
                         IsEmpty = false,
                         Message = "Queue is locked by another operation"
-                    }, -1, null, 0);
+                    }, -1, null);
                 }
             }
 
             if (metadata.Queues.Count == 0)
             {
-                return (new DequeueResponse { Locked = false, IsEmpty = true }, -1, null, 0);
+                return (new DequeueResponse { Locked = false, IsEmpty = true }, -1, null);
             }
 
             // Find lowest priority with items
@@ -1298,8 +1362,6 @@ public class QueueActor : Actor, IQueueActor
                 // Dequeue single item from front (FIFO)
                 var segmentQueue = segment.Value;
                 var segmentItem = segmentQueue.Dequeue();
-                var itemJson = segmentItem.ItemJson;
-                var deliveryCount = segmentItem.DeliveryCount;
 
                 // Handle segment cleanup
                 if (segmentQueue.Count == 0)
@@ -1332,7 +1394,7 @@ public class QueueActor : Actor, IQueueActor
                         Logger.LogDebug($"Dequeued item from priority {priority}, count now {count}");
 
                         // Return item JSON string directly with priority
-                        return (new DequeueResponse { Locked = false, IsEmpty = false }, priority, itemJson, deliveryCount);
+                        return (new DequeueResponse { Locked = false, IsEmpty = false }, priority, segmentItem);
                     }
                     else
                     {
@@ -1348,7 +1410,7 @@ public class QueueActor : Actor, IQueueActor
                         Logger.LogDebug($"Dequeued last item from priority {priority}, queue now empty");
 
                         // Return item JSON string directly with priority
-                        return (new DequeueResponse { Locked = false, IsEmpty = false }, priority, itemJson, deliveryCount);
+                        return (new DequeueResponse { Locked = false, IsEmpty = false }, priority, segmentItem);
                     }
                 }
                 else
@@ -1368,11 +1430,11 @@ public class QueueActor : Actor, IQueueActor
                     Logger.LogDebug($"Dequeued item from priority {priority}, count now {count}");
 
                     // Return item JSON string directly with priority
-                    return (new DequeueResponse { Locked = false, IsEmpty = false }, priority, itemJson, deliveryCount);
+                    return (new DequeueResponse { Locked = false, IsEmpty = false }, priority, segmentItem);
                 }
             }
 
-            return (new DequeueResponse { Locked = false, IsEmpty = true }, -1, null, 0);
+            return (new DequeueResponse { Locked = false, IsEmpty = true }, -1, null);
         }
         catch (InvalidOperationException)
         {
@@ -1382,7 +1444,7 @@ public class QueueActor : Actor, IQueueActor
         catch (Exception ex)
         {
             Logger.LogError(ex, "Error in DequeueAsync");
-            return (new DequeueResponse { Locked = false, IsEmpty = true }, -1, null, 0);
+            return (new DequeueResponse { Locked = false, IsEmpty = true }, -1, null);
         }
     }
 
@@ -1482,7 +1544,8 @@ public class QueueActor : Actor, IQueueActor
             {
                 // Dequeue item (removes from queue) and store in lock
                 // Skip lock check to allow parallel locks
-                var (dequeueResult, priority, itemJson, deliveryCount) = await DequeueWithPriorityAsync(skipLockCheck: true);
+                var (dequeueResult, priority, segmentItem) = await DequeueWithPriorityAsync(skipLockCheck: true);
+                var itemJson = segmentItem?.ItemJson;
 
                 // If queue is empty, return partial results
                 if (itemJson == null)
@@ -1502,7 +1565,8 @@ public class QueueActor : Actor, IQueueActor
                     HeadSegment = 0,  // No longer used but kept for backward compat
                     ItemJson = itemJson!,
                     CompetingConsumerMode = request.AllowCompetingConsumers,
-                    DeliveryCount = deliveryCount
+                    DeliveryCount = segmentItem!.DeliveryCount,
+                    Sequence = segmentItem.Sequence
                 };
 
                 await StateManager.SetStateAsync($"{lockId}-lock", lockData);

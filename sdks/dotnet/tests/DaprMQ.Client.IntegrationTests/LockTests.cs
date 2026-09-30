@@ -200,7 +200,7 @@ public class LockTests(DaprTestFixture fixture) : IntegrationTestBase(fixture)
     }
 
     [Fact]
-    public async Task L08_RedeliveryAfterExpiry_ReturnsTheItemToTheBackOfItsPriority()
+    public async Task L08_RedeliveryAfterExpiry_PreservesTheItemsFifoPosition()
     {
         var client = CreateClient();
         var queueId = NewQueueId();
@@ -223,12 +223,10 @@ public class LockTests(DaprTestFixture fixture) : IntegrationTestBase(fixture)
 
         Assert.Equal(3, afterExpiry.Items.Count);
 
-        // NOTE: the matrix row claims redelivery preserves the item's original FIFO position. It
-        // does not: QueueActor's lock-expiry reminder re-queues via EnqueueInternal, a plain
-        // append, so the redelivered item lands *behind* the items that were queued behind it.
-        // This asserts the implemented behaviour (2, 3, 1) rather than the documented intent
-        // (1, 2, 3). If position preservation is the contract that's actually wanted, this is the
-        // test that should be flipped and the reminder changed to front-insert.
-        Assert.Equal([2, 3, 1], afterExpiry.Items.Select(i => Seq(i.Item)));
+        // The expired lock's item goes back where it was, not onto the tail: item 1 was ahead of
+        // 2 and 3 when it was locked, so it is ahead of them again once the lock lapses. Placement
+        // is by the item's server-assigned sequence number, so it holds however the expiry is
+        // batched - see QueueActorLockExpiryTests for the split-sweep cases.
+        Assert.Equal([1, 2, 3], afterExpiry.Items.Select(i => Seq(i.Item)));
     }
 }
