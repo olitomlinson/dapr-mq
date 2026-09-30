@@ -40,6 +40,14 @@ public record SweepCandidate
     public double NextCheckAt { get; init; }
 
     /// <summary>
+    /// Unix seconds (sub-second precision) of the last claim of this session, targeted or
+    /// any-available. Ascending order is the fairness ordering for an any-available claim - a
+    /// never-claimed entry's default 0 sorts first, and a session that has just been serviced
+    /// goes to the back of the line rather than winning every consecutive claim.
+    /// </summary>
+    public double LastClaimedAt { get; init; }
+
+    /// <summary>
     /// Current backoff applied after a "not empty" result, doubled (capped) each time it recurs,
     /// so a session that's legitimately in steady use - or has an abandoned, never-claimed
     /// backlog - doesn't get re-checked at full sweep frequency forever.
@@ -183,9 +191,13 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
         }
         else
         {
-            // Any-available claim: first directory entry with no live lease.
+            // Any-available claim: least-recently-claimed directory entry with no live lease.
             string? found = null;
-            foreach (var candidate in metadata.SessionDirectory.Keys)
+            var candidates = metadata.SessionDirectory
+                .OrderBy(kv => kv.Value.LastClaimedAt)
+                .Select(kv => kv.Key)
+                .ToList();
+            foreach (var candidate in candidates)
             {
                 var candidateLock = await StateManager.TryGetStateAsync<SessionLockState>($"session-lock_{candidate}");
                 if (!candidateLock.HasValue || now >= candidateLock.Value.ExpiresAt)
@@ -230,6 +242,22 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
             ExpiresAt = expiresAt
         };
         await StateManager.SetStateAsync($"session-lock_{sessionId}", lockState);
+
+        // Stamp the claim so the next any-available scan ranks this session last. Written in the
+        // same save as the lock record - a lease that exists without its claim stamp would let the
+        // same session win again the moment it is released. Re-read rather than reusing the copy
+        // from the top of this method: the lease sync above is a cross-actor await, and a
+        // RegisterSession that lands during it must not be clobbered by a stale directory.
+        var currentMetadata = await GetMetadataAsync();
+        if (currentMetadata.SessionDirectory.TryGetValue(sessionId, out var claimedCandidate))
+        {
+            var updatedDirectory = new Dictionary<string, SweepCandidate>(currentMetadata.SessionDirectory)
+            {
+                [sessionId] = claimedCandidate with { LastClaimedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0 }
+            };
+            await SetMetadataAsync(currentMetadata with { SessionDirectory = updatedDirectory });
+        }
+
         await StateManager.SaveStateAsync();
 
         try

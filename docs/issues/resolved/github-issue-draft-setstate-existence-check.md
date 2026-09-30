@@ -105,3 +105,26 @@ We don't have strong data on how often the set-then-remove-same-transaction patt
 occurs across real Dapr actor usage, so we're filing this as a discussion of a plausible design
 rather than a ready-to-merge proposal - there may be complexity in the tracker/transaction-building
 code we're not accounting for from outside the codebase.
+
+---
+
+## Resolution
+
+**Fixed upstream** (confirmed 2026-09-30). Resolved — no DaprMQ code change was needed.
+
+Raised as dapr/dotnet-sdk#1910 and fixed by
+[PR #1914](https://github.com/dapr/dotnet-sdk/pull/1914), released in `Dapr.Actors` 1.18.9.
+
+The fix went further than the `UnverifiedAdd` design sketched above: `SetStateAsync` no longer calls
+`ContainsStateAsync` at all, and always stages `Update`. That is safe for exactly the reason this
+draft identified — `Add` and `Update` both map to the same `"upsert"` wire operation — and it drops
+the third `StateChangeKind` the draft proposed, at the cost of the set-then-remove-in-the-same-
+transaction optimisation the eager check was buying. The discussion framing held up: the tradeoff
+was real, and upstream resolved it in favour of the common case.
+
+DaprMQ picks the fix up by version alone: `DaprActorsSdkVersion` is 1.18.10
+([DaprMQ.csproj:8](../../../server/src/DaprMQ/DaprMQ.csproj#L8)).
+
+Measured effect, from the retest in [sdk-1.18.9-retest.md](sdk-1.18.9-retest.md): the
+`publish_<guid>` and `publish-seq_N` keys went from 21 reads each to **0**, and `item_N` halved from
+42 to 21 (the remainder being the relay's genuine reads).

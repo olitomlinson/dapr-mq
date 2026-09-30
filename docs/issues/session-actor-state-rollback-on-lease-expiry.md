@@ -110,3 +110,27 @@ currently guard against this bug. A regression test should be added as part of f
 - A dequeue with no lease, or the wrong lease, is refused at every point in a lease's lifetime.
 - An item already dequeued under a lock is not handed out again until that lock actually expires.
 - A regression test covers the busy-poll path, and `S-08`'s quiet-wait workaround comment is removed.
+
+---
+
+## Resolution
+
+**Not fixed** (checked 2026-09-30). Open, and the root cause is still unidentified.
+
+Nothing in the acceptance criteria has been met:
+
+- No regression test covers the busy-poll path. `S08_ExpiredLease_IsReclaimable_AndOldLeaseRaisesSessionLeaseExpired`
+  ([SessionTests.cs:154](../../sdks/dotnet/tests/DaprMQ.Client.IntegrationTests/SessionTests.cs#L154))
+  still waits the lease out quietly, and the comment describing that as a workaround for this bug
+  is still there. The suite therefore still does not guard against it.
+- The guard itself is unchanged — `TryAuthorizeSessionLease` still short-circuits when
+  `ActiveSessionLeaseId` is null
+  ([QueueActor.cs:127-131](../../server/src/DaprMQ/QueueActor.cs#L127-L131)), and `ClearSessionLease`
+  ([QueueActor.cs:348-353](../../server/src/DaprMQ/QueueActor.cs#L348-L353)) is still the only code
+  that nulls it.
+
+Worth noting for whoever picks this up: the first hypothesis in "Where to look" — an interaction
+between reentrancy and the SDK's state-change tracker — is **not** ruled out by the `Dapr.Actors`
+1.18.10 upgrade. That upgrade fixed a *related* class of tracker staleness (see
+[resolved/sdk-1.18.9-retest.md](resolved/sdk-1.18.9-retest.md)), and this issue was written up on
+2026-09-29 with 1.18.10 already in place, so it survives those fixes.

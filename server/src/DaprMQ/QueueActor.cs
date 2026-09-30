@@ -148,6 +148,11 @@ public class QueueActor : Actor, IQueueActor
     // actor. Accepted, not solved, consistent with those existing conventions.
     private const string SessionActorIdMarker = "-session-";
 
+    // Suffix of a dead-letter queue actor's id. A session queue's DLQ is
+    // "{queueId}-session-{sessionId}-deadletter", so it carries the session marker too and must
+    // be excluded from session self-registration - a DLQ is not a claimable session.
+    private const string DeadLetterActorIdSuffix = "-deadletter";
+
     private static bool IsQueueCorrupted(ActorMetadata metadata) =>
         !string.IsNullOrEmpty(metadata.ErrorMessage);
 
@@ -410,6 +415,15 @@ public class QueueActor : Actor, IQueueActor
         if (markerIndex <= 0)
         {
             return; // not a session actor
+        }
+
+        if (ownId.EndsWith(DeadLetterActorIdSuffix, StringComparison.Ordinal))
+        {
+            // This is a session queue's dead-letter actor, not the session itself. Registering it
+            // would put a phantom "{sessionId}-deadletter" entry in the coordinator directory,
+            // which an any-available claim could then hand to a consumer - redelivering items that
+            // were deliberately dead-lettered.
+            return;
         }
 
         string queueId = ownId[..markerIndex];

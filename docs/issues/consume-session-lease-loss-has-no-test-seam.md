@@ -71,3 +71,21 @@ worth having in a suite.
   `SessionQueueConsumer` treats it as a claimed-then-lost session (resetting backoff, not treating
   it as a failed claim) — see the `catch (SessionLostException)` branch in
   [SessionQueueConsumer.cs](../../sdks/dotnet/src/DaprMQ.Client/SessionQueueConsumer.cs).
+
+---
+
+## Resolution
+
+**Not fixed** (checked 2026-09-30). Open, unchanged since filing.
+
+No test-only lease-revocation seam exists. The only test-only endpoint on the server is still
+`POST /queue/{queueId}/test-unsafe-unload`
+([QueueController.cs:575](../../server/src/DaprMQ.ApiServer/Controllers/QueueController.cs#L575)),
+which unloads a queue actor and cannot invalidate a session lease on the coordinator. `C-09` remains
+unimplemented in every SDK column of
+[INTEGRATION_TESTS.md](../../sdks/testing/INTEGRATION_TESTS.md), and
+[ConsumeSessionTests.cs:327](../../sdks/dotnet/tests/DaprMQ.Client.IntegrationTests/ConsumeSessionTests.cs#L327)
+still carries the note explaining why it is deliberately absent.
+
+Suggested direction (1) — a test-only revocation hook on `SessionCoordinatorActor` — is still the
+recommendation and is still unbuilt.

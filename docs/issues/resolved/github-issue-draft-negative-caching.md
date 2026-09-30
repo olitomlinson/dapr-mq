@@ -83,3 +83,27 @@ also invalidate a "confirmed absent" entry once something writes that key.
 This is unrelated to reentrancy or to PR #1908 - it reproduces identically with reentrancy
 disabled entirely, and affects `defaultTracker` and any reentrancy-scoped tracker equally. Filing
 separately since it's a distinct, more broadly-applicable gap.
+
+---
+
+## Resolution
+
+**Fixed upstream** (confirmed 2026-09-30). Resolved — no DaprMQ code change was needed.
+
+Filed as [dapr/dotnet-sdk#1909](https://github.com/dapr/dotnet-sdk/issues/1909) and fixed by
+[PR #1913](https://github.com/dapr/dotnet-sdk/pull/1913), which caches negative reads as a new
+`StateChangeKind.NotFound` — the "confirmed absent" representation this draft proposed. Released in
+`Dapr.Actors` 1.18.9.
+
+DaprMQ picks the fix up by version alone: `DaprActorsSdkVersion` is 1.18.10
+([DaprMQ.csproj:8](../../../server/src/DaprMQ/DaprMQ.csproj#L8)).
+
+Measured effect, from the retest in [sdk-1.18.9-retest.md](sdk-1.18.9-retest.md): over 20
+publish/relay-tick cycles the never-written `circuit_sub-a` / `circuit_sub-b` keys went from **44
+reads each to 1 each**, and total actor state reads fell from 262 to 120.
+
+One caveat worth carrying forward: #1913 combined with #1912 introduced a regression — `NotFound`
+entries were not synced back to the default tracker after a reentrant save. That was filed as
+[#1915](https://github.com/dapr/dotnet-sdk/issues/1915), fixed by
+[#1916](https://github.com/dapr/dotnet-sdk/pull/1916) and released in 1.18.10, which is why DaprMQ
+is on 1.18.10 rather than 1.18.9. Both the fix and its follow-up are in the version we ship.

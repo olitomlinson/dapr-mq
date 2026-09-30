@@ -31,7 +31,7 @@ The test asserts the observed order and passes.
 
 ## Cause
 
-[QueueActor.cs:922](../../server/src/DaprMQ/QueueActor.cs#L922), in the lock-expiry reminder:
+[QueueActor.cs:936](../../server/src/DaprMQ/QueueActor.cs#L922), in the lock-expiry reminder:
 
 ```csharp
 bool success = await EnqueueInternal(lockState.Value.ItemJson, lockState.Value.Priority);
@@ -79,3 +79,24 @@ Depends on the decision:
   `L08_…` (and rename it), update the matrix row back, and cover the multi-lock case.
 - **If B:** update `CLAUDE.md` and re-check the README's ordering claims. The existing test and
   matrix row already describe the behaviour correctly and need no change.
+
+---
+
+## Resolution
+
+**Not fixed** (checked 2026-09-30). Open — and still blocked on the product decision, which has not
+been taken.
+
+Neither way out has been applied:
+
+- **A (code matches contract):** redelivery is still a plain append.
+  [QueueActor.cs:936](../../server/src/DaprMQ/QueueActor.cs#L936) still calls `EnqueueInternal` from
+  the lock-expiry reminder, and `LockState` still records nothing about the item's original position.
+- **B (contract matches code):** the conflicting claims are still in place. `CLAUDE.md` still lists
+  *"FIFO preservation"* under **Locks**, and the README still positions per-queue ordering as the
+  core differentiator.
+
+`L08_RedeliveryAfterExpiry_ReturnsTheItemToTheBackOfItsPriority`
+([LockTests.cs:203](../../sdks/dotnet/tests/DaprMQ.Client.IntegrationTests/LockTests.cs#L203))
+continues to assert — and pass on — the `[2, 3, 1]` behaviour, so the tail-append is pinned by a
+test either way. Decide A or B before anything here changes.
