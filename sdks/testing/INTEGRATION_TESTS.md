@@ -56,7 +56,7 @@ Legend: ✅ implemented and passing · ⬜ not yet
 | L-05 | Double ack raises `LockNotFound` | ✅ | ⬜ | ⬜ | ⬜ |
 | L-06 | `ExtendLock` prolongs the lock past its original TTL | ✅ | ⬜ | ⬜ | ⬜ |
 | L-07 | `ExtendLock` on expired/unknown lock raises the matching error | ✅ | ⬜ | ⬜ | ⬜ |
-| L-08 | Redelivery after expiry re-queues the item (see notes) | ✅ | ⬜ | ⬜ | ⬜ |
+| L-08 | Redelivery after expiry preserves the item's original FIFO position | ✅ | ⬜ | ⬜ | ⬜ |
 | **Dead-letter** | | | | | |
 | D-01 | `DeadLetter` removes item from source queue and it appears on `{queueId}-deadletter` | ✅ | ⬜ | ⬜ | ⬜ |
 | D-02 | `DeadLetter` with unknown/expired lock raises the matching error | ✅ | ⬜ | ⬜ | ⬜ |
@@ -119,7 +119,7 @@ Found while implementing the .NET column; the row text above now matches what th
 
 - **Q-08** - the per-call ceiling is 10000 items (`QueueController.Enqueue`), not 1000.
 - **L-03** - `Acknowledge` has no expiry branch at all; expiry is what *deletes* the lock record, so an ack that observes expiry gets `LockNotFound`. `ExtendLock` and `DeadLetter` are the operations that surface `LockExpired` (L-07, D-02), and even there it races the expiry sweep - either error is valid.
-- **L-08** - on a plain queue, redelivery does **not** preserve FIFO position ([issue](../../docs/issues/lock-redelivery-does-not-preserve-fifo-position.md) - needs a product decision, not just a fix). The lazy expiry sweep requeues via `EnqueueInternal`, a plain append, so an item that expires at the head of `[1, 2, 3]` comes back as `[2, 3, 1]`. Session queues are the opposite: a lapsed lease restores every outstanding lock to the front, in order. If position preservation is meant to hold for plain queues too, this row and the .NET test should be flipped.
+- **L-08** - redelivery preserves FIFO position on plain *and* session queues ([issue](../../docs/issues/resolved/lock-redelivery-does-not-preserve-fifo-position.md), resolved 2026-09-30). This row previously described a tail append, which is what the server did until items gained a monotonic `Sequence` and the expiry sweep started merging reclaimed items back by it. Placement is independent of how the expiries batch, so a backlog split across sweeps orders correctly too.
 - **C-03** - the server dead-letters against the actor holding the item, which for a session delivery is the per-session `QueueActor`. The DLQ is therefore `{queueId}-session-{sessionId}-deadletter`, not the base queue's.
 
 ### Blocked rows

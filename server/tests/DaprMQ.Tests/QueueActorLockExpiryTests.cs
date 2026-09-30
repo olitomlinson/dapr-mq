@@ -233,7 +233,7 @@ public class QueueActorLockExpiryTests
     private static double Now() => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
     [Fact]
-    public async Task Sweep_RequeuesExpiredLockToTail_AndClearsItsIndexEntry()
+    public async Task Sweep_RequeuesExpiredLock_AndClearsItsIndexEntry()
     {
         var (actor, state) = await CreateActorAsync();
         SeedLock(state, "lockaaaaaaa", Now() - 10, "{\"id\":\"A\"}");
@@ -250,6 +250,165 @@ public class QueueActorLockExpiryTests
         var metadata = (ActorMetadata)state["metadata"];
         Assert.Equal(0, metadata.LockCount);
         Assert.Empty(metadata.LockExpiryBuckets);
+    }
+
+    [Fact]
+    public async Task Sweep_RestoresAnExpiredLocksItemToItsOriginalPosition()
+    {
+        var (actor, state) = await CreateActorAsync();
+        await EnqueueAsync(actor, "{\"n\":1}", "{\"n\":2}", "{\"n\":3}");
+
+        // Take the head item and let its lock lapse unacked. It was ahead of 2 and 3 when it was
+        // locked, so it belongs ahead of them again - not on the tail behind them.
+        var locked = await actor.DequeueLocked(new DequeueLockedRequest { TtlSeconds = 30, AllowCompetingConsumers = true });
+        ForceExpire(state, locked.Items[0].LockId);
+
+        Assert.Equal([1, 2, 3], await DrainAsync(actor, 3));
+    }
+
+    [Fact]
+    public async Task Sweep_BacklogLargerThanTheBudget_StillRestoresInOrder()
+    {
+        // The case a plain front-insert cannot handle. With a budget of 2 the five expired locks
+        // drain over three sweeps; each sweep restores below the previous one's head, so anything
+        // that places by arrival rather than by Sequence hands back 5,4,3,2,1 or similar.
+        var (actor, state) = await CreateActorAsync(
+            lockConfig: new LockConfig { MaxDeliveryCount = 10, SweepBatchSize = 2 });
+        await EnqueueAsync(actor, "{\"n\":1}", "{\"n\":2}", "{\"n\":3}", "{\"n\":4}", "{\"n\":5}");
+
+        var locked = await actor.DequeueLocked(new DequeueLockedRequest
+        {
+            Count = 5,
+            TtlSeconds = 30,
+            AllowCompetingConsumers = true
+        });
+        Assert.Equal(5, locked.Items.Count);
+
+        foreach (var item in locked.Items)
+        {
+            ForceExpire(state, item.LockId);
+        }
+
+        Assert.Equal([1, 2, 3, 4, 5], await DrainAsync(actor, 5));
+    }
+
+    [Fact]
+    public async Task Sweep_LocksExpiringInSeparateSweeps_RestoreInOrder()
+    {
+        // The same inversion by a different route: the *later* items lapse and are restored first,
+        // so the earlier ones have to merge in ahead of items already back in the queue.
+        var (actor, state) = await CreateActorAsync();
+        await EnqueueAsync(actor, "{\"n\":1}", "{\"n\":2}", "{\"n\":3}", "{\"n\":4}");
+
+        var locked = await actor.DequeueLocked(new DequeueLockedRequest
+        {
+            Count = 4,
+            TtlSeconds = 30,
+            AllowCompetingConsumers = true
+        });
+
+        ForceExpire(state, locked.Items[2].LockId);
+        ForceExpire(state, locked.Items[3].LockId);
+        await actor.Dequeue(new DequeueRequest { Count = 0 }); // drives one sweep
+
+        ForceExpire(state, locked.Items[0].LockId);
+        ForceExpire(state, locked.Items[1].LockId);
+
+        Assert.Equal([1, 2, 3, 4], await DrainAsync(actor, 4));
+    }
+
+    [Fact]
+    public async Task Sweep_RestoreStaysWithinItsOwnPriority()
+    {
+        var (actor, state) = await CreateActorAsync();
+        await actor.Enqueue(new EnqueueRequest
+        {
+            Items =
+            [
+                new EnqueueItem { ItemJson = "{\"n\":1}", Priority = 0 },
+                new EnqueueItem { ItemJson = "{\"n\":2}", Priority = 0 },
+                new EnqueueItem { ItemJson = "{\"n\":3}", Priority = 1 },
+                new EnqueueItem { ItemJson = "{\"n\":4}", Priority = 1 }
+            ]
+        });
+
+        // One lock per priority, both lapsed. Each item must land back in its own lane, and the
+        // fast lane must still be served first.
+        var locked = await actor.DequeueLocked(new DequeueLockedRequest
+        {
+            Count = 1,
+            TtlSeconds = 30,
+            AllowCompetingConsumers = true
+        });
+        ForceExpire(state, locked.Items[0].LockId);
+        await actor.Dequeue(new DequeueRequest { Count = 0 });
+
+        Assert.Equal([1, 2, 3, 4], await DrainAsync(actor, 4));
+    }
+
+    [Fact]
+    public async Task Sweep_RestoreLargerThanTheHeadSegment_SpillsBelowIt()
+    {
+        // Locking a whole segment's worth drains segment 0 and advances the head to segment 1, so
+        // the restore has 100 items to merge into a head that is already full. It has to allocate
+        // below the head rather than overflow MaxSegmentSize.
+        var (actor, state) = await CreateActorAsync();
+        await actor.Enqueue(new EnqueueRequest
+        {
+            Items = Enumerable.Range(1, 200)
+                .Select(n => new EnqueueItem { ItemJson = $"{{\"n\":{n}}}", Priority = 1 })
+                .ToList()
+        });
+
+        var locked = await actor.DequeueLocked(new DequeueLockedRequest
+        {
+            Count = 100,
+            TtlSeconds = 30,
+            AllowCompetingConsumers = true
+        });
+        Assert.Equal(100, locked.Items.Count);
+        Assert.Equal(1, ((ActorMetadata)state["metadata"]).Queues[1].HeadSegment);
+
+        foreach (var item in locked.Items)
+        {
+            ForceExpire(state, item.LockId);
+        }
+
+        await actor.Dequeue(new DequeueRequest { Count = 0 }); // drives the sweep
+
+        var queueMeta = ((ActorMetadata)state["metadata"]).Queues[1];
+        Assert.Equal(0, queueMeta.HeadSegment);
+        Assert.Equal(200, queueMeta.Count);
+        Assert.Equal(100, ((Queue<QueueSegmentItem>)state["queue_1_seg_0"]).Count);
+        Assert.Equal(100, ((Queue<QueueSegmentItem>)state["queue_1_seg_1"]).Count);
+
+        Assert.Equal(Enumerable.Range(1, 200), await DrainAsync(actor, 200));
+        Assert.Empty(((ActorMetadata)state["metadata"]).Queues);
+    }
+
+    /// <summary>
+    /// Drains <paramref name="count"/> items and returns their "n" values in the order served. The
+    /// first Dequeue also drives the lazy sweep, so callers just ForceExpire and drain.
+    /// </summary>
+    private static async Task<List<int>> DrainAsync(QueueActor actor, int count)
+    {
+        var served = new List<int>();
+        for (int attempt = 0; served.Count < count && attempt < count * 4; attempt++)
+        {
+            // Each call sweeps before it serves, and a sweep capped by SweepBatchSize leaves locks
+            // outstanding - so the early calls legitimately come back Locked. Keep going.
+            var next = await actor.Dequeue(new DequeueRequest());
+            if (next.Items.Count == 0)
+            {
+                Assert.True(next.Locked, $"expected {count} items, ran dry after {served.Count}");
+                continue;
+            }
+
+            served.Add(int.Parse(next.Items[0].ItemJson.Split(':')[1].TrimEnd('}')));
+        }
+
+        Assert.Equal(count, served.Count);
+        return served;
     }
 
     [Fact]
@@ -681,7 +840,7 @@ public class QueueActorLockExpiryTests
     }
 
     [Fact]
-    public async Task LapsedSessionLease_DrainedPriority_RestoresBelowSegmentZero()
+    public async Task LapsedSessionLease_DrainedPriority_RestoresIntoTheLiveRange()
     {
         var (actor, state) = await CreateActorAsync(actorId: SessionActorId);
         await EnqueueAsync(actor, "{\"id\":\"A\"}");
@@ -694,10 +853,12 @@ public class QueueActorLockExpiryTests
         LapseLease(state);
         await actor.SetSessionLease(new SetSessionLeaseRequest { LeaseId = "lease-2", ExpiresAt = Now() + 60 });
 
+        // Nothing is left to merge into, so the restore reuses the vacated head slot rather than
+        // allocating below it - no stray empty segment, and the pointers stay consistent.
         var queueMeta = ((ActorMetadata)state["metadata"]).Queues[1];
-        Assert.Equal(-1, queueMeta.HeadSegment);
-        Assert.Equal(-1, queueMeta.TailSegment);
-        Assert.True(state.ContainsKey("queue_1_seg_-1"));
+        Assert.Equal(0, queueMeta.HeadSegment);
+        Assert.Equal(0, queueMeta.TailSegment);
+        Assert.True(state.ContainsKey("queue_1_seg_0"));
 
         // A later enqueue appends after the restored item and rolls upward from there.
         await EnqueueAsync(actor, "{\"id\":\"B\"}");

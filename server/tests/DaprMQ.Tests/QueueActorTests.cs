@@ -1175,7 +1175,9 @@ public class QueueActorTests
     [Fact]
     public async Task ExpiredLock_PreservesQueuePosition()
     {
-        // Phase 3: Item dequeued during DequeueLocked, re-queued at end when lock expires
+        // A is locked at the head, D is enqueued behind B and C while the lock is live, and the
+        // lock then lapses unacked. A goes back to the position it was taken from, so the queue
+        // reads A, B, C, D - not B, C, D, A.
 
         // Arrange - enqueue items
         var mockStateManager = CreateMockStateManager();
@@ -1210,25 +1212,23 @@ public class QueueActorTests
         await Task.Delay(1100);
         await ExpireLockViaSweepAsync(mockStateManager, actor, dequeueResult.LockId);
 
-        // Assert - Dequeue should return B, C, D, A (A was re-queued at end)
+        // Assert - Dequeue returns A, B, C, D: A is restored to its original position
         var firstDequeue = await actor.Dequeue(new Interfaces.DequeueRequest());
         Assert.NotEmpty(firstDequeue.Items);
         Assert.False(firstDequeue.Locked);
-        Assert.Contains("\"id\":\"B\"", firstDequeue.Items[0].ItemJson);
+        Assert.Contains("\"id\":\"A\"", firstDequeue.Items[0].ItemJson);
 
-        // Second dequeue returns C
         var secondDequeue = await actor.Dequeue(new Interfaces.DequeueRequest());
         Assert.False(secondDequeue.Locked);
-        Assert.Contains("\"id\":\"C\"", secondDequeue.Items[0].ItemJson);
+        Assert.Contains("\"id\":\"B\"", secondDequeue.Items[0].ItemJson);
 
         var thirdDequeue = await actor.Dequeue(new Interfaces.DequeueRequest());
         Assert.False(thirdDequeue.Locked);
-        Assert.Contains("\"id\":\"D\"", thirdDequeue.Items[0].ItemJson);
+        Assert.Contains("\"id\":\"C\"", thirdDequeue.Items[0].ItemJson);
 
-        // Fourth dequeue returns A (re-queued after lock expiry)
         var fourthDequeue = await actor.Dequeue(new Interfaces.DequeueRequest());
         Assert.False(fourthDequeue.Locked);
-        Assert.Contains("\"id\":\"A\"", fourthDequeue.Items[0].ItemJson);
+        Assert.Contains("\"id\":\"D\"", fourthDequeue.Items[0].ItemJson);
 
         // Queue should now be empty
         var fifthDequeue = await actor.Dequeue(new Interfaces.DequeueRequest());
@@ -1367,7 +1367,8 @@ public class QueueActorTests
     [Fact]
     public async Task LockExpiry_DoesNotReorderQueue()
     {
-        // Phase 3: Item dequeued during DequeueLocked, re-queued at end of priority when lock expires
+        // The restore is scoped to the item's own priority: P1-A returns to the head of priority 1
+        // without disturbing priority 2, which is still served afterwards.
 
         // Arrange - enqueue items with different priorities
         var mockStateManager = CreateMockStateManager();
@@ -1401,26 +1402,26 @@ public class QueueActorTests
             Items = [new EnqueueItem { ItemJson = "{\"id\":\"P1-D\"}", Priority = 1 }]
         });
 
-        // Let lock expire, then simulate reminder cleanup (re-queues P1-A at end of priority 1)
+        // Let the lock lapse, then drive the sweep that restores P1-A
         await Task.Delay(1100);
         await ExpireLockViaSweepAsync(mockStateManager, actor, dequeueResult.LockId);
 
-        // Assert - Dequeue all items: B, C, D, A (at end of priority 1), then P2-A
+        // Assert - priority 1 drains in its original order A, B, C, D, then priority 2
         var dequeue1 = await actor.Dequeue(new Interfaces.DequeueRequest());
         Assert.False(dequeue1.Locked);
-        Assert.Contains("\"id\":\"P1-B\"", dequeue1.Items[0].ItemJson);
+        Assert.Contains("\"id\":\"P1-A\"", dequeue1.Items[0].ItemJson);
 
         var dequeue2 = await actor.Dequeue(new Interfaces.DequeueRequest());
         Assert.False(dequeue2.Locked);
-        Assert.Contains("\"id\":\"P1-C\"", dequeue2.Items[0].ItemJson);
+        Assert.Contains("\"id\":\"P1-B\"", dequeue2.Items[0].ItemJson);
 
         var dequeue3 = await actor.Dequeue(new Interfaces.DequeueRequest());
         Assert.False(dequeue3.Locked);
-        Assert.Contains("\"id\":\"P1-D\"", dequeue3.Items[0].ItemJson);
+        Assert.Contains("\"id\":\"P1-C\"", dequeue3.Items[0].ItemJson);
 
         var dequeue4 = await actor.Dequeue(new Interfaces.DequeueRequest());
         Assert.False(dequeue4.Locked);
-        Assert.Contains("\"id\":\"P1-A\"", dequeue4.Items[0].ItemJson); // Re-queued at end
+        Assert.Contains("\"id\":\"P1-D\"", dequeue4.Items[0].ItemJson);
 
         var dequeue5 = await actor.Dequeue(new Interfaces.DequeueRequest());
         Assert.False(dequeue5.Locked);
