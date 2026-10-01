@@ -93,7 +93,10 @@ passed, which exits 3 on any regression.
 
 - `results/runs/<timestamp>_<env>_<profile>.json` — one run in full, incl. a per-second busy-slots timeline
 - `results/history.jsonl` — one summary line per run; the trend charts and the regression check read this
-- `results/report.html` — generated, not committed
+- `results/report.html` — generated after every run
+
+Local `results/` is git-ignored: it's your machine's own history. The shared history is CI's, on the
+`perf-results` branch (below).
 
 Runs are tagged with `--env-label` (default `local-<hostname>`), git sha/branch/dirty flag, OS and CPU
 count. The report charts each environment + scenario combination as its own series, since numbers from
