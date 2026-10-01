@@ -324,12 +324,20 @@ public class ConsumeSessionTests(DaprTestFixture fixture) : IntegrationTestBase(
         Assert.NotEqual(abandoned[0].LockId, item.LockId);
     }
 
-    // C-09 (lease lost mid-stream surfaces SessionLost) is deliberately not implemented. The
-    // server emits SessionLost only when its own background RenewSessionLease call fails, and it
-    // renews every leaseSeconds/2 against a lease it alone holds the id for - ConsumeSession never
-    // exposes that lease id to the client (see SessionDelivery's doc comment). With no supported
-    // way to invalidate someone else's lease from the SDK surface, the only lever is racing the
-    // renewal interval against the expiry with leaseSeconds = 1, which lands on either side of the
-    // boundary depending on sub-second timing. A deterministic test needs a server-side seam
-    // (e.g. a test-only lease revocation hook); adding one is a server change, out of scope here.
+    // C-09 (lease lost mid-stream surfaces SessionLost) is permanently out of scope for
+    // integration. The server emits SessionLost only when its own background RenewSessionLease
+    // call fails, and it renews every leaseSeconds/2 against a lease it alone holds the id for -
+    // ConsumeSession never exposes that lease id to the client (see SessionDelivery's doc
+    // comment). With no supported way to invalidate someone else's lease from the SDK surface,
+    // the only lever is racing the renewal interval against the expiry with leaseSeconds = 1,
+    // which lands on either side of the boundary depending on sub-second timing - not a test
+    // worth having. A deterministic version would need a server-side test-only revocation seam;
+    // that was weighed against the plumbing/fidelity of the alternatives and declined in favor of
+    // leaving this to unit tests (see docs/issues/wont-fix/consume-session-lease-loss-has-no-test-seam.md).
+    //
+    // Coverage instead lives at the unit level:
+    // DaprMQClientConsumeSessionTests.ConsumeSessionAsync_SessionLostFrame_ThrowsSessionLostException
+    // asserts the frame maps to SessionLostException. SessionQueueConsumer's own handling of that
+    // exception (the catch (SessionLostException) branch in SessionQueueConsumer.cs, which resets
+    // backoff rather than treating the claim as failed) has no dedicated unit test of its own.
 }

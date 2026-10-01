@@ -1,13 +1,15 @@
 # `SessionLost` cannot be triggered deterministically from any SDK
 
-**Status:** Confirmed gap. **Not a defect** — the server behaviour here looks correct; what is
-missing is any supported way to provoke it, so no SDK can test it.
+**Status:** Accepted gap, won't fix. **Not a defect** — the server behaviour here looks correct;
+what is missing is any supported way to provoke it, so no SDK can test it. Direction 3 below was
+taken: `C-09` is permanently out of scope for integration, covered only by unit tests, and this
+doc records why.
 
 **Severity:** Low as a bug, medium as a coverage gap. `SessionLost` is the terminal frame that
 tells a consumer its session is gone mid-flight, and every SDK has mapping code for it
 (`SessionLostException` and its siblings) that is currently exercised only by unit tests with fakes.
 
-**Blocks:** `C-09` in [sdks/testing/INTEGRATION_TESTS.md](../../sdks/testing/INTEGRATION_TESTS.md),
+**Blocks:** `C-09` in [sdks/testing/INTEGRATION_TESTS.md](../../../sdks/testing/INTEGRATION_TESTS.md),
 for **all four** SDK columns, not just .NET.
 
 ---
@@ -15,8 +17,8 @@ for **all four** SDK columns, not just .NET.
 ## Summary
 
 The server emits `SessionLost` on a `ConsumeSession` stream in exactly two situations
-([DaprMQGrpcService.cs:702](../../server/src/DaprMQ.ApiServer/Services/DaprMQGrpcService.cs#L702)
-and [:729](../../server/src/DaprMQ.ApiServer/Services/DaprMQGrpcService.cs#L729)):
+([DaprMQGrpcService.cs:702](../../../server/src/DaprMQ.ApiServer/Services/DaprMQGrpcService.cs#L702)
+and [:729](../../../server/src/DaprMQ.ApiServer/Services/DaprMQGrpcService.cs#L729)):
 
 1. its background `RenewSessionLease` call fails, or
 2. a `DequeueLocked` on the session actor comes back with an error code.
@@ -24,7 +26,7 @@ and [:729](../../server/src/DaprMQ.ApiServer/Services/DaprMQGrpcService.cs#L729)
 Both require the stream's lease to have become invalid *while the stream is still open*. A client
 cannot arrange that, because **`ConsumeSession` never tells the client the lease id.** That is
 deliberate and documented — it is what makes the managed loop simpler than the manual API (see
-`SessionDelivery`'s doc comment in [Models.cs](../../sdks/dotnet/src/DaprMQ.Client/Models.cs)). The
+`SessionDelivery`'s doc comment in [Models.cs](../../../sdks/dotnet/src/DaprMQ.Client/Models.cs)). The
 server holds the id, renews on its own schedule, and applies it internally on the client's behalf.
 
 With no lease id, there is no supported call that invalidates it: `ReleaseSession` requires the id,
@@ -49,7 +51,7 @@ worth having in a suite.
 ## Suggested directions
 
 1. **A test-only revocation hook.** The precedent already exists: `POST /queue/{queueId}/test-unsafe-unload`
-   ([QueueController.cs:575](../../server/src/DaprMQ.ApiServer/Controllers/QueueController.cs#L575))
+   ([QueueController.cs:575](../../../server/src/DaprMQ.ApiServer/Controllers/QueueController.cs#L575))
    is a test-only endpoint on the queue actor. An equivalent that force-expires a session's lease
    record on the coordinator would make `C-09` a three-line test in every SDK. Cheapest option, and
    consistent with how the project already handles this.
@@ -60,9 +62,26 @@ worth having in a suite.
    mapping against a fake stream. Mark `C-09` permanently out of scope for integration and record
    why. Honest, but it leaves the server's own emit path untested end to end.
 
-(1) is the recommendation.
+**(3) was taken** — see Resolution below. (1) remains the fallback if this decision is revisited;
+it is cheap and still has the precedent of `test-unsafe-unload` to follow.
 
-## Acceptance criteria
+## Acceptance criteria (for direction 3, as resolved)
+
+- `C-09` marked permanently out of scope for integration (🚫, not ⬜) in every SDK column of
+  [INTEGRATION_TESTS.md](../../../sdks/testing/INTEGRATION_TESTS.md), with the reasoning recorded
+  there rather than only in this doc.
+- Each SDK's integration suite documents, at the `C-09` test site, why the scenario is absent
+  rather than leaving a silent gap — .NET's is
+  [ConsumeSessionTests.cs:327](../../../sdks/dotnet/tests/DaprMQ.Client.IntegrationTests/ConsumeSessionTests.cs#L327).
+- Unit-level coverage of the `SessionLost` → exception mapping, and of `SessionQueueConsumer`
+  treating it as a claimed-then-lost session (resetting backoff, not treating it as a failed
+  claim — see the `catch (SessionLostException)` branch in
+  [SessionQueueConsumer.cs](../../../sdks/dotnet/src/DaprMQ.Client/SessionQueueConsumer.cs)), stays in
+  place as the only coverage for this path; it is not a substitute for integration coverage of the
+  server's own emit path, which remains untested end to end.
+
+<details>
+<summary>Original acceptance criteria (for direction 1, not pursued)</summary>
 
 - A supported, test-only way to invalidate a live `ConsumeSession` stream's lease.
 - `C-09` implemented and ticked for .NET, with the shape documented well enough that the Python,
@@ -70,22 +89,27 @@ worth having in a suite.
 - The test asserts the consumer surfaces the SDK's `SessionLost` equivalent, and that
   `SessionQueueConsumer` treats it as a claimed-then-lost session (resetting backoff, not treating
   it as a failed claim) — see the `catch (SessionLostException)` branch in
-  [SessionQueueConsumer.cs](../../sdks/dotnet/src/DaprMQ.Client/SessionQueueConsumer.cs).
+  [SessionQueueConsumer.cs](../../../sdks/dotnet/src/DaprMQ.Client/SessionQueueConsumer.cs).
+
+</details>
 
 ---
 
 ## Resolution
 
-**Not fixed** (checked 2026-09-30). Open, unchanged since filing.
+**Won't fix — direction 3 taken** (decided 2026-10-01). No test-only lease-revocation seam was
+built. The only test-only endpoint on the server is still `POST /queue/{queueId}/test-unsafe-unload`
+([QueueController.cs:575](../../../server/src/DaprMQ.ApiServer/Controllers/QueueController.cs#L575)),
+which unloads a queue actor and cannot invalidate a session lease on the coordinator.
 
-No test-only lease-revocation seam exists. The only test-only endpoint on the server is still
-`POST /queue/{queueId}/test-unsafe-unload`
-([QueueController.cs:575](../../server/src/DaprMQ.ApiServer/Controllers/QueueController.cs#L575)),
-which unloads a queue actor and cannot invalidate a session lease on the coordinator. `C-09` remains
-unimplemented in every SDK column of
-[INTEGRATION_TESTS.md](../../sdks/testing/INTEGRATION_TESTS.md), and
-[ConsumeSessionTests.cs:327](../../sdks/dotnet/tests/DaprMQ.Client.IntegrationTests/ConsumeSessionTests.cs#L327)
-still carries the note explaining why it is deliberately absent.
+Rather than building direction (1), `C-09` is now recorded as permanently out of scope for
+integration in every SDK column of
+[INTEGRATION_TESTS.md](../../../sdks/testing/INTEGRATION_TESTS.md) (🚫, under "Permanently
+out-of-scope rows"), and
+[ConsumeSessionTests.cs:327](../../../sdks/dotnet/tests/DaprMQ.Client.IntegrationTests/ConsumeSessionTests.cs#L327)
+spells out why. The `SessionLost` → exception mapping stays covered at the unit level only, per
+SDK (.NET: `DaprMQClientConsumeSessionTests.ConsumeSessionAsync_SessionLostFrame_ThrowsSessionLostException`).
 
-Suggested direction (1) — a test-only revocation hook on `SessionCoordinatorActor` — is still the
-recommendation and is still unbuilt.
+This trades end-to-end coverage of the server's emit path for not carrying a coin-flip-reliability
+test (or the plumbing of direction 1 or 2) indefinitely. If a server-side test seam is ever added
+for other reasons, direction (1) should be revisited and this row unblocked.
