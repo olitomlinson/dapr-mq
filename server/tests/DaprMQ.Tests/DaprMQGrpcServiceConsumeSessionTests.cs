@@ -371,4 +371,156 @@ public class DaprMQGrpcServiceConsumeSessionTests
         mockSessionInvoker.Verify(i => i.InvokeMethodAsync<ActorModels.ReleaseSessionRequest, ActorModels.ReleaseSessionResponse>(
             It.IsAny<ActorId>(), "ReleaseSession", It.IsAny<ActorModels.ReleaseSessionRequest>(), It.IsAny<CancellationToken>()), Times.Once);
     }
+
+    // --- Prefetch refill: acks that half-drain the window wake the poll loop early ---
+
+    private sealed class RefillHarness
+    {
+        public readonly Mock<IQueueActorInvoker> QueueInvoker = new();
+        public readonly Mock<ISessionCoordinatorActorInvoker> SessionInvoker = new();
+        public readonly ConcurrentQueue<ActorModels.DequeueLockedRequest> DequeueRequests = new();
+        public readonly FakeAsyncStreamReader<ConsumeSessionRequest> Reader = new();
+        public readonly FakeServerStreamWriter<ConsumeSessionResponse> Writer = new();
+
+        public RefillHarness(int firstBatchSize)
+        {
+            SessionInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.AcceptSessionRequest, ActorModels.AcceptSessionResponse>(
+                    It.IsAny<ActorId>(), "AcceptSession", It.IsAny<ActorModels.AcceptSessionRequest>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ActorModels.AcceptSessionResponse { Success = true, SessionId = "s1", LeaseId = "lease-1", LeaseExpiresAt = 12345 });
+
+            // First call fills the window; every later call finds the queue empty.
+            QueueInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.DequeueLockedRequest, ActorModels.DequeueLockedResponse>(
+                    It.IsAny<ActorId>(), "DequeueLocked", It.IsAny<ActorModels.DequeueLockedRequest>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((ActorId _, string _, ActorModels.DequeueLockedRequest req, CancellationToken _) =>
+                {
+                    DequeueRequests.Enqueue(req);
+                    if (DequeueRequests.Count == 1)
+                    {
+                        return new ActorModels.DequeueLockedResponse
+                        {
+                            Items = Enumerable.Range(1, firstBatchSize)
+                                .Select(n => new ActorModels.DequeueLockedItem { ItemJson = "{}", Priority = 1, LockId = $"lock-{n}", LockExpiresAt = 999 })
+                                .ToList()
+                        };
+                    }
+
+                    return new ActorModels.DequeueLockedResponse { IsEmpty = true };
+                });
+
+            QueueInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.AcknowledgeRequest, ActorModels.AcknowledgeResponse>(
+                    It.IsAny<ActorId>(), "Acknowledge", It.IsAny<ActorModels.AcknowledgeRequest>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ActorModels.AcknowledgeResponse { Success = true, ItemsAcknowledged = 1 });
+
+            QueueInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.DeadLetterRequest, ActorModels.DeadLetterResponse>(
+                    It.IsAny<ActorId>(), "DeadLetter", It.IsAny<ActorModels.DeadLetterRequest>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ActorModels.DeadLetterResponse { Status = "SUCCESS", DlqId = "dlq-1" });
+
+            SessionInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.ReleaseSessionRequest, ActorModels.ReleaseSessionResponse>(
+                    It.IsAny<ActorId>(), "ReleaseSession", It.IsAny<ActorModels.ReleaseSessionRequest>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ActorModels.ReleaseSessionResponse { Success = true });
+        }
+
+        public int DeliveredCount => Writer.Written.Count(r => r.PayloadCase == ConsumeSessionResponse.PayloadOneofCase.Delivered);
+
+        public void Ack(int from, int to)
+        {
+            for (var n = from; n <= to; n++)
+            {
+                Reader.Add(new ConsumeSessionRequest { Ack = new ConsumeSessionAck { LockId = $"lock-{n}" } });
+            }
+        }
+
+        public void DeadLetter(int from, int to)
+        {
+            for (var n = from; n <= to; n++)
+            {
+                Reader.Add(new ConsumeSessionRequest { DeadLetter = new ConsumeSessionDeadLetter { LockId = $"lock-{n}" } });
+            }
+        }
+    }
+
+    // Long enough that only the refill signal can explain an early second DequeueLocked.
+    private static readonly TimeSpan LongPollInterval = TimeSpan.FromSeconds(5);
+
+    private async Task<(RefillHarness Harness, Task Consume)> StartRefillSessionAsync(int prefetchCount)
+    {
+        var h = new RefillHarness(prefetchCount);
+        var service = CreateService(h.QueueInvoker.Object, h.SessionInvoker.Object);
+        service.PollInterval = LongPollInterval;
+        h.Reader.Add(StartRequest("test-queue", "s1", leaseSeconds: 30, prefetchCount: prefetchCount));
+
+        var task = service.ConsumeSession(h.Reader, h.Writer, _mockContext.Object);
+        await WaitUntilAsync(() => h.DeliveredCount == prefetchCount);
+        return (h, task);
+    }
+
+    private static async Task StopAsync(RefillHarness h, Task consume)
+    {
+        h.Reader.Complete();
+        await consume.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task ConsumeSession_AcksHalfDrainWindow_RefillsBeforePollInterval()
+    {
+        var (h, task) = await StartRefillSessionAsync(prefetchCount: 10);
+
+        h.Ack(1, 5);
+        await WaitUntilAsync(() => h.DequeueRequests.Count >= 2);
+
+        Assert.True(h.DequeueRequests.ElementAt(1).Count >= 5);
+        await StopAsync(h, task);
+    }
+
+    [Fact]
+    public async Task ConsumeSession_SingleAckOfFullWindow_DoesNotRefill()
+    {
+        var (h, task) = await StartRefillSessionAsync(prefetchCount: 10);
+
+        h.Ack(1, 1);
+        await Task.Delay(500);
+
+        Assert.Single(h.DequeueRequests);
+        await StopAsync(h, task);
+    }
+
+    [Fact]
+    public async Task ConsumeSession_PrefetchOne_RefillsOnAck()
+    {
+        var (h, task) = await StartRefillSessionAsync(prefetchCount: 1);
+
+        h.Ack(1, 1);
+        await WaitUntilAsync(() => h.DequeueRequests.Count >= 2);
+
+        Assert.Equal(1, h.DequeueRequests.ElementAt(1).Count);
+        await StopAsync(h, task);
+    }
+
+    [Fact]
+    public async Task ConsumeSession_DeadLettersHalfDrainWindow_RefillsBeforePollInterval()
+    {
+        var (h, task) = await StartRefillSessionAsync(prefetchCount: 10);
+
+        h.DeadLetter(1, 5);
+        await WaitUntilAsync(() => h.DequeueRequests.Count >= 2);
+
+        Assert.True(h.DequeueRequests.ElementAt(1).Count >= 5);
+        await StopAsync(h, task);
+    }
+
+    [Fact]
+    public async Task ConsumeSession_EmptyQueueAfterRefill_FurtherAcksDoNotDequeue()
+    {
+        var (h, task) = await StartRefillSessionAsync(prefetchCount: 10);
+
+        h.Ack(1, 5);
+        await WaitUntilAsync(() => h.DequeueRequests.Count >= 2);
+
+        // Queue is now empty: draining the rest of the window must not trigger more DequeueLocked calls.
+        h.Ack(6, 10);
+        await Task.Delay(500);
+
+        Assert.Equal(2, h.DequeueRequests.Count);
+        await StopAsync(h, task);
+    }
 }

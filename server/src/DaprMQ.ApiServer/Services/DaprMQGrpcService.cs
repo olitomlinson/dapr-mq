@@ -16,6 +16,12 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
     private readonly ActorModels.IQueueActorInvoker _queueActorInvoker;
     private readonly ActorModels.ISessionCoordinatorActorInvoker _sessionCoordinatorActorInvoker;
 
+    /// <summary>
+    /// ConsumeSession's fallback wait between polls, when the window is full or the queue is empty.
+    /// Overridable so tests can tell an ack-driven refill apart from a timer tick.
+    /// </summary>
+    internal TimeSpan PollInterval { get; set; } = TimeSpan.FromMilliseconds(200);
+
     public DaprMQGrpcService(
         ILogger<DaprMQGrpcService> logger,
         ActorModels.IQueueActorInvoker queueActorInvoker,
@@ -632,6 +638,25 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken);
         int outstanding = 0;
 
+        // Released when acks drain the window to half full, so the poll loop refills while the
+        // client still has messages in hand instead of waiting out PollInterval.
+        using var refillSignal = new SemaphoreSlim(0, 1);
+        var refillThreshold = prefetchCount / 2;
+        void Settled()
+        {
+            if (Interlocked.Decrement(ref outstanding) == refillThreshold && refillSignal.CurrentCount == 0)
+            {
+                try
+                {
+                    refillSignal.Release();
+                }
+                catch (SemaphoreFullException)
+                {
+                    // Already signalled - a rare double release is harmless.
+                }
+            }
+        }
+
         // Reads Ack/DeadLetter frames from the client for the life of the stream. Cancels the
         // shared token when the client closes its send side (natural end, no exception) or when
         // the poll loop below cancels first (a fatal lease failure) - either way, the other side
@@ -670,7 +695,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                             });
                         }
 
-                        Interlocked.Decrement(ref outstanding);
+                        Settled();
                     }
                     else if (req.PayloadCase == ConsumeSessionRequest.PayloadOneofCase.DeadLetter)
                     {
@@ -696,7 +721,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                             });
                         }
 
-                        Interlocked.Decrement(ref outstanding);
+                        Settled();
                     }
                 }
             }
@@ -745,7 +770,8 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                 }
 
                 var capacity = prefetchCount - Volatile.Read(ref outstanding);
-                if (capacity > 0)
+                var windowFull = capacity <= 0;
+                if (!windowFull)
                 {
                     var dequeueResult = await _queueActorInvoker.InvokeMethodAsync<ActorModels.DequeueLockedRequest, ActorModels.DequeueLockedResponse>(
                         sessionActorId,
@@ -812,7 +838,16 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                     emptySince = null;
                 }
 
-                await Task.Delay(TimeSpan.FromMilliseconds(200), cts.Token);
+                // Window full: wake early once acks half-drain it. Queue empty: an ack isn't a
+                // reason to look for new messages, so wait out the poll interval.
+                if (windowFull)
+                {
+                    await refillSignal.WaitAsync(PollInterval, cts.Token);
+                }
+                else
+                {
+                    await Task.Delay(PollInterval, cts.Token);
+                }
             }
         }
         catch (OperationCanceledException)
