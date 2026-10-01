@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session Drain Performance</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root {
+  color-scheme: light;
+  --surface-0: #f5f4f1; --surface-1: #fcfcfb; --border: #e3e2dd;
+  --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #7a7974; --grid: #ecebe7;
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
+  --reference: #7a7974;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface-0: #111110; --surface-1: #1a1a19; --border: #2e2e2c;
+    --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #8d8c85; --grid: #2a2a28;
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+    --reference: #8d8c85;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-0: #111110; --surface-1: #1a1a19; --border: #2e2e2c;
+  --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #8d8c85; --grid: #2a2a28;
+  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+  --reference: #8d8c85;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--surface-0); color: var(--text-primary); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1120px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 15px; margin: 0 0 2px; }
+p.sub, .card p { color: var(--text-secondary); margin: 0 0 12px; }
+.filters { display: flex; flex-wrap: wrap; gap: 12px; margin: 16px 0; }
+.filters label { display: flex; flex-direction: column; font-size: 12px; color: var(--text-secondary); gap: 4px; }
+select { font: inherit; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-1); color: var(--text-primary); max-width: 100%; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.tile, .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+.tile .label { font-size: 12px; color: var(--text-secondary); }
+.tile .value { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tile .note { font-size: 12px; color: var(--text-muted); }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 480px), 1fr)); gap: 16px; }
+.card { min-width: 0; }
+.chart { position: relative; height: 260px; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+th { color: var(--text-secondary); font-weight: 500; }
+.table-wrap { overflow-x: auto; }
+.empty { color: var(--text-secondary); padding: 32px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Session drain performance</h1>
+  <p class="sub">One <code>SessionQueueConsumer</code> draining N sessions × M messages, each message taking a fixed settle time. Idle time is measured over the peak window: first delivery until the last session is first claimed.</p>
+
+  <div class="filters">
+    <label>Scenario <select id="scenario"></select></label>
+    <label>Environment <select id="env"></select></label>
+  </div>
+
+  <div id="content">
+    <div class="tiles" id="tiles"></div>
+    <div class="grid">
+      <div class="card"><h2>Wall clock vs ideal</h2><p>Seconds from consumer start (in +concurrent scenarios, also publish start) to the last message handled. Ideal = ⌈sessions ÷ slots⌉ × messages × settle, or a session's publish time + settle if a rate-limited concurrent publish is slower.</p><div class="chart"><canvas id="wall"></canvas></div></div>
+      <div class="card"><h2>Peak slot utilisation</h2><p>Share of slot time spent in the handler during the peak window.</p><div class="chart"><canvas id="util"></canvas></div></div>
+      <div class="card"><h2>Where peak idle time went</h2><p>Idle slot-seconds in the peak window, by cause.</p><div class="chart"><canvas id="idle"></canvas></div></div>
+      <div class="card"><h2>Busy slots over time (latest run)</h2><p>Average handlers running per second; dashed line is MaxConcurrentSessions.</p><div class="chart"><canvas id="timeline"></canvas></div></div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h2>Runs</h2>
+      <div class="table-wrap"><table id="runs"></table></div>
+    </div>
+  </div>
+</main>
+<script>
+const DATA = {"history":[{"schemaVersion":1,"runId":"20261001T162457Z_ci-ubuntu-latest_steady-drain","timestampUtc":"2026-10-01T16:24:57.3395182\u002B00:00","environment":{"label":"ci-ubuntu-latest","gitSha":"df5763b6bc35c8de6b9612f6dcaaf1258ac275e9","gitBranch":"main","gitDirty":false,"os":"Ubuntu 24.04.5 LTS","cpuCount":4,"dotnet":".NET 10.0.12","server":"testcontainers daprmq-api:test"},"profile":"steady-drain","scenario":{"sessions":200,"messagesPerSession":20,"settleMs":100,"maxConcurrentSessions":20,"prefetchCount":10,"leaseSeconds":30,"sessionIdleTimeoutSeconds":1,"publishMode":"before","publishIntervalMs":0,"publishJitterMs":0,"key":"200x20@100ms/20slots\u002Bidle1s","idealSeconds":20},"metrics":{"seedSeconds":1.0979618,"wallClockSeconds":28.9606582,"idealSeconds":20,"efficiency":0.6905920390994428,"timeToFirstMessageSeconds":0.2247277,"tailSeconds":2.002369400000003,"peak":{"startSeconds":0.2247277,"endSeconds":26.9582888,"capacitySlotSeconds":534.671222,"handlingSeconds":362.92709439999993,"claimSeconds":9.457763999999997,"inSessionWaitSeconds":0.36296150000002786,"drainWaitSeconds":161.9225631,"betweenStreamsSeconds":0.0008389999996870756,"idleSlotSeconds":171.7441276,"utilization":0.6787855404718228},"overall":{"startSeconds":0,"endSeconds":28.9606582,"capacitySlotSeconds":579.213164,"handlingSeconds":400.5605807999998,"claimSeconds":13.8478592,"inSessionWaitSeconds":0.40563320000003183,"drainWaitSeconds":164.30771559999997,"betweenStreamsSeconds":0.09137519999954384,"idleSlotSeconds":178.6525832000002,"utilization":0.6915598706938225},"claimLatencyMs":{"count":200,"mean":69.239296,"p50":40.75760000000082,"p95":272.78950000000003,"max":398.3535},"drainWaitMs":{"count":200,"mean":822.59322,"p50":857.5923000000003,"p95":1084.7476000000006,"max":1129.4026000000013},"interMessageGapMs":{"count":3800,"mean":0.10186597368422123,"p50":0.06880000000091968,"p95":0.1977999999999156,"max":10.882499999999709},"deliveryLatencyMs":{"count":4000,"mean":14952.75675,"p50":14573,"p95":27898,"max":28930},"streams":200,"failedClaims":0,"sessionsClaimedMoreThanOnce":0,"messagesHandled":4000,"duplicates":0,"missing":0,"fifoViolations":0,"timelineBucketMs":1000}},{"schemaVersion":1,"runId":"20261001T162513Z_ci-ubuntu-latest_session-churn","timestampUtc":"2026-10-01T16:25:13.2149402\u002B00:00","environment":{"label":"ci-ubuntu-latest","gitSha":"df5763b6bc35c8de6b9612f6dcaaf1258ac275e9","gitBranch":"main","gitDirty":false,"os":"Ubuntu 24.04.5 LTS","cpuCount":4,"dotnet":".NET 10.0.12","server":"testcontainers daprmq-api:test"},"profile":"session-churn","scenario":{"sessions":300,"messagesPerSession":2,"settleMs":50,"maxConcurrentSessions":20,"prefetchCount":10,"leaseSeconds":30,"sessionIdleTimeoutSeconds":1,"publishMode":"before","publishIntervalMs":0,"publishJitterMs":0,"key":"300x2@50ms/20slots\u002Bidle1s","idealSeconds":1.5},"metrics":{"seedSeconds":1.3094805,"wallClockSeconds":14.5295183,"idealSeconds":1.5,"efficiency":0.10323810941481798,"timeToFirstMessageSeconds":0.013232200000000001,"tailSeconds":0.10046370000000024,"peak":{"startSeconds":0.013232200000000001,"endSeconds":14.429054599999999,"capacitySlotSeconds":288.316448,"handlingSeconds":29.6852957,"claimSeconds":11.874864199999992,"inSessionWaitSeconds":0.025619600000005918,"drainWaitSeconds":246.72999189999985,"betweenStreamsSeconds":0.0006766000000061467,"idleSlotSeconds":258.6311523,"utilization":0.10296081235018546},"overall":{"startSeconds":0,"endSeconds":14.5295183,"capacitySlotSeconds":290.59036599999996,"handlingSeconds":30.082037099999994,"claimSeconds":12.77513089999999,"inSessionWaitSeconds":0.02601370000000746,"drainWaitSeconds":247.70129439999985,"betweenStreamsSeconds":0.00588990000000922,"idleSlotSeconds":260.5083289,"utilization":0.10352042125168044},"claimLatencyMs":{"count":300,"mean":40.296854666666654,"p50":40.45970000000125,"p95":60.66159999999945,"max":189.0841},"drainWaitMs":{"count":300,"mean":825.9182199999992,"p50":927.3994000000002,"p95":958.1864999999998,"max":1145.5299},"interMessageGapMs":{"count":300,"mean":0.08491666666669377,"p50":0.0644999999999527,"p95":0.17439999999987776,"max":0.7615999999998166},"deliveryLatencyMs":{"count":600,"mean":7571.878333333333,"p50":7380,"p95":13640,"max":14534},"streams":310,"failedClaims":10,"sessionsClaimedMoreThanOnce":0,"messagesHandled":600,"duplicates":0,"missing":0,"fifoViolations":0,"timelineBucketMs":1000}},{"schemaVersion":1,"runId":"20261001T162533Z_ci-ubuntu-latest_deep-session","timestampUtc":"2026-10-01T16:25:33.9775262\u002B00:00","environment":{"label":"ci-ubuntu-latest","gitSha":"df5763b6bc35c8de6b9612f6dcaaf1258ac275e9","gitBranch":"main","gitDirty":false,"os":"Ubuntu 24.04.5 LTS","cpuCount":4,"dotnet":".NET 10.0.12","server":"testcontainers daprmq-api:test"},"profile":"deep-session","scenario":{"sessions":4,"messagesPerSession":1000,"settleMs":10,"maxConcurrentSessions":4,"prefetchCount":10,"leaseSeconds":30,"sessionIdleTimeoutSeconds":1,"publishMode":"before","publishIntervalMs":0,"publishJitterMs":0,"key":"4x1000@10ms/4slots\u002Bidle1s","idealSeconds":10},"metrics":{"seedSeconds":0.0737115,"wallClockSeconds":20.6625535,"idealSeconds":10,"efficiency":0.4839672889413208,"timeToFirstMessageSeconds":0.0161316,"tailSeconds":20.627357900000003,"peak":{"startSeconds":0.0161316,"endSeconds":0.0351956,"capacitySlotSeconds":0.076256,"handlingSeconds":0.0377696,"claimSeconds":0.038277300000000014,"inSessionWaitSeconds":0.00020909999999999584,"drainWaitSeconds":0,"betweenStreamsSeconds":0,"idleSlotSeconds":0.038486400000000004,"utilization":0.49530004196391103},"overall":{"startSeconds":0,"endSeconds":20.6625535,"capacitySlotSeconds":82.650214,"handlingSeconds":40.46871249999997,"claimSeconds":0.1023301,"inSessionWaitSeconds":41.927409900000036,"drainWaitSeconds":0.15129080000000614,"betweenStreamsSeconds":0.00047070000000530853,"idleSlotSeconds":42.18150150000004,"utilization":0.4896383268892681},"claimLatencyMs":{"count":4,"mean":25.582525,"p50":21.538800000000002,"p95":35.1417,"max":35.1417},"drainWaitMs":{"count":4,"mean":39.28837499999918,"p50":11.893000000000029,"p95":72.11809999999969,"max":72.11809999999969},"interMessageGapMs":{"count":3996,"mean":10.492342992992997,"p50":0.06750000000101863,"p95":105.03559999999925,"max":127.625},"deliveryLatencyMs":{"count":4000,"mean":10394.7265,"p50":10357,"p95":19687,"max":20724},"streams":4,"failedClaims":0,"sessionsClaimedMoreThanOnce":0,"messagesHandled":4000,"duplicates":0,"missing":0,"fifoViolations":0,"timelineBucketMs":1000}},{"schemaVersion":1,"runId":"20261001T162547Z_ci-ubuntu-latest_live-publish","timestampUtc":"2026-10-01T16:25:47.039285\u002B00:00","environment":{"label":"ci-ubuntu-latest","gitSha":"df5763b6bc35c8de6b9612f6dcaaf1258ac275e9","gitBranch":"main","gitDirty":false,"os":"Ubuntu 24.04.5 LTS","cpuCount":4,"dotnet":".NET 10.0.12","server":"testcontainers daprmq-api:test"},"profile":"live-publish","scenario":{"sessions":20,"messagesPerSession":50,"settleMs":100,"maxConcurrentSessions":20,"prefetchCount":10,"leaseSeconds":30,"sessionIdleTimeoutSeconds":1,"publishMode":"concurrent","publishIntervalMs":200,"publishJitterMs":100,"key":"20x50@100ms/20slots\u002Bconcurrent\u002Bpub200ms~100ms\u002Bidle1s","idealSeconds":12.6},"metrics":{"seedSeconds":12.8406466,"wallClockSeconds":13.0467947,"idealSeconds":12.6,"efficiency":0.9657544469523998,"timeToFirstMessageSeconds":1.0239237,"tailSeconds":11.8974272,"peak":{"startSeconds":1.0239237,"endSeconds":1.1493675,"capacitySlotSeconds":2.5088760000000003,"handlingSeconds":1.2698622000000006,"claimSeconds":1.2383090999999993,"inSessionWaitSeconds":0.0005023000000003321,"drainWaitSeconds":0,"betweenStreamsSeconds":0.00020240000000012516,"idleSlotSeconds":1.2390137999999997,"utilization":0.5061478526639023},"overall":{"startSeconds":0,"endSeconds":13.0467947,"capacitySlotSeconds":260.935894,"handlingSeconds":100.09380969999994,"claimSeconds":1.7138062999999997,"inSessionWaitSeconds":132.33571730000006,"drainWaitSeconds":6.78938340000001,"betweenStreamsSeconds":20.00317729999998,"idleSlotSeconds":160.84208430000007,"utilization":0.3835954040880245},"claimLatencyMs":{"count":20,"mean":70.33652500000001,"p50":68.42340000000002,"p95":117.97630000000004,"max":125.21370000000002},"drainWaitMs":{"count":20,"mean":344.76451500000013,"p50":349.3852999999999,"p95":620.3298000000013,"max":744.035899999999},"interMessageGapMs":{"count":980,"mean":135.03639081632656,"p50":105.4325000000008,"p95":308.1306000000004,"max":313.8721999999998},"deliveryLatencyMs":{"count":1000,"mean":170.609,"p50":122,"p95":722,"max":1124},"streams":40,"failedClaims":20,"sessionsClaimedMoreThanOnce":0,"messagesHandled":1000,"duplicates":0,"missing":0,"fifoViolations":0,"timelineBucketMs":1000}},{"schemaVersion":1,"runId":"20261001T162627Z_ci-ubuntu-latest_sdk-defaults","timestampUtc":"2026-10-01T16:26:27.3481033\u002B00:00","environment":{"label":"ci-ubuntu-latest","gitSha":"df5763b6bc35c8de6b9612f6dcaaf1258ac275e9","gitBranch":"main","gitDirty":false,"os":"Ubuntu 24.04.5 LTS","cpuCount":4,"dotnet":".NET 10.0.12","server":"testcontainers daprmq-api:test"},"profile":"sdk-defaults","scenario":{"sessions":40,"messagesPerSession":5,"settleMs":1000,"maxConcurrentSessions":20,"prefetchCount":10,"leaseSeconds":30,"sessionIdleTimeoutSeconds":0,"publishMode":"before","publishIntervalMs":0,"publishJitterMs":0,"key":"40x5@1000ms/20slots","idealSeconds":10},"metrics":{"seedSeconds":0.1498639,"wallClockSeconds":40.1513479,"idealSeconds":10,"efficiency":0.24905764122553906,"timeToFirstMessageSeconds":0.0126184,"tailSeconds":4.999700300000004,"peak":{"startSeconds":0.0126184,"endSeconds":35.1516476,"capacitySlotSeconds":702.7805839999999,"handlingSeconds":101.50010039999991,"claimSeconds":2.835062400000008,"inSessionWaitSeconds":0.006000299999996969,"drainWaitSeconds":598.4393788,"betweenStreamsSeconds":4.210000007878989E-05,"idleSlotSeconds":601.2804835999999,"utilization":0.14442644363094687},"overall":{"startSeconds":0,"endSeconds":40.1513479,"capacitySlotSeconds":803.026958,"handlingSeconds":200.01908690000002,"claimSeconds":3.082109400000008,"inSessionWaitSeconds":0.010521899999985181,"drainWaitSeconds":599.9098788000001,"betweenStreamsSeconds":0.005360999999917113,"idleSlotSeconds":603.0078711,"utilization":0.2490814099170006},"claimLatencyMs":{"count":40,"mean":77.0527350000002,"p50":66.71680000000197,"p95":150.1288,"max":165.36499999999998},"drainWaitMs":{"count":40,"mean":14999.880710000001,"p50":176.30230000000302,"p95":29960.271900000003,"max":29988.542599999997},"interMessageGapMs":{"count":160,"mean":0.06539312499991397,"p50":0.055099999997764826,"p95":0.13700000000017099,"max":0.46410000000469154},"deliveryLatencyMs":{"count":200,"mean":19695.91,"p50":4285,"p95":39177,"max":39196},"streams":40,"failedClaims":0,"sessionsClaimedMoreThanOnce":0,"messagesHandled":200,"duplicates":0,"missing":0,"fifoViolations":0,"timelineBucketMs":1000}}],"timelines":{"ci-ubuntu-latest|200x20@100ms/20slots\u002Bidle1s":[14.097,19.965,8.245,19.877,17.822,2.306,19.844,17.886,2.148,19.867,18.055,1.93,19.61,18.258,2.95,19.931,17.499,2.989,19.985,17.141,2.934,19.984,17.129,3.312,19.985,16.76,3.254,19.984,16.815],"ci-ubuntu-latest|300x2@50ms/20slots\u002Bidle1s":[3.41,2.005,2.005,2.006,2.004,2.005,2.005,2.006,2.006,2.004,2.009,2.007,2.005,2.004,0.601],"ci-ubuntu-latest|4x1000@10ms/4slots\u002Bidle1s":[2.03,2.025,1.911,1.886,1.898,1.992,2.03,2.007,1.915,1.875,1.933,1.981,2.022,1.978,1.869,1.917,1.952,1.987,2.006,1.959,1.294],"ci-ubuntu-latest|20x50@100ms/20slots\u002Bconcurrent\u002Bpub200ms~100ms\u002Bidle1s":[0,15.186,8.107,7.621,7.764,7.938,7.649,8.488,7.845,7.782,7.802,8.009,5.79,0.112],"ci-ubuntu-latest|40x5@1000ms/20slots":[18.213,19.999,19.999,19.999,19.998,1.802,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0.038,18.419,19.999,19.999,19.999,19.964,1.592]}};
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const scenarioKey = r => r.scenario.key; // ScenarioParams.Key, serialised with every run
+const runLabel = r => `${r.timestampUtc.slice(0, 16).replace('T', ' ')} ${(r.environment.gitSha || '').slice(0, 7)}`;
+const fmt = (v, d = 1) => Number(v).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
+const duration = sec => sec < 120 ? `${fmt(sec)} s` : sec < 7200 ? `${fmt(sec / 60)} min` : `${fmt(sec / 3600, 2)} h`;
+const charts = {};
+
+function option(select, value, text) {
+  const o = document.createElement('option');
+  o.value = value; o.textContent = text; select.appendChild(o);
+}
+
+function setup() {
+  const history = DATA.history;
+  if (!history.length) {
+    document.getElementById('content').innerHTML = '<p class="empty">No runs recorded yet.</p>';
+    return;
+  }
+  const scenarios = new Map(history.map(r => [scenarioKey(r), r.profile])); // latest profile name per key
+  const latest = history[history.length - 1];
+  const scenarioSel = document.getElementById('scenario');
+  scenarios.forEach((profile, key) => option(scenarioSel, key, `${profile} — ${key}`));
+  scenarioSel.value = scenarioKey(latest);
+
+  const envSel = document.getElementById('env');
+  [...new Set(history.map(r => r.environment.label))].forEach(e => option(envSel, e, e));
+  envSel.value = latest.environment.label;
+
+  scenarioSel.onchange = envSel.onchange = render;
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', render);
+  render();
+}
+
+function baseOptions(yTitle, extra = {}) {
+  const text = css('--text-secondary'), grid = css('--grid');
+  return {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { position: 'bottom', labels: { color: text, boxWidth: 14, boxHeight: 2 } },
+      tooltip: { backgroundColor: css('--surface-1'), titleColor: css('--text-primary'), bodyColor: css('--text-primary'), borderColor: css('--border'), borderWidth: 1 }
+    },
+    scales: {
+      x: { ticks: { color: text, maxRotation: 0, autoSkip: true }, grid: { display: false } },
+      y: { beginAtZero: true, title: { display: true, text: yTitle, color: text }, ticks: { color: text }, grid: { color: grid } },
+    },
+    ...extra,
+  };
+}
+
+function draw(id, config) {
+  charts[id]?.destroy();
+  charts[id] = new Chart(document.getElementById(id), config);
+}
+
+function line(label, data, color, extra = {}) {
+  return { label, data, borderColor: color, backgroundColor: color, borderWidth: 2, pointRadius: 4, pointHoverRadius: 6, tension: 0, ...extra };
+}
+
+function tile(label, value, note) {
+  const t = document.createElement('div'); t.className = 'tile';
+  [['label', label], ['value', value], ['note', note]].forEach(([c, v]) => {
+    const d = document.createElement('div'); d.className = c; d.textContent = v; t.appendChild(d);
+  });
+  return t;
+}
+
+function render() {
+  const scenario = document.getElementById('scenario').value;
+  const env = document.getElementById('env').value;
+  const runs = DATA.history.filter(r => scenarioKey(r) === scenario && r.environment.label === env);
+  const labels = runs.map(runLabel);
+  const m = runs.map(r => r.metrics);
+  const s1 = css('--series-1'), s2 = css('--series-2'), s3 = css('--series-3'), s4 = css('--series-4'), ref = css('--reference');
+
+  const tiles = document.getElementById('tiles');
+  tiles.replaceChildren();
+  if (runs.length) {
+    const last = m[m.length - 1], prev = m.length > 1 ? m[m.length - 2] : null;
+    const delta = (a, b, unit, d = 1) => b == null ? 'first run' : `${a - b >= 0 ? '+' : ''}${fmt(a - b, d)}${unit} vs previous`;
+    tiles.append(
+      tile('Wall clock', duration(last.wallClockSeconds), delta(last.wallClockSeconds, prev?.wallClockSeconds, 's', 0)),
+      tile('Efficiency', `${fmt(last.efficiency * 100)}%`, `ideal ${duration(last.idealSeconds)}`),
+      tile('Peak idle', `${fmt((1 - last.peak.utilization) * 100)}%`, `${fmt(last.peak.idleSlotSeconds, 0)} slot-seconds`),
+      tile('Drain wait p50', `${fmt(last.drainWaitMs.p50 / 1000)} s`, `claim p50 ${fmt(last.claimLatencyMs.p50, 0)} ms`),
+    );
+  }
+
+  draw('wall', { type: 'line', data: { labels, datasets: [
+    line('Wall clock', m.map(x => x.wallClockSeconds), s1),
+    line('Ideal', m.map(x => x.idealSeconds), ref, { borderDash: [6, 4], pointRadius: 0 }),
+  ] }, options: baseOptions('seconds') });
+
+  draw('util', { type: 'line', data: { labels, datasets: [
+    line('Peak utilisation', m.map(x => +(x.peak.utilization * 100).toFixed(1)), s1),
+  ] }, options: baseOptions('% of slot time', { plugins: { ...baseOptions('').plugins, legend: { display: false } } }) });
+
+  const idleOpts = baseOptions('slot-seconds');
+  idleOpts.scales.x.stacked = true; idleOpts.scales.y.stacked = true;
+  idleOpts.plugins.legend.labels = { ...idleOpts.plugins.legend.labels, boxWidth: 10, boxHeight: 10 };
+  const bar = (label, data, color) => ({ label, data, backgroundColor: color, borderColor: css('--surface-1'), borderWidth: { top: 2 }, borderRadius: 4, borderSkipped: 'bottom', maxBarThickness: 40 });
+  draw('idle', { type: 'bar', data: { labels, datasets: [
+    bar('Drain wait', m.map(x => x.peak.drainWaitSeconds), s1),
+    bar('Claim', m.map(x => x.peak.claimSeconds), s2),
+    bar('In-session wait', m.map(x => x.peak.inSessionWaitSeconds), s3),
+    bar('Between streams', m.map(x => x.peak.betweenStreamsSeconds), s4),
+  ] }, options: idleOpts });
+
+  const timeline = DATA.timelines[`${env}|${scenario}`] || [];
+  const slots = runs.length ? runs[runs.length - 1].scenario.maxConcurrentSessions : 0;
+  const tlOpts = baseOptions('busy slots');
+  tlOpts.scales.x.title = { display: true, text: 'seconds since consume start', color: css('--text-secondary') };
+  draw('timeline', { type: 'line', data: { labels: timeline.map((_, i) => i), datasets: [
+    line('Busy slots', timeline, s1, { pointRadius: 0, fill: true, backgroundColor: s1 + '33' }),
+    line('MaxConcurrentSessions', timeline.map(() => slots), ref, { borderDash: [6, 4], pointRadius: 0 }),
+  ] }, options: tlOpts });
+
+  const table = document.getElementById('runs');
+  table.replaceChildren();
+  const cols = [
+    ['Run', r => runLabel(r)], ['Branch', r => r.environment.gitBranch + (r.environment.gitDirty ? '*' : '')],
+    ['Wall (s)', r => fmt(r.metrics.wallClockSeconds, 0)], ['Ideal (s)', r => fmt(r.metrics.idealSeconds, 0)],
+    ['Efficiency', r => fmt(r.metrics.efficiency * 100) + '%'], ['Peak util', r => fmt(r.metrics.peak.utilization * 100) + '%'],
+    ['Drain (s)', r => fmt(r.metrics.peak.drainWaitSeconds, 0)], ['Claim (s)', r => fmt(r.metrics.peak.claimSeconds, 0)],
+    ['In-session (s)', r => fmt(r.metrics.peak.inSessionWaitSeconds, 0)], ['Between (s)', r => fmt(r.metrics.peak.betweenStreamsSeconds, 0)],
+    ['Claim p95 (ms)', r => fmt(r.metrics.claimLatencyMs.p95, 0)],
+    ['Delivery p95 (ms)', r => r.metrics.deliveryLatencyMs ? fmt(r.metrics.deliveryLatencyMs.p95, 0) : '–'],
+    ['Seed (s)', r => fmt(r.metrics.seedSeconds)], ['Tail (s)', r => fmt(r.metrics.tailSeconds)],
+    ['Dupes', r => r.metrics.duplicates], ['FIFO viol.', r => r.metrics.fifoViolations],
+  ];
+  const head = table.createTHead().insertRow();
+  cols.forEach(([h]) => { const th = document.createElement('th'); th.textContent = h; head.appendChild(th); });
+  const body = table.createTBody();
+  [...runs].reverse().forEach(r => { const row = body.insertRow(); cols.forEach(([, f]) => { row.insertCell().textContent = f(r); }); });
+}
+
+setup();
+</script>
+</body>
+</html>
