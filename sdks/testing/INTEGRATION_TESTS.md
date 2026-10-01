@@ -107,8 +107,7 @@ Topics/pub-sub, HTTP sink, and large-object offload are server features with no 
 ## Notes
 
 - Python currently has unit tests only. TypeScript and Java have one integration row each (K-02) on Testcontainers; the rest of their columns are empty.
-- Scenarios relying on TTL expiry (L-02, L-03, S-08) should use the shortest TTL the server accepts and poll with a timeout rather than fixed sleeps. Two exceptions, both found while implementing the .NET column:
-  - **S-08** must wait the lease out *quietly* ([issue](../../docs/issues/session-actor-state-rollback-on-lease-expiry.md)). Polling the session actor with dequeues across the lease-expiry boundary trips a server-side state bug: the actor's metadata rolls back, so the same item is handed out repeatedly and the synced lease vanishes entirely (a no-lease dequeue then succeeds, instead of the expected `SessionLeaseExpired`).
+- Scenarios relying on TTL expiry (L-02, L-03, S-08) should use the shortest TTL the server accepts and poll with a timeout rather than fixed sleeps. One exception, found while implementing the .NET column:
   - **C-01/C-03**, and any consumer test asserting on post-consumption queue state, must let the server apply the last Ack/DeadLetter before the stream is torn down. Those are fire-and-forget frames on the request stream, so breaking out of the loop immediately after writing one can close the call before it lands. Pairing a short `sessionIdleTimeoutSeconds` with enumerating to the stream's natural end is the reliable shape - the server only ends the stream once nothing is outstanding.
 
 - Claiming a session immediately after another consumer disconnects or stops can see `SessionLocked`: the release happens as the server tears the stream down, slightly after the client-side call returns. Poll through it rather than asserting on the first attempt.

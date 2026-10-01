@@ -868,6 +868,54 @@ public class QueueActorLockExpiryTests
         Assert.Contains("\"id\":\"B\"", second.Items[0].ItemJson);
     }
 
+    [Theory]
+    [InlineData("lease-1")]
+    [InlineData("wrong-lease")]
+    [InlineData(null)]
+    public async Task LapsedSessionLease_WithOutstandingLocks_KeepsRefusingEveryCaller(string? leaseId)
+    {
+        var (actor, state) = await CreateActorAsync(actorId: SessionActorId);
+        await EnqueueAsync(actor, "{\"id\":\"A\"}");
+
+        await LeaseAndLockAsync(actor, "lease-1", Now() + 60, 1);
+        LapseLease(state);
+
+        // The first call after the lapse reclaims A. Reclaiming must not strip the lease, or the
+        // guard has nothing to enforce and lets this and every later caller through.
+        for (int i = 0; i < 3; i++)
+        {
+            var locked = await actor.DequeueLocked(new DequeueLockedRequest
+            {
+                TtlSeconds = 30,
+                LeaseId = leaseId,
+                AllowCompetingConsumers = true
+            });
+            Assert.Equal("SESSION_LEASE_EXPIRED", locked.ErrorCode);
+
+            var plain = await actor.Dequeue(new DequeueRequest { LeaseId = leaseId });
+            Assert.Equal("SESSION_LEASE_EXPIRED", plain.ErrorCode);
+        }
+    }
+
+    [Fact]
+    public async Task LapsedSessionLease_PolledRepeatedly_ReclaimsOnlyOnce()
+    {
+        var (actor, state) = await CreateActorAsync(actorId: SessionActorId);
+        await EnqueueAsync(actor, "{\"id\":\"A\"}");
+
+        await LeaseAndLockAsync(actor, "lease-1", Now() + 60, 1);
+        LapseLease(state);
+
+        for (int i = 0; i < 3; i++)
+        {
+            await actor.DequeueLocked(new DequeueLockedRequest { TtlSeconds = 30, LeaseId = "lease-1", AllowCompetingConsumers = true });
+        }
+
+        // One lapse is one failed delivery, however many times the old holder polled after it.
+        var next = await LeaseAndLockAsync(actor, "lease-2", Now() + 60, 1);
+        Assert.Equal(1, ((LockState)state[$"{next.Items[0].LockId}-lock"]).DeliveryCount);
+    }
+
     [Fact]
     public async Task DequeueLocked_OnSessionActor_IndexesIntoTheSessionKey()
     {

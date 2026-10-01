@@ -1,8 +1,10 @@
 # Reclaiming a lapsed session's locks clears the lease, dropping lease enforcement and redelivering items
 
-**Status:** Confirmed, reproduced on demand. Root cause identified (below). Not fixed.
+**Status:** Resolved 2026-10-01. The reclaim no longer clears the lease (see Resolution).
 
-**Severity:** High, with a security-adjacent edge. The lease guard is what stops a consumer that no
+Everything from here to the Resolution describes the state *before* the fix and is kept as the record.
+
+**Severity:** was High, with a security-adjacent edge. The lease guard is what stops a consumer that no
 longer holds a session from touching it; once this triggers, the guard is gone and a dequeue carrying
 **no lease at all** succeeds. Every such dequeue also burns a delivery attempt, so a healthy item is
 dead-lettered after `MaxDeliveryCount` (default 10) polls.
@@ -34,9 +36,9 @@ follows from the code path below.
 ## Root cause
 
 `ReclaimLapsedSessionLocksAsync`
-([QueueActor.cs:686-760](../../server/src/DaprMQ/QueueActor.cs#L686-L760)) clears the lease fields as
+([QueueActor.cs:686-760](../../../server/src/DaprMQ/QueueActor.cs#L686-L760)) clears the lease fields as
 part of its commit
-([QueueActor.cs:738-745](../../server/src/DaprMQ/QueueActor.cs#L738-L745)):
+([QueueActor.cs:738-745](../../../server/src/DaprMQ/QueueActor.cs#L738-L745)):
 
 ```csharp
 await SetMetadataAsync(metadata with
@@ -48,14 +50,14 @@ await SetMetadataAsync(metadata with
 ```
 
 `DequeueLocked` sweeps first and only then authorizes
-([QueueActor.cs:1472](../../server/src/DaprMQ/QueueActor.cs#L1472), then
-[QueueActor.cs:1482](../../server/src/DaprMQ/QueueActor.cs#L1482)). `Dequeue` does the same. The guard
+([QueueActor.cs:1472](../../../server/src/DaprMQ/QueueActor.cs#L1472), then
+[QueueActor.cs:1482](../../../server/src/DaprMQ/QueueActor.cs#L1482)). `Dequeue` does the same. The guard
 treats a null lease as "not a leased session" and returns `true`
-([QueueActor.cs:283-288](../../server/src/DaprMQ/QueueActor.cs#L283-L288)), so the sweep strips the
+([QueueActor.cs:283-288](../../../server/src/DaprMQ/QueueActor.cs#L283-L288)), so the sweep strips the
 lease and the guard then lets the same call through.
 
 The reclaim exits early only when the lease is live or when `LockCount == 0`
-([QueueActor.cs:689-702](../../server/src/DaprMQ/QueueActor.cs#L689-L702)). Once the lease is null it
+([QueueActor.cs:689-702](../../../server/src/DaprMQ/QueueActor.cs#L689-L702)). Once the lease is null it
 is never live again, so every dequeue that leaves a lock behind sets up another reclaim on the next
 call.
 
@@ -107,9 +109,9 @@ they are, and touch only `LockCount`. Leaving them in place is safe:
 - The lapsed expiry already makes the guard return `SESSION_LEASE_EXPIRED` to every caller until a new
   holder arrives.
 - `SetSessionLease` overwrites both fields for the next holder, after running its own sweep
-  ([QueueActor.cs:487-502](../../server/src/DaprMQ/QueueActor.cs#L487-L502)).
+  ([QueueActor.cs:487-502](../../../server/src/DaprMQ/QueueActor.cs#L487-L502)).
 - The reclaim deletes the session lock index
-  ([QueueActor.cs:736](../../server/src/DaprMQ/QueueActor.cs#L736)), and the guard stops any new lock
+  ([QueueActor.cs:736](../../../server/src/DaprMQ/QueueActor.cs#L736)), and the guard stops any new lock
   being taken under the lapsed lease. A second pass therefore finds `LockCount == 0` and does nothing,
   so the reclaim runs once per lapse.
 
@@ -119,7 +121,7 @@ release).
 ## Current mitigation in the test suite
 
 `S08_ExpiredLease_IsReclaimable_AndOldLeaseRaisesSessionLeaseExpired`
-([SessionTests.cs:154](../../sdks/dotnet/tests/DaprMQ.Client.IntegrationTests/SessionTests.cs#L154))
+([SessionTests.cs:154](../../../sdks/dotnet/tests/DaprMQ.Client.IntegrationTests/SessionTests.cs#L154))
 waits the lease out quietly. The test never dequeues before the wait, so it would avoid the bug even
 with polling. Its comment blames a state rollback and is wrong.
 
@@ -133,3 +135,19 @@ with polling. Its comment blames a state rollback and is wrong.
 - **Redelivery:** an item is redelivered once per lapse, not once per poll.
 - **Integration test:** S-08, or a new test beside it, dequeues under the first lease *before* the
   lapse and busy-polls across it. The rollback comment in S-08 is removed.
+
+---
+
+## Resolution
+
+**Fixed** (2026-10-01), as proposed under Fix.
+
+- `ReclaimLapsedSessionLocksAsync` now updates only `LockCount` and leaves `ActiveSessionLeaseId` and
+  `ActiveSessionLeaseExpiresAt` in place. `ClearSessionLease` is again the only code that nulls them.
+- Actor tests in `QueueActorLockExpiryTests`:
+  - `LapsedSessionLease_WithOutstandingLocks_KeepsRefusingEveryCaller` covers the old lease, the wrong
+    lease and no lease, through both `Dequeue` and `DequeueLocked`.
+  - `LapsedSessionLease_PolledRepeatedly_ReclaimsOnlyOnce` checks that `DeliveryCount` is 1 after
+    repeated polls; it was 4 before the fix.
+- `S-08` now dequeues under the first lease, busy-polls across the lapse, and checks that a no-lease
+  dequeue is refused. The quiet-wait workaround and its comment are gone.
