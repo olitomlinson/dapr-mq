@@ -31,7 +31,7 @@ Readiness: poll a probe enqueue on the API until it returns 200 (actors register
 
 ## Coverage matrix
 
-Legend: ✅ implemented and passing · ⬜ not yet
+Legend: ✅ implemented and passing · ⬜ not yet · 🚫 permanently out of scope (see notes)
 
 | ID | Capability | .NET | Python | TypeScript | Java |
 |---|---|:-:|:-:|:-:|:-:|
@@ -82,7 +82,7 @@ Legend: ✅ implemented and passing · ⬜ not yet
 | C-06 | `sessionIdleTimeoutSeconds` ends stream (session drained) and releases session | ✅ | ⬜ | ⬜ | ⬜ |
 | C-07 | Second stream on a leased session surfaces `SessionLocked` | ✅ | ⬜ | ⬜ | ⬜ |
 | C-08 | Unacked delivery at disconnect is redelivered to the next consumer | ✅ | ⬜ | ⬜ | ⬜ |
-| C-09 | Lease lost mid-stream surfaces `SessionLost` | ⬜ | ⬜ | ⬜ | ⬜ |
+| C-09 | Lease lost mid-stream surfaces `SessionLost` | 🚫 | 🚫 | 🚫 | 🚫 |
 | **SessionQueueConsumer (high-level)** | | | | | |
 | K-01 | Handler success auto-acks; queue ends empty | ✅ | ⬜ | ⬜ | ⬜ |
 | K-02 | Multi-session: per-session FIFO preserved and slow session doesn't stall fast one (`MaxConcurrentSessions` ≥ 2) | ✅ | ✅ | ✅ | ✅ |
@@ -107,7 +107,7 @@ Topics/pub-sub, HTTP sink, and large-object offload are server features with no 
 ## Notes
 
 - Python currently has unit tests only. TypeScript and Java have one integration row each (K-02) on Testcontainers; the rest of their columns are empty.
-- Scenarios relying on TTL expiry (L-02, L-03, S-08, C-09) should use the shortest TTL the server accepts and poll with a timeout rather than fixed sleeps. Two exceptions, both found while implementing the .NET column:
+- Scenarios relying on TTL expiry (L-02, L-03, S-08) should use the shortest TTL the server accepts and poll with a timeout rather than fixed sleeps. Two exceptions, both found while implementing the .NET column:
   - **S-08** must wait the lease out *quietly* ([issue](../../docs/issues/session-actor-state-rollback-on-lease-expiry.md)). Polling the session actor with dequeues across the lease-expiry boundary trips a server-side state bug: the actor's metadata rolls back, so the same item is handed out repeatedly and the synced lease vanishes entirely (a no-lease dequeue then succeeds, instead of the expected `SessionLeaseExpired`).
   - **C-01/C-03**, and any consumer test asserting on post-consumption queue state, must let the server apply the last Ack/DeadLetter before the stream is torn down. Those are fire-and-forget frames on the request stream, so breaking out of the loop immediately after writing one can close the call before it lands. Pairing a short `sessionIdleTimeoutSeconds` with enumerating to the stream's natural end is the reliable shape - the server only ends the stream once nothing is outstanding.
 
@@ -122,9 +122,9 @@ Found while implementing the .NET column; the row text above now matches what th
 - **L-08** - redelivery preserves FIFO position on plain *and* session queues ([issue](../../docs/issues/resolved/lock-redelivery-does-not-preserve-fifo-position.md), resolved 2026-09-30). This row previously described a tail append, which is what the server did until items gained a monotonic `Sequence` and the expiry sweep started merging reclaimed items back by it. Placement is independent of how the expiries batch, so a backlog split across sweeps orders correctly too.
 - **C-03** - the server dead-letters against the actor holding the item, which for a session delivery is the per-session `QueueActor`. The DLQ is therefore `{queueId}-session-{sessionId}-deadletter`, not the base queue's.
 
-### Blocked rows
+### Permanently out-of-scope rows
 
-- **C-09** (lease lost mid-stream, [issue](../../docs/issues/consume-session-lease-loss-has-no-test-seam.md)) - the server emits `SessionLost` only when its own background `RenewSessionLease` fails, and it renews every `leaseSeconds/2` against a lease whose id `ConsumeSession` never exposes to the client. With no supported way to invalidate that lease from an SDK, the only lever is racing the renewal interval against expiry at `leaseSeconds = 1`, which lands either side of the boundary on sub-second timing. Needs a server-side seam (e.g. a test-only lease revocation hook) before any SDK can cover it.
+- **C-09** (lease lost mid-stream, [issue](../../docs/issues/wont-fix/consume-session-lease-loss-has-no-test-seam.md)) - the server emits `SessionLost` only when its own background `RenewSessionLease` fails, and it renews every `leaseSeconds/2` against a lease whose id `ConsumeSession` never exposes to the client. With no supported way to invalidate that lease from an SDK, the only lever is racing the renewal interval against expiry at `leaseSeconds = 1`, which lands either side of the boundary on sub-second timing - not a test worth having. A deterministic version would need a server-side test-only lease-revocation seam; that was weighed against the plumbing/fidelity of the alternatives and declined. Each SDK covers the `SessionLost` → exception mapping with a unit test against a fake stream instead (.NET: `DaprMQClientConsumeSessionTests.ConsumeSessionAsync_SessionLostFrame_ThrowsSessionLostException`); this row will stay 🚫 unless that decision is revisited.
 
 ### Previously blocked, now unblocked
 
