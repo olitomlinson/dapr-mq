@@ -196,6 +196,6 @@ not as current totals.
 
 One thing this page called correctly that is **still open**: the "Impact on DaprMQ" section warned
 that `SessionCoordinatorActor.SweepDirectoryAsync` was exposed to stale `NotFound` reads of
-`session-lock_{id}`. The 1.18.10 fix addresses that specific mechanism, but a separate, unexplained
-session-actor state rollback remains open — see
-[../session-actor-state-rollback-on-lease-expiry.md](../session-actor-state-rollback-on-lease-expiry.md).
+`session-lock_{id}`. The 1.18.10 fix addresses that specific mechanism. A session-actor "state rollback" that was
+once suspected of being related turned out to be a DaprMQ bug, unrelated to the SDK — see
+[session-reclaim-clears-lease.md](session-reclaim-clears-lease.md).
