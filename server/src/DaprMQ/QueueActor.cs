@@ -735,12 +735,12 @@ public class QueueActor : Actor, IQueueActor
 
         await StateManager.RemoveStateAsync(SessionLockIndexKey);
 
+        // The lapsed lease is deliberately left in place: it is what makes the guard refuse callers
+        // with SESSION_LEASE_EXPIRED until SetSessionLease installs the next holder.
         metadata = await GetMetadataAsync();
         await SetMetadataAsync(metadata with
         {
-            LockCount = Math.Max(0, metadata.LockCount - (restored.Count + deadLettered.Count)),
-            ActiveSessionLeaseId = null,
-            ActiveSessionLeaseExpiresAt = null
+            LockCount = Math.Max(0, metadata.LockCount - (restored.Count + deadLettered.Count))
         });
         await StateManager.SaveStateAsync();
 

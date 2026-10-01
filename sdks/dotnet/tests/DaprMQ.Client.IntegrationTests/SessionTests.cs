@@ -164,18 +164,36 @@ public class SessionTests(DaprTestFixture fixture) : IntegrationTestBase(fixture
         Assert.NotNull(firstLease);
         var sessionQueueId = SessionQueueId(queueId, sessionId);
 
-        // Deliberately a quiet wait rather than this suite's usual poll-until loop. Hammering the
-        // session actor with dequeues *across* the lease-expiry boundary trips a server-side state
-        // bug - the actor's metadata rolls back, so the same item is handed out repeatedly and the
-        // synced lease disappears entirely (a no-lease dequeue then succeeds). Waiting the lease
-        // out quietly, which is what a real consumer that has stopped work does, produces the
-        // documented behaviour reliably. See the write-up accompanying this change.
-        await Task.Delay(TimeSpan.FromSeconds(leaseSeconds + 2));
+        // The first holder takes the item and never acks it, so a lock is outstanding when the
+        // lease lapses - the case where reclaiming those locks must not drop the lease guard.
+        var taken = await client.DequeueLockedAsync(sessionQueueId, leaseId: firstLease!.LeaseId);
+        Assert.Equal(1, Seq(Assert.Single(taken!.Items).Item));
 
-        // The session actor still holds the (now stale) lease record, so the original holder is
-        // told the lease expired rather than being silently let back in.
+        // Poll straight across the expiry boundary. Until it passes the item stays locked; after it,
+        // the original holder is told the lease expired rather than being handed the item again.
+        var deadline = DateTime.UtcNow.AddSeconds(leaseSeconds + 5);
+        while (true)
+        {
+            Assert.True(DateTime.UtcNow < deadline, "lease never reported as expired");
+            try
+            {
+                var polled = await client.DequeueLockedAsync(sessionQueueId, leaseId: firstLease.LeaseId);
+                Assert.True(polled!.Locked);
+                Assert.Empty(polled.Items);
+            }
+            catch (SessionLeaseExpiredException)
+            {
+                break;
+            }
+            await Task.Delay(250);
+        }
+
+        // Reclaiming the lock left the stale lease record in place, so it keeps refusing every
+        // caller - the old holder, and one presenting no lease at all.
         await Assert.ThrowsAsync<SessionLeaseExpiredException>(
-            () => client.DequeueLockedAsync(sessionQueueId, leaseId: firstLease!.LeaseId));
+            () => client.DequeueLockedAsync(sessionQueueId, leaseId: firstLease.LeaseId));
+        await Assert.ThrowsAsync<SessionLeaseExpiredException>(
+            () => client.DequeueLockedAsync(sessionQueueId));
 
         // Renewal of a lapsed lease is refused for the same reason.
         await Assert.ThrowsAsync<SessionLeaseExpiredException>(
