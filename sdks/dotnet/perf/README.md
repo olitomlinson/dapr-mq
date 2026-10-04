@@ -127,17 +127,20 @@ Each step runs its setup unmeasured, then counts only the statements its measure
 | `enqueue` | 50 single-item enqueues to a warm queue | enqueue |
 | `enqueue-batch-10` | 10 enqueues of 10 items | batch |
 | `dequeue-ack` | 50 × `DequeueLocked` + `Acknowledge` on a 150-item queue | message |
+| `dequeue-ack-batch-10` | 5 × `DequeueLocked(count: 10)` + 10 acks | message |
 | `session-cycle` | 10 × accept session, dequeue + ack 3 messages, release | session |
+| `consume-session` | 10 sessions of 3 messages drained over the gRPC session stream | session |
 | `lock-expiry-sweep` | the one dequeue that reclaims 20 expired locks | reclaimed lock |
 | `topic-relay` | 10 publishes, 1 s apart, relayed to 2 subscribers | publish |
 
-Every step but `topic-relay` runs synchronously on a warm actor, so its counts are deterministic: the
-same code gives the same numbers on every run and machine. `topic-relay` depends on how the relay
-reminder's ticks interleave with the publishes.
+Every step but `topic-relay` and `consume-session` runs synchronously on a warm actor, so its counts are
+deterministic: the same code gives the same numbers on every run and machine. `topic-relay` depends on how
+the relay reminder's ticks interleave with the publishes, and `consume-session` on how many times the
+server's 200 ms poll runs before the stream is closed.
 
 **Regression check.** Reads/op and writes/op per step are compared with the median of the last ≤10
 runs on the baseline branch, like the session drain metrics. Because the counts don't drift with runner
-noise, the tolerance is 5% (15% for `topic-relay`), with a floor of 0.5 statements per operation. The
+noise, the tolerance is 5% (15% for `topic-relay` and `consume-session`), with a floor of 0.5 statements per operation. The
 table goes to the console and the job summary; `--gate` exits 3 on a regression.
 
 **Results.** `results/state-reads/history.jsonl` has one line per run;
@@ -147,3 +150,6 @@ change came from. CI runs it after the session drain and stores it on the same `
 
 To compare two server builds directly, run it once per image with `DAPRMQ_API_IMAGE=<image>` and diff
 the two run files.
+
+[docs/STATE_READS_BREAKDOWN.md](../../../docs/STATE_READS_BREAKDOWN.md) traces every read and write in each
+step back to the actor code.

@@ -60,7 +60,7 @@ public static class StateReadsRegressionCheck
     private const double FloorPerOp = 0.5;
 
     /// <summary>Steps whose counts depend on how a reminder's ticks interleave with the operations.</summary>
-    public static readonly HashSet<string> TimingDependentSteps = ["topic-relay"];
+    public static readonly HashSet<string> TimingDependentSteps = ["topic-relay", "consume-session"];
 
     public static IReadOnlyList<RunComparison> Compare(JsonObject current, IReadOnlyList<JsonObject> history, string baselineBranch)
     {
