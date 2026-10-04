@@ -131,7 +131,9 @@ public class SessionTests(DaprTestFixture fixture) : IntegrationTestBase(fixture
 
         await EnqueueSeqAsync(client, queueId, firstSeq: 1, count: 1, sessionId: sessionId);
 
-        const int originalLeaseSeconds = 3;
+        // The server keeps lease times in whole seconds, so a lease can lapse up to 1s early. 4s
+        // leaves the renewal at ~2s a full second of margin (3s left it racing the boundary).
+        const int originalLeaseSeconds = 4;
         var lease = await client.AcceptSessionAsync(queueId, sessionId, leaseSeconds: originalLeaseSeconds);
         Assert.NotNull(lease);
 
@@ -143,7 +145,7 @@ public class SessionTests(DaprTestFixture fixture) : IntegrationTestBase(fixture
         Assert.True(renewed.LeaseExpiresAt > lease.LeaseExpiresAt,
             $"renewal should push expiry out: was {lease.LeaseExpiresAt}, now {renewed.LeaseExpiresAt}");
 
-        // Past the original 3s window - only the renewal keeps this working.
+        // Past the original 4s window (~5s since accept) - only the renewal keeps this working.
         await Task.Delay(TimeSpan.FromSeconds(3));
 
         var dequeued = await client.DequeueLockedAsync(SessionQueueId(queueId, sessionId), leaseId: lease.LeaseId);
