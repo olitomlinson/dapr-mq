@@ -161,4 +161,116 @@ public class DaprMQClientConsumeSessionTests
         var written = requests.WrittenSoFar;
         Assert.Equal("L2", written[1].DeadLetter.LockId);
     }
+
+    /// <summary>
+    /// A fake ConsumeSession call whose server, like the real one, ends its response stream only
+    /// after it sees the client half-close - and takes a little while to do it (applying the acks it
+    /// was sent, releasing the session). Records whether the SDK disposed (= cancelled) the call
+    /// before that.
+    /// </summary>
+    private sealed class FinishingServerHarness
+    {
+        public readonly HalfCloseAwareWriter Requests = new();
+        public readonly FakeAsyncStreamReader<ConsumeSessionResponse> Responses = new();
+        public bool CancelledBeforeServerFinished;
+        private bool _serverFinished;
+
+        public DaprMQClient CreateClient()
+        {
+            _ = Task.Run(async () =>
+            {
+                await Requests.HalfClosed;
+                await Task.Delay(100);
+                _serverFinished = true;
+                Responses.Complete();
+            });
+
+            var call = new AsyncDuplexStreamingCall<ConsumeSessionRequest, ConsumeSessionResponse>(
+                Requests,
+                Responses,
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => CancelledBeforeServerFinished |= !_serverFinished); // disposing a live call cancels it
+
+            var mockInvoker = new Mock<CallInvoker>();
+            mockInvoker
+                .Setup(i => i.AsyncDuplexStreamingCall(
+                    It.IsAny<Method<ConsumeSessionRequest, ConsumeSessionResponse>>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CallOptions>()))
+                .Returns(call);
+            return new DaprMQClient(new HttpClient(), new global::DaprMQ.ApiServer.Grpc.DaprMQ.DaprMQClient(mockInvoker.Object));
+        }
+
+        public void Deliver(string lockId) => Responses.Add(new ConsumeSessionResponse
+        {
+            Delivered = new SessionDelivered { LockId = lockId, ItemJson = "{}", Priority = 0, LockExpiresAt = 123.0 }
+        });
+    }
+
+    /// <summary>
+    /// docs/issues/resolved/session-stream-acks-lost-on-disconnect.md: when a consumer stops reading, any Ack
+    /// frame it already sent must reach the server. Disposing the call cancels it on the server,
+    /// which drops acks it hasn't read yet, so the SDK has to let the server finish first.
+    /// </summary>
+    [Fact]
+    public async Task ConsumeSessionAsync_ConsumerStopsAfterAcking_WaitsForServerToFinishBeforeCancellingTheCall()
+    {
+        var harness = new FinishingServerHarness();
+        var client = harness.CreateClient();
+        harness.Deliver("L1");
+
+        await foreach (var delivery in client.ConsumeSessionAsync("q", "s1", 30, 10))
+        {
+            await delivery.AckAsync(CancellationToken.None);
+            break; // consumer shutting down
+        }
+
+        Assert.False(harness.CancelledBeforeServerFinished,
+            "The SDK cancelled the call before the server finished, so acks the server hadn't read yet are lost");
+    }
+
+    /// <summary>
+    /// The same, stopped the way SessionQueueConsumer.StopAsync stops: by cancelling the token passed
+    /// to ConsumeSessionAsync. The caller still sees cancellation, but only after the server finishes.
+    /// </summary>
+    [Fact]
+    public async Task ConsumeSessionAsync_TokenCancelledAfterAcking_WaitsForServerToFinish_ThenThrowsCancelled()
+    {
+        var harness = new FinishingServerHarness();
+        var client = harness.CreateClient();
+        harness.Deliver("L1");
+        using var stop = new CancellationTokenSource();
+
+        var consuming = Task.Run(async () =>
+        {
+            await foreach (var delivery in client.ConsumeSessionAsync("q", "s1", 30, 10, stop.Token))
+            {
+                await delivery.AckAsync(CancellationToken.None);
+                stop.Cancel(); // consumer shutting down
+            }
+        });
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => consuming.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.False(harness.CancelledBeforeServerFinished,
+            "The SDK cancelled the call before the server finished, so acks the server hadn't read yet are lost");
+    }
+
+    private sealed class HalfCloseAwareWriter : IClientStreamWriter<ConsumeSessionRequest>
+    {
+        private readonly TaskCompletionSource _halfClosed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task HalfClosed => _halfClosed.Task;
+
+        public WriteOptions? WriteOptions { get; set; }
+
+        public Task WriteAsync(ConsumeSessionRequest message) => Task.CompletedTask;
+
+        public Task CompleteAsync()
+        {
+            _halfClosed.TrySetResult();
+            return Task.CompletedTask;
+        }
+    }
 }

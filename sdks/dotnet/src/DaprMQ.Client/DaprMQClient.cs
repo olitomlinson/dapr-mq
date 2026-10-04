@@ -21,6 +21,12 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
     private static readonly TimeSpan ReadyBackoffInitial = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan ReadyBackoffMax = TimeSpan.FromSeconds(2);
 
+    /// <summary>
+    /// How long a stopping ConsumeSession stream waits for the server to finish (apply the acks it
+    /// was sent, release the session) before the call is cancelled outright.
+    /// </summary>
+    internal static TimeSpan SessionDrainTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
     private readonly HttpClient _httpClient;
     private readonly GrpcChannel? _grpcChannel;
     private readonly GrpcService.DaprMQClient _grpcClient;
@@ -235,7 +241,58 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
         [EnumeratorCancellation] CancellationToken ct = default,
         int sessionIdleTimeoutSeconds = 0)
     {
-        using var call = _grpcClient.ConsumeSession(cancellationToken: ct);
+        // The caller's token is deliberately not bound to the call: cancelling a call drops acks
+        // the server hasn't applied yet, and those have already been reported as done. Stopping -
+        // by token, break or error - half-closes instead, and the call is only cancelled if the
+        // server hasn't finished within SessionDrainTimeout.
+        using var call = _grpcClient.ConsumeSession();
+        using var drainCts = new CancellationTokenSource();
+        using var writeLock = new SemaphoreSlim(1, 1);
+        var halfClosed = false;
+
+        // One writer at a time: acks come from consumer code while a stop can half-close the stream.
+        async Task WriteAsync(global::DaprMQ.ApiServer.Grpc.ConsumeSessionRequest request)
+        {
+            await writeLock.WaitAsync();
+            try
+            {
+                if (halfClosed)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    throw new InvalidOperationException("The session stream is closing; this message can no longer be settled on it.");
+                }
+                await call.RequestStream.WriteAsync(request);
+            }
+            finally
+            {
+                writeLock.Release();
+            }
+        }
+
+        async Task HalfCloseAsync()
+        {
+            await writeLock.WaitAsync();
+            try
+            {
+                if (!halfClosed)
+                {
+                    halfClosed = true;
+                    await call.RequestStream.CompleteAsync();
+                }
+            }
+            catch
+            {
+                // best-effort - the stream may already be broken
+            }
+            finally
+            {
+                writeLock.Release();
+                drainCts.CancelAfter(SessionDrainTimeout);
+            }
+        }
+
+        // Reads pass drainCts, never ct: cancelling a read's token cancels the whole call.
+        using var stopping = ct.Register(() => _ = HalfCloseAsync());
         try
         {
             var start = new global::DaprMQ.ApiServer.Grpc.ConsumeSessionStart
@@ -250,12 +307,18 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
                 start.SessionId = sessionId;
             }
 
-            await call.RequestStream.WriteAsync(new global::DaprMQ.ApiServer.Grpc.ConsumeSessionRequest { Start = start });
+            await WriteAsync(new global::DaprMQ.ApiServer.Grpc.ConsumeSessionRequest { Start = start });
 
             var assignedSessionId = sessionId ?? string.Empty;
 
-            await foreach (var response in call.ResponseStream.ReadAllAsync(ct))
+            while (await call.ResponseStream.MoveNext(drainCts.Token))
             {
+                if (ct.IsCancellationRequested)
+                {
+                    continue; // stopping: let the server finish, but hand out nothing more
+                }
+
+                var response = call.ResponseStream.Current;
                 switch (response.PayloadCase)
                 {
                     case global::DaprMQ.ApiServer.Grpc.ConsumeSessionResponse.PayloadOneofCase.SessionAssigned:
@@ -271,11 +334,11 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
                             Item = JsonDocument.Parse(delivered.ItemJson).RootElement.Clone(),
                             Priority = delivered.Priority,
                             LockExpiresAt = delivered.LockExpiresAt,
-                            AckAsync = _ => call.RequestStream.WriteAsync(new global::DaprMQ.ApiServer.Grpc.ConsumeSessionRequest
+                            AckAsync = _ => WriteAsync(new global::DaprMQ.ApiServer.Grpc.ConsumeSessionRequest
                             {
                                 Ack = new global::DaprMQ.ApiServer.Grpc.ConsumeSessionAck { LockId = delivered.LockId }
                             }),
-                            DeadLetterAsync = _ => call.RequestStream.WriteAsync(new global::DaprMQ.ApiServer.Grpc.ConsumeSessionRequest
+                            DeadLetterAsync = _ => WriteAsync(new global::DaprMQ.ApiServer.Grpc.ConsumeSessionRequest
                             {
                                 DeadLetter = new global::DaprMQ.ApiServer.Grpc.ConsumeSessionDeadLetter { LockId = delivered.LockId }
                             })
@@ -289,16 +352,23 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
                         throw new SessionLostException(response.SessionLost.Message);
                 }
             }
+
+            ct.ThrowIfCancellationRequested();
         }
         finally
         {
+            // However the consumer stopped, let the server apply what it was sent before the call
+            // is disposed (which cancels it if still running).
+            await HalfCloseAsync();
             try
             {
-                await call.RequestStream.CompleteAsync();
+                while (await call.ResponseStream.MoveNext(drainCts.Token))
+                {
+                }
             }
             catch
             {
-                // best-effort - the stream may already be broken/cancelled
+                // drain timed out, or the stream had already failed
             }
         }
     }

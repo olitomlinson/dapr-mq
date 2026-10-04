@@ -22,6 +22,13 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
     /// </summary>
     internal TimeSpan PollInterval { get; set; } = TimeSpan.FromMilliseconds(200);
 
+    /// <summary>
+    /// Upper bound on applying one Ack/DeadLetter frame on a ConsumeSession stream. Settlement runs
+    /// on its own token, not the call's: the client was already told the ack succeeded, so the
+    /// client going away mid-ack must not abandon it.
+    /// </summary>
+    internal TimeSpan SettleTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
     public DaprMQGrpcService(
         ILogger<DaprMQGrpcService> logger,
         ActorModels.IQueueActorInvoker queueActorInvoker,
@@ -670,11 +677,12 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                     var req = requestStream.Current;
                     if (req.PayloadCase == ConsumeSessionRequest.PayloadOneofCase.Ack)
                     {
+                        using var settleCts = new CancellationTokenSource(SettleTimeout);
                         var ackResult = await _queueActorInvoker.InvokeMethodAsync<ActorModels.AcknowledgeRequest, ActorModels.AcknowledgeResponse>(
                             sessionActorId,
                             ActorMethodNames.Acknowledge,
                             new ActorModels.AcknowledgeRequest { LockId = req.Ack.LockId, LeaseId = leaseId },
-                            cts.Token);
+                            settleCts.Token);
 
                         // Surface a rejected settlement rather than letting it look like success. The
                         // item is still outstanding server-side, so a silent failure here would leave
@@ -699,11 +707,12 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                     }
                     else if (req.PayloadCase == ConsumeSessionRequest.PayloadOneofCase.DeadLetter)
                     {
+                        using var settleCts = new CancellationTokenSource(SettleTimeout);
                         var dlqResult = await _queueActorInvoker.InvokeMethodAsync<ActorModels.DeadLetterRequest, ActorModels.DeadLetterResponse>(
                             sessionActorId,
                             ActorMethodNames.DeadLetter,
                             new ActorModels.DeadLetterRequest { LockId = req.DeadLetter.LockId, LeaseId = leaseId },
-                            cts.Token);
+                            settleCts.Token);
 
                         if (dlqResult.Status != "SUCCESS")
                         {
