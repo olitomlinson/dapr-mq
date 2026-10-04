@@ -106,10 +106,9 @@ public sealed class StateReadsScenario(DaprTestEnvironment stack, DaprMQClient c
         });
 
         // The gRPC session stream, as SessionQueueConsumer uses it: the server dequeues up to the
-        // prefetch window per call. Ack frames get no reply, and cancelling the stream drops any
-        // the server hasn't applied yet, so wait for them before cancelling. The server keeps
-        // polling every 200 ms meanwhile; the wait is short to keep that (and its noise) small,
-        // instead of idling out the session timeout. The release on stream end is counted too.
+        // prefetch window per call. The consumer stops as soon as it has acked the session's
+        // messages, rather than idling out the session timeout (the server polls every 200 ms
+        // until then). Stopping waits for the server to apply the acks and release the session.
         var consumed = Queue("consume");
         var consumeIds = Enumerable.Range(0, 10).Select(i => $"c{i}").ToList();
         foreach (var sessionId in consumeIds)
@@ -120,24 +119,15 @@ public sealed class StateReadsScenario(DaprTestEnvironment stack, DaprMQClient c
         {
             foreach (var sessionId in consumeIds)
             {
-                using var stream = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 var acked = 0;
-                try
+                await foreach (var delivery in client.ConsumeSessionAsync(consumed, sessionId, leaseSeconds: 30, prefetchCount: 10, ct))
                 {
-                    await foreach (var delivery in client.ConsumeSessionAsync(consumed, sessionId, leaseSeconds: 30, prefetchCount: 10, stream.Token))
+                    await delivery.AckAsync(ct);
+                    if (++acked == 3)
                     {
-                        await delivery.AckAsync(ct);
-                        if (++acked == 3)
-                        {
-                            await Task.Delay(TimeSpan.FromMilliseconds(300), ct);
-                            await stream.CancelAsync();
-                        }
+                        break;
                     }
                 }
-                catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
-                catch (Grpc.Core.RpcException e) when (e.StatusCode == Grpc.Core.StatusCode.Cancelled) { }
-
-                await Task.Delay(TimeSpan.FromMilliseconds(300), ct);
             }
         });
 

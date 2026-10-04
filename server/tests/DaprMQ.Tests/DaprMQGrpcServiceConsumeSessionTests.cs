@@ -4,6 +4,7 @@ using Dapr.Actors;
 using Grpc.Core;
 using Microsoft.Extensions.Logging;
 using Moq;
+using Moq.Protected;
 using DaprMQ.ApiServer.Services;
 using DaprMQ.ApiServer.Grpc;
 using DaprMQ.Interfaces;
@@ -210,6 +211,74 @@ public class DaprMQGrpcServiceConsumeSessionTests
             "ReleaseSession",
             It.Is<ActorModels.ReleaseSessionRequest>(r => r.SessionId == "s1" && r.LeaseId == "lease-1"),
             It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>
+    /// docs/issues/resolved/session-stream-acks-lost-on-disconnect.md: once the server has read an Ack frame,
+    /// the client going away (cancelling the call, or the SDK disposing it after a break) must not
+    /// abandon that ack - the client was told it succeeded. The fake Acknowledge honours its
+    /// cancellation token the way a real actor invocation does.
+    /// </summary>
+    [Fact]
+    public async Task ConsumeSession_ClientCancelsWhileAckInFlight_AckStillApplied()
+    {
+        var mockQueueInvoker = new Mock<IQueueActorInvoker>();
+        var mockSessionInvoker = new Mock<ISessionCoordinatorActorInvoker>();
+
+        mockSessionInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.AcceptSessionRequest, ActorModels.AcceptSessionResponse>(
+                It.IsAny<ActorId>(), "AcceptSession", It.IsAny<ActorModels.AcceptSessionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.AcceptSessionResponse { Success = true, SessionId = "s1", LeaseId = "lease-1", LeaseExpiresAt = 12345 });
+
+        var dequeueCallCount = 0;
+        mockQueueInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.DequeueLockedRequest, ActorModels.DequeueLockedResponse>(
+                It.IsAny<ActorId>(), "DequeueLocked", It.IsAny<ActorModels.DequeueLockedRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => Interlocked.Increment(ref dequeueCallCount) == 1
+                ? new ActorModels.DequeueLockedResponse
+                {
+                    Items = new List<ActorModels.DequeueLockedItem>
+                    {
+                        new() { ItemJson = "{\"a\":1}", Priority = 1, LockId = "lock-1", LockExpiresAt = 999 }
+                    }
+                }
+                : new ActorModels.DequeueLockedResponse { IsEmpty = true });
+
+        var ackStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var actorFinishesAck = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var ackApplied = false;
+        mockQueueInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.AcknowledgeRequest, ActorModels.AcknowledgeResponse>(
+                It.IsAny<ActorId>(), "Acknowledge", It.IsAny<ActorModels.AcknowledgeRequest>(), It.IsAny<CancellationToken>()))
+            .Returns<ActorId, string, ActorModels.AcknowledgeRequest, CancellationToken>(async (_, _, _, token) =>
+            {
+                ackStarted.TrySetResult();
+                await actorFinishesAck.Task.WaitAsync(token);
+                ackApplied = true;
+                return new ActorModels.AcknowledgeResponse { Success = true, ItemsAcknowledged = 1 };
+            });
+
+        mockSessionInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.ReleaseSessionRequest, ActorModels.ReleaseSessionResponse>(
+                It.IsAny<ActorId>(), "ReleaseSession", It.IsAny<ActorModels.ReleaseSessionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.ReleaseSessionResponse { Success = true });
+
+        using var clientCall = new CancellationTokenSource();
+        _mockContext.Protected().Setup<CancellationToken>("CancellationTokenCore").Returns(clientCall.Token);
+
+        var service = CreateService(mockQueueInvoker.Object, mockSessionInvoker.Object);
+        var reader = new FakeAsyncStreamReader<ConsumeSessionRequest>();
+        var writer = new FakeServerStreamWriter<ConsumeSessionResponse>();
+        reader.Add(StartRequest("test-queue", "s1"));
+
+        var task = service.ConsumeSession(reader, writer, _mockContext.Object);
+        await WaitUntilAsync(() => writer.Written.Any(r => r.PayloadCase == ConsumeSessionResponse.PayloadOneofCase.Delivered));
+
+        reader.Add(new ConsumeSessionRequest { Ack = new ConsumeSessionAck { LockId = "lock-1" } });
+        await ackStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        // The consumer stops right after acking: the call is cancelled while the ack is in flight.
+        clientCall.Cancel();
+        actorFinishesAck.SetResult();
+        await task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(ackApplied, "An Ack frame the server had already read was abandoned when the client cancelled the call");
     }
 
     [Fact]

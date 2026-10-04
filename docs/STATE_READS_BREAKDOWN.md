@@ -15,7 +15,7 @@ Every statement the state-reads benchmark counts traces back to a specific state
 | dequeue-ack | message | 5 | 6 | `metadata` read by both calls (2 of 5 reads) |
 | dequeue-ack-batch-10 | message | 2.3 | 3.3 | The ack: 2 reads + 2 writes per message, unbatched |
 | session-cycle | session (3 messages) | 23 | 26 | Session lock index: 1 read + 1 write per message more than a plain queue |
-| consume-session | session (3 messages) | 19 | 20 | The 3 acks, as in `session-cycle`; the dequeue is one batched call |
+| consume-session | session (3 messages) | 18 | 20 | The 3 acks, as in `session-cycle`; the dequeue is one batched call |
 | lock-expiry-sweep | reclaimed lock | 1.2 | 1.35 | One read + one delete per expired lock |
 | topic-relay | publish (2 subscribers) | 6 | 9.1 | Relay enqueues into each subscriber queue |
 
@@ -122,9 +122,9 @@ Per session:
 
 The session actors were activated during setup, when their items were enqueued. A cold session actor adds an activation read, plus a `RegisterSession` call to the coordinator.
 
-## consume-session: 19 reads, 20 writes per session
+## consume-session: 18 reads, 20 writes per session
 
-The gRPC session stream (what `SessionQueueConsumer` uses) costs 4 reads and 6 writes less per session than `session-cycle`. The server dequeues all 3 messages in one call, up to the prefetch window, so 2 of `session-cycle`'s 3 dequeue calls disappear (3 reads and 3 writes each). Its polling adds 2 empty dequeues back, which read `metadata` and save nothing.
+The gRPC session stream (what `SessionQueueConsumer` uses) costs 5 reads and 6 writes less per session than `session-cycle`. The server dequeues all 3 messages in one call, up to the prefetch window, so 2 of `session-cycle`'s 3 dequeue calls disappear (3 reads and 3 writes each). Its polling adds an empty dequeue back, which reads `metadata` and saves nothing.
 
 | Actor | Calls | Key | Reads | Writes |
 | --- | --- | --- | --- | --- |
@@ -132,12 +132,12 @@ The gRPC session stream (what `SessionQueueConsumer` uses) costs 4 reads and 6 w
 | Session queue actor | `SetSessionLease`, `ClearSessionLease` | `metadata` | 2 | 2 |
 | Session queue actor | 1 × `DequeueLocked(count: 10)`, 3 items | `metadata`, head segment, `locks_session`, 3 × `*-lock` | 3 | 6 |
 | Session queue actor | 3 × `Acknowledge` | `metadata`, `*-lock`, `locks_session` | 9 | 9 |
-| Session queue actor | 2 × empty `DequeueLocked` | `metadata` | 2 | 0 |
-| **Total** | | | **19** | **20** |
+| Session queue actor | 1 × empty `DequeueLocked` | `metadata` | 1 | 0 |
+| **Total** | | | **18** | **20** |
 
-**Where the empty polls come from.** After a delivery the server's loop ([DaprMQGrpcService.cs:748-845](../server/src/DaprMQ.ApiServer/Services/DaprMQGrpcService.cs#L748-L845)) goes straight back to `DequeueLocked` while the prefetch window has room. The first empty poll follows every non-empty dequeue immediately, then polls repeat every 200 ms until the stream ends. The step closes each stream 300 ms after the last ack, so there are 2. A consumer that idles out the session timeout pays one `metadata` read per 200 ms until it does.
+**Where the empty polls come from.** After a delivery the server's loop ([DaprMQGrpcService.cs:748-845](../server/src/DaprMQ.ApiServer/Services/DaprMQGrpcService.cs#L748-L845)) goes straight back to `DequeueLocked` while the prefetch window has room. The first empty poll follows every non-empty dequeue immediately, then polls repeat every 200 ms until the stream ends. The step stops consuming straight after the last ack, so there is 1. A consumer that idles out the session timeout pays one `metadata` read per 200 ms until it does.
 
-**Ack frames are fire-and-forget.** `AckAsync` returns once the frame is written ([DaprMQClient.cs:274](../sdks/dotnet/src/DaprMQ.Client/DaprMQClient.cs#L274)), and the server applies acks with the stream's cancellation token. Cancelling the stream straight after acking dropped almost every ack in an early version of this step, and those messages would have been redelivered. The step now waits 300 ms before closing the stream.
+**Stopping waits for acks.** Ack frames get no reply, so a consumer that stopped straight after acking used to cancel the call before the server had applied them, and those messages were redelivered. An early version of this step lost almost every ack that way. Stopping now half-closes the stream and waits for the server to finish first: see [session-stream-acks-lost-on-disconnect.md](issues/resolved/session-stream-acks-lost-on-disconnect.md).
 
 ## lock-expiry-sweep: 24 reads, 27 writes for 20 reclaimed locks
 
