@@ -67,6 +67,22 @@ public sealed class StateReadsScenario(DaprTestEnvironment stack, DaprMQClient c
             }
         });
 
+        // Same, but locking 10 at a time: the dequeue's fixed reads/writes are shared by the batch.
+        // Per message, so it compares directly with dequeue-ack.
+        var batchDrain = Queue("dequeue-ack-batch");
+        await EnqueueAsync(batchDrain, 50, ct);
+        await Step("dequeue-ack-batch-10", Ops, async () =>
+        {
+            for (var batch = 0; batch < Ops / 10; batch++)
+            {
+                var items = Assert(await client.DequeueLockedAsync(batchDrain, count: 10, ct: ct)).Items;
+                foreach (var item in items)
+                {
+                    await client.AcknowledgeAsync(batchDrain, item.LockId, ct: ct);
+                }
+            }
+        });
+
         // A session consumer's full cycle: claim, drain three messages, release.
         var sessions = Queue("sessions");
         var sessionIds = Enumerable.Range(0, 10).Select(i => $"s{i}").ToList();
@@ -86,6 +102,42 @@ public sealed class StateReadsScenario(DaprTestEnvironment stack, DaprMQClient c
                     await client.AcknowledgeAsync(sessionQueue, item.LockId, lease.LeaseId, ct);
                 }
                 await client.ReleaseSessionAsync(sessions, sessionId, lease.LeaseId, ct);
+            }
+        });
+
+        // The gRPC session stream, as SessionQueueConsumer uses it: the server dequeues up to the
+        // prefetch window per call. Ack frames get no reply, and cancelling the stream drops any
+        // the server hasn't applied yet, so wait for them before cancelling. The server keeps
+        // polling every 200 ms meanwhile; the wait is short to keep that (and its noise) small,
+        // instead of idling out the session timeout. The release on stream end is counted too.
+        var consumed = Queue("consume");
+        var consumeIds = Enumerable.Range(0, 10).Select(i => $"c{i}").ToList();
+        foreach (var sessionId in consumeIds)
+        {
+            await client.EnqueueAsync(consumed, Items(3, sessionId), ct);
+        }
+        await Step("consume-session", consumeIds.Count, async () =>
+        {
+            foreach (var sessionId in consumeIds)
+            {
+                using var stream = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                var acked = 0;
+                try
+                {
+                    await foreach (var delivery in client.ConsumeSessionAsync(consumed, sessionId, leaseSeconds: 30, prefetchCount: 10, stream.Token))
+                    {
+                        await delivery.AckAsync(ct);
+                        if (++acked == 3)
+                        {
+                            await Task.Delay(TimeSpan.FromMilliseconds(300), ct);
+                            await stream.CancelAsync();
+                        }
+                    }
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
+                catch (Grpc.Core.RpcException e) when (e.StatusCode == Grpc.Core.StatusCode.Cancelled) { }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(300), ct);
             }
         });
 
