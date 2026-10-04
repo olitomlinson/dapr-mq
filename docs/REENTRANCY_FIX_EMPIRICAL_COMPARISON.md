@@ -165,6 +165,15 @@ fix-attributable diff (~9-21) - most of the total is build-independent baseline 
 
 ## Reproducing this
 
+> **Historical.** `QueryCountComparisonTest` has been removed: the fix it compared is upstream in
+> the pinned Dapr SDK, and the two local package builds it needed no longer exist. Its Postgres
+> statement counting lives on as the perf harness's `state-reads` benchmark
+> (`./run-session-perf-test.sh --benchmark state-reads`, see
+> [sdks/dotnet/perf/README.md](../sdks/dotnet/perf/README.md#state-reads-benchmark)), which tracks
+> reads and writes per operation over time. To A/B two server images as this comparison did, run it
+> once per image with `DAPRMQ_API_IMAGE=<image>`. The steps below are kept as a record of how these
+> numbers were produced.
+
 ```bash
 # From server/, build both comparison images:
 docker build --build-arg DaprActorsSdkVersion=1.18.4-reentrancyfix.1 -t daprmq-api:reentrancyfix .

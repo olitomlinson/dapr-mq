@@ -167,4 +167,28 @@ public class PerfOptionsTests
     {
         Assert.Throws<ArgumentException>(() => PerfOptions.Parse(["--nope"]));
     }
+
+    [Fact]
+    public void Benchmark_DefaultsToSessionDrain_AndAcceptsStateReads()
+    {
+        Assert.Equal(Benchmarks.SessionDrain, PerfOptions.Parse([]).Benchmark);
+        Assert.Equal(Benchmarks.StateReads, PerfOptions.Parse(["--benchmark", "state-reads"]).Benchmark);
+        Assert.Throws<ArgumentException>(() => PerfOptions.Parse(["--benchmark", "nope"]));
+    }
+
+    [Theory]
+    [InlineData("--suite", "ci")]
+    [InlineData("--sessions", "10")]
+    [InlineData("--profile", "quick")]
+    public void StateReads_RejectsSessionDrainScenarioFlags(string flag, string value)
+    {
+        Assert.Throws<ArgumentException>(() => PerfOptions.Parse(["--benchmark", "state-reads", flag, value]));
+    }
+
+    [Fact]
+    public void StateReads_NeedsItsOwnStack_SoRejectsAnExternalServer()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            PerfOptions.Parse(["--benchmark", "state-reads", "--http", "http://x", "--grpc", "http://y"]));
+    }
 }
