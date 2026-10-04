@@ -43,7 +43,7 @@ Outside a suite, any profile value can be overridden:
   `concurrent`, a publisher slower than the settle time shows up as in-session wait, and sessions that
   empty before their next message arrives show up as drain wait and re-claims.
 
-Consumer options default to the SDK's own defaults (prefetch 10, lease 30 s, idle timeout = lease).
+Consumer options default to prefetch 10, lease 30 s, idle timeout = lease. Prefetch stays at 10 (the SDK default is now 1) so results remain comparable with earlier baselines.
 `--http URL --grpc URL` targets an existing server instead of starting Testcontainers. `--report` only
 regenerates the report.
 

@@ -32,7 +32,7 @@ class SessionQueueConsumerOptions:
     """Sticky routing to one specific session. Must pair with max_concurrent_sessions == 1."""
     target_session_id: str | None = None
     lease_seconds: int = 30
-    prefetch_count: int = 10
+    prefetch_count: int = 1
     min_backoff_seconds: int = 1
     max_backoff_seconds: int = 60
     on_handler_exception: SessionHandlerFailureAction = SessionHandlerFailureAction.DEAD_LETTER_MESSAGE
@@ -61,7 +61,7 @@ class SessionCapableClient(Protocol):
         *,
         session_id: str | None = None,
         lease_seconds: int = 30,
-        prefetch_count: int = 10,
+        prefetch_count: int = 1,
         cancel: asyncio.Event | None = None,
     ) -> Any: ...
 

@@ -234,7 +234,7 @@ class DaprMQClient:
         *,
         session_id: str | None = None,
         lease_seconds: int = 30,
-        prefetch_count: int = 10,
+        prefetch_count: int = 1,
         cancel: asyncio.Event | None = None,
     ) -> AsyncIterator[SessionDelivery]:
         """Managed consume loop for exactly one session: claims a session (any-available or

@@ -73,7 +73,7 @@ var options = new SessionQueueConsumerOptions
 {
     MaxConcurrentSessions = 8,
     LeaseSeconds = 30,
-    PrefetchCount = 10,
+    PrefetchCount = 1,
     OnHandlerException = SessionHandlerFailureAction.DeadLetterMessage
 };
 
@@ -89,7 +89,7 @@ await consumer.StartAsync();
 await consumer.StopAsync(); // stops claiming, drains in-flight handlers, closes streams
 ```
 
-`OnHandlerException` is one of `DeadLetterMessage` (default), `NackMessage` (return the item to the front of the session for redelivery - counts toward the server's max delivery count, past which it is dead-lettered), `AbandonSession`, or `Both`.
+`OnHandlerException` is one of `DeadLetterMessage` (default), `NackMessage` (return the item to the front of the session for redelivery - counts toward the server's max delivery count, past which it is dead-lettered), `AbandonSession`, or `Both`. Session ordering holds only at the default prefetch of 1: with a larger prefetch, items already delivered are handled before a nacked item comes back.
 
 `NackAsync(queueId, lockId, leaseId?)` on the client (and `NackAsync` on a `SessionDelivery`) returns a locked item to its original position; it returns `NackResult(DeadLettered, DeliveryCount, DlqId)`.
 

@@ -84,7 +84,7 @@ import com.daprmq.client.SessionQueueConsumerOptions;
 var options = new SessionQueueConsumerOptions()
         .maxConcurrentSessions(8)
         .leaseSeconds(30)
-        .prefetchCount(10)
+        .prefetchCount(1)
         .onHandlerException(SessionHandlerFailureAction.DEAD_LETTER_MESSAGE);
 
 var consumer = new SessionQueueConsumer(client, "my-queue", options, context -> {
@@ -98,7 +98,7 @@ consumer.start();
 consumer.stop(); // stops claiming, cancels blocked streams, drains in-flight handlers
 ```
 
-`onHandlerException` is one of `DEAD_LETTER_MESSAGE` (default), `NACK_MESSAGE` (return the item to the front of the session for redelivery - counts toward the server's max delivery count, past which it is dead-lettered), `ABANDON_SESSION`, or `BOTH`.
+`onHandlerException` is one of `DEAD_LETTER_MESSAGE` (default), `NACK_MESSAGE` (return the item to the front of the session for redelivery - counts toward the server's max delivery count, past which it is dead-lettered), `ABANDON_SESSION`, or `BOTH`. Session ordering holds only at the default prefetch of 1: with a larger prefetch, items already delivered are handled before a nacked item comes back.
 
 `nack(queueId, lockId[, leaseId])` on the client (and `nack()` on a `SessionDelivery`) returns a locked item to its original position; it returns `NackResult(deadLettered, deliveryCount, dlqId)`.
 

@@ -663,7 +663,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         var start = requestStream.Current.Start;
         var requestedSessionId = start.HasSessionId ? start.SessionId : null;
         var leaseSeconds = start.LeaseSeconds > 0 ? start.LeaseSeconds : 30;
-        var prefetchCount = start.PrefetchCount > 0 ? start.PrefetchCount : 10;
+        var prefetchCount = start.PrefetchCount > 0 ? start.PrefetchCount : 1;
         var sessionIdleTimeoutSeconds = start.SessionIdleTimeoutSeconds > 0 ? start.SessionIdleTimeoutSeconds : leaseSeconds;
 
         _logger.LogDebug($"gRPC ConsumeSession request for queue {start.QueueId}, sessionId={requestedSessionId ?? "<any>"}");

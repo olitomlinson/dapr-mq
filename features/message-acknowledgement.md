@@ -488,6 +488,9 @@ for its lock to expire: it is the holder-initiated, immediate version of the exp
 - The guards match Acknowledge: `LOCK_NOT_FOUND`, `LOCK_EXPIRED` (plain queues only, since a
   session's lease is the authority there), and the session lease check.
 - Session streams accept a `Nack` frame (`ConsumeSessionNack`) alongside `Ack`/`DeadLetter`.
+- Session ordering holds only at `prefetchCount` 1 (the default). With a larger prefetch, items
+  already delivered after the nacked one are processed before it comes back, as with Azure
+  Service Bus abandon + prefetch.
 
 See [API_REFERENCE.md](../docs/API_REFERENCE.md#nack).
 

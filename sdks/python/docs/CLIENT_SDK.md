@@ -85,7 +85,7 @@ from daprmq_client import SessionHandlerFailureAction, SessionQueueConsumer, Ses
 options = SessionQueueConsumerOptions(
     max_concurrent_sessions=8,
     lease_seconds=30,
-    prefetch_count=10,
+    prefetch_count=1,
     on_handler_exception=SessionHandlerFailureAction.DEAD_LETTER_MESSAGE,
 )
 
@@ -98,7 +98,7 @@ async with SessionQueueConsumer(client, "my-queue", options, handler):
     ...  # consumer.start() ran on entry; consumer.stop() runs on exit
 ```
 
-`on_handler_exception` is one of `DEAD_LETTER_MESSAGE` (default), `NACK_MESSAGE` (return the item to the front of the session for redelivery - counts toward the server's max delivery count, past which it is dead-lettered), `ABANDON_SESSION`, or `BOTH`.
+`on_handler_exception` is one of `DEAD_LETTER_MESSAGE` (default), `NACK_MESSAGE` (return the item to the front of the session for redelivery - counts toward the server's max delivery count, past which it is dead-lettered), `ABANDON_SESSION`, or `BOTH`. Session ordering holds only at the default prefetch of 1: with a larger prefetch, items already delivered are handled before a nacked item comes back.
 
 `await client.nack(queue_id, lock_id, lease_id=...)` (and `await delivery.nack()` on a `SessionDelivery`) returns a locked item to its original position; it returns `NackResult(dead_lettered, delivery_count, dlq_id)`.
 

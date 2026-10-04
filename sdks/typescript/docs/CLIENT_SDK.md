@@ -80,7 +80,7 @@ const consumer = new SessionQueueConsumer(
   {
     maxConcurrentSessions: 8,
     leaseSeconds: 30,
-    prefetchCount: 10,
+    prefetchCount: 1,
     onHandlerException: "deadLetterMessage",
   },
   async (context, signal) => {
@@ -95,7 +95,7 @@ consumer.start();
 await consumer.stop(); // stops claiming, drains in-flight handlers, closes streams
 ```
 
-`onHandlerException` is one of `"deadLetterMessage"` (default), `"nackMessage"` (return the item to the front of the session for redelivery - counts toward the server's max delivery count, past which it is dead-lettered), `"abandonSession"`, or `"both"`.
+`onHandlerException` is one of `"deadLetterMessage"` (default), `"nackMessage"` (return the item to the front of the session for redelivery - counts toward the server's max delivery count, past which it is dead-lettered), `"abandonSession"`, or `"both"`. Session ordering holds only at the default prefetch of 1: with a larger prefetch, items already delivered are handled before a nacked item comes back.
 
 `client.nack(queueId, lockId, { leaseId })` (and `delivery.nack()` on a `SessionDelivery`) returns a locked item to its original position; it resolves to `{ deadLettered, deliveryCount, dlqId }`.
 

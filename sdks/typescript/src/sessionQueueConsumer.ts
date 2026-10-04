@@ -121,7 +121,7 @@ export class SessionQueueConsumer {
       maxConcurrentSessions,
       targetSessionId: options.targetSessionId,
       leaseSeconds: options.leaseSeconds ?? 30,
-      prefetchCount: options.prefetchCount ?? 10,
+      prefetchCount: options.prefetchCount ?? 1,
       minBackoffSeconds: options.minBackoffSeconds ?? 1,
       maxBackoffSeconds: options.maxBackoffSeconds ?? 60,
       onHandlerException: options.onHandlerException ?? "deadLetterMessage",

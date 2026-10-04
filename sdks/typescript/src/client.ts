@@ -299,7 +299,7 @@ export class DaprMQClient {
       signal?: AbortSignal;
     } = {},
   ): AsyncGenerator<SessionDelivery, void, void> {
-    const { sessionId, leaseSeconds = 30, prefetchCount = 10, sessionIdleTimeoutSeconds = 0, signal } = options;
+    const { sessionId, leaseSeconds = 30, prefetchCount = 1, sessionIdleTimeoutSeconds = 0, signal } = options;
     const call = this.grpcClient.consumeSession();
 
     const onAbort = () => call.cancel();

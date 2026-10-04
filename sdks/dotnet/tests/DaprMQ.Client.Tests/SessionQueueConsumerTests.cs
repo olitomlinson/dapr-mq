@@ -62,7 +62,7 @@ public class SessionQueueConsumerTests
 
         var mockClient = new Mock<IDaprMQClient>();
         mockClient
-            .Setup(c => c.ConsumeSessionAsync("q", null, 30, 10, It.IsAny<CancellationToken>(), It.IsAny<int>()))
+            .Setup(c => c.ConsumeSessionAsync("q", null, 30, 1, It.IsAny<CancellationToken>(), It.IsAny<int>()))
             .Returns(SingleItemThenComplete(recording.Delivery));
 
         var consumer = new SessionQueueConsumer(
@@ -91,7 +91,7 @@ public class SessionQueueConsumerTests
 
         var mockClient = new Mock<IDaprMQClient>();
         mockClient
-            .Setup(c => c.ConsumeSessionAsync("q", null, 30, 10, It.IsAny<CancellationToken>(), It.IsAny<int>()))
+            .Setup(c => c.ConsumeSessionAsync("q", null, 30, 1, It.IsAny<CancellationToken>(), It.IsAny<int>()))
             .Returns(() =>
             {
                 callCount++;
@@ -125,7 +125,7 @@ public class SessionQueueConsumerTests
 
         var mockClient = new Mock<IDaprMQClient>();
         mockClient
-            .Setup(c => c.ConsumeSessionAsync("q", null, 30, 10, It.IsAny<CancellationToken>(), It.IsAny<int>()))
+            .Setup(c => c.ConsumeSessionAsync("q", null, 30, 1, It.IsAny<CancellationToken>(), It.IsAny<int>()))
             .Returns(() => ThrowingSequence(new NoSessionsAvailableException("none")));
 
         var consumer = new SessionQueueConsumer(
@@ -156,7 +156,7 @@ public class SessionQueueConsumerTests
 
         var mockClient = new Mock<IDaprMQClient>();
         mockClient
-            .Setup(c => c.ConsumeSessionAsync("q", null, 30, 10, It.IsAny<CancellationToken>(), It.IsAny<int>()))
+            .Setup(c => c.ConsumeSessionAsync("q", null, 30, 1, It.IsAny<CancellationToken>(), It.IsAny<int>()))
             .Returns(SingleItemThenComplete(recording.Delivery));
 
         var consumer = new SessionQueueConsumer(
@@ -185,7 +185,7 @@ public class SessionQueueConsumerTests
 
         var mockClient = new Mock<IDaprMQClient>();
         mockClient
-            .Setup(c => c.ConsumeSessionAsync("q", null, 30, 10, It.IsAny<CancellationToken>(), It.IsAny<int>()))
+            .Setup(c => c.ConsumeSessionAsync("q", null, 30, 1, It.IsAny<CancellationToken>(), It.IsAny<int>()))
             .Returns(SingleItemThenComplete(recording.Delivery));
 
         var consumer = new SessionQueueConsumer(
@@ -215,7 +215,7 @@ public class SessionQueueConsumerTests
 
         var mockClient = new Mock<IDaprMQClient>();
         mockClient
-            .Setup(c => c.ConsumeSessionAsync("q", null, 30, 10, It.IsAny<CancellationToken>(), It.IsAny<int>()))
+            .Setup(c => c.ConsumeSessionAsync("q", null, 30, 1, It.IsAny<CancellationToken>(), It.IsAny<int>()))
             .Returns(SingleItemThenComplete(recording.Delivery));
 
         var consumer = new SessionQueueConsumer(
@@ -236,7 +236,7 @@ public class SessionQueueConsumerTests
         Assert.False(recording.Acked);
         // The slot must still be alive (not crashed) - re-invoking ConsumeSessionAsync at least
         // once more after the abandoned attempt proves the loop kept going.
-        mockClient.Verify(c => c.ConsumeSessionAsync("q", null, 30, 10, It.IsAny<CancellationToken>(), It.IsAny<int>()),
+        mockClient.Verify(c => c.ConsumeSessionAsync("q", null, 30, 1, It.IsAny<CancellationToken>(), It.IsAny<int>()),
             Times.AtLeast(2));
     }
 
@@ -245,7 +245,7 @@ public class SessionQueueConsumerTests
     {
         var mockClient = new Mock<IDaprMQClient>();
         mockClient
-            .Setup(c => c.ConsumeSessionAsync("q", null, 30, 10, It.IsAny<CancellationToken>(), It.IsAny<int>()))
+            .Setup(c => c.ConsumeSessionAsync("q", null, 30, 1, It.IsAny<CancellationToken>(), It.IsAny<int>()))
             .Returns(() => ThrowingSequence(new NoSessionsAvailableException("none")));
 
         var consumer = new SessionQueueConsumer(

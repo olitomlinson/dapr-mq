@@ -12,7 +12,11 @@ public record SessionQueueConsumerOptions
     public string? TargetSessionId { get; init; }
 
     public int LeaseSeconds { get; init; } = 30;
-    public int PrefetchCount { get; init; } = 10;
+    /// <summary>
+    /// Items kept in flight per session. Above 1, a nack can reorder the session: items already
+    /// delivered are handled before the nacked one comes back (same as Azure Service Bus prefetch).
+    /// </summary>
+    public int PrefetchCount { get; init; } = 1;
     public int MinBackoffSeconds { get; init; } = 1;
     public int MaxBackoffSeconds { get; init; } = 60;
     public SessionHandlerFailureAction OnHandlerException { get; init; } = SessionHandlerFailureAction.DeadLetterMessage;

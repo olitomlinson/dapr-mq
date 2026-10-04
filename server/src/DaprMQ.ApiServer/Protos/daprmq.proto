@@ -441,7 +441,8 @@ message ConsumeSessionStart {
   int32 lease_seconds = 3;
 
   // How many delivered-but-not-yet-acked/dead-lettered items to keep in flight at once
-  // (default: 10).
+  // (default: 1). Above 1, a Nack can reorder the session: items already in flight are
+  // delivered before the nacked one comes back.
   int32 prefetch_count = 4;
 
   // Maximum time (seconds) to wait for a message on the currently claimed session before treating
