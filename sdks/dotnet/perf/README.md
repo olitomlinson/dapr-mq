@@ -107,3 +107,43 @@ CI ([sdk-perf.yml](../../../.github/workflows/sdk-perf.yml)) runs `--suite ci` a
 every push to `main` and PR that touches `server/` or `sdks/dotnet/`, plus nightly. Results live on the
 `perf-results` branch under `sdk-dotnet/`: `main` and nightly runs append to it, PR runs compare against it.
 It can also be run by hand with any flags.
+
+## State reads benchmark
+
+```bash
+./run-session-perf-test.sh --benchmark state-reads   # ~2 min
+```
+
+Counts the actor-state statements each operation sends to Postgres: reads (`SELECT`) and writes
+(`INSERT`/`UPDATE`/`DELETE`) against `daprmq_state`. They come from Postgres' own statement log
+(`log_statement=all`), so they count what actually reached the store, after any caching in the Dapr
+actor SDK. It always starts its own stack, since it needs that log; `--http`/`--grpc` aren't accepted.
+
+Each step runs its setup unmeasured, then counts only the statements its measured operations produce:
+
+| Step | Measured | Per |
+|---|---|---|
+| `enqueue-new-queue` | first enqueue to 20 new queues (activation + first write) | queue |
+| `enqueue` | 50 single-item enqueues to a warm queue | enqueue |
+| `enqueue-batch-10` | 10 enqueues of 10 items | batch |
+| `dequeue-ack` | 50 × `DequeueLocked` + `Acknowledge` on a 150-item queue | message |
+| `session-cycle` | 10 × accept session, dequeue + ack 3 messages, release | session |
+| `lock-expiry-sweep` | the one dequeue that reclaims 20 expired locks | reclaimed lock |
+| `topic-relay` | 10 publishes, 1 s apart, relayed to 2 subscribers | publish |
+
+Every step but `topic-relay` runs synchronously on a warm actor, so its counts are deterministic: the
+same code gives the same numbers on every run and machine. `topic-relay` depends on how the relay
+reminder's ticks interleave with the publishes.
+
+**Regression check.** Reads/op and writes/op per step are compared with the median of the last ≤10
+runs on the baseline branch, like the session drain metrics. Because the counts don't drift with runner
+noise, the tolerance is 5% (15% for `topic-relay`), with a floor of 0.5 statements per operation. The
+table goes to the console and the job summary; `--gate` exits 3 on a regression.
+
+**Results.** `results/state-reads/history.jsonl` has one line per run;
+`results/state-reads/runs/<runId>.json` adds a per-step breakdown by actor type and state name, with ids
+and sequence numbers collapsed (`queue_*_seg_*`, `*-lock`, `session-lock_*`), to show which state a
+change came from. CI runs it after the session drain and stores it on the same `perf-results` branch.
+
+To compare two server builds directly, run it once per image with `DAPRMQ_API_IMAGE=<image>` and diff
+the two run files.

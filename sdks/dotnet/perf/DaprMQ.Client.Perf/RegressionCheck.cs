@@ -20,7 +20,7 @@ public sealed record RunComparison(string Profile, string ScenarioKey, int Basel
 /// </summary>
 public static class RegressionCheck
 {
-    private const int Window = 10;
+    internal const int Window = 10;
     private const int MinBaselineRuns = 3;
 
     /// <summary>Below this the peak window (and so utilisation over it) is too short to be signal.</summary>
@@ -66,32 +66,42 @@ public static class RegressionCheck
             }
 
             var values = baseline.Select(r => Num(r["metrics"], rule.Path)).OfType<double>().ToList();
-            if (values.Count < MinBaselineRuns)
-            {
-                metrics.Add(new MetricComparison(rule.Name, null, value, null, ComparisonStatus.NoBaseline));
-                continue;
-            }
-
-            var median = Median(values);
-            var worseBy = rule.HigherIsWorse ? value - median : median - value;
-            var threshold = Math.Max(rule.RelativeTolerance * Math.Abs(median), rule.AbsoluteFloor);
-            var status = worseBy > threshold ? ComparisonStatus.Regressed
-                : -worseBy > threshold ? ComparisonStatus.Improved
-                : ComparisonStatus.Ok;
-            double? delta = median != 0 ? (value - median) / median * 100 : null;
-
-            metrics.Add(new MetricComparison(rule.Name, median, value, delta, status));
+            metrics.Add(Assess(rule.Name, value, values, rule.HigherIsWorse, rule.RelativeTolerance, rule.AbsoluteFloor));
         }
 
         return new RunComparison(Str(current, "profile") ?? "", key ?? "", baseline.Count, metrics);
     }
 
-    public static string ToMarkdown(IEnumerable<RunComparison> comparisons, string baselineBranch)
+    /// <summary>
+    /// Judges <paramref name="value"/> against the median of <paramref name="baseline"/>: a change
+    /// only counts once it clears both the relative tolerance and the absolute floor.
+    /// </summary>
+    internal static MetricComparison Assess(string name, double value, IReadOnlyList<double> baseline,
+        bool higherIsWorse, double relativeTolerance, double absoluteFloor)
+    {
+        if (baseline.Count < MinBaselineRuns)
+        {
+            return new MetricComparison(name, null, value, null, ComparisonStatus.NoBaseline);
+        }
+
+        var median = Median(baseline);
+        var worseBy = higherIsWorse ? value - median : median - value;
+        var threshold = Math.Max(relativeTolerance * Math.Abs(median), absoluteFloor);
+        var status = worseBy > threshold ? ComparisonStatus.Regressed
+            : -worseBy > threshold ? ComparisonStatus.Improved
+            : ComparisonStatus.Ok;
+        double? delta = median != 0 ? (value - median) / median * 100 : null;
+
+        return new MetricComparison(name, median, value, delta, status);
+    }
+
+    public static string ToMarkdown(IEnumerable<RunComparison> comparisons, string baselineBranch,
+        string title = "Session drain perf", string firstColumn = "Profile")
     {
         var md = new StringBuilder()
-            .AppendLine($"### Session drain perf vs `{baselineBranch}` (median of last ≤{Window} runs)")
+            .AppendLine($"### {title} vs `{baselineBranch}` (median of last ≤{Window} runs)")
             .AppendLine()
-            .AppendLine("| Profile | Metric | Baseline | This run | Δ | Status |")
+            .AppendLine($"| {firstColumn} | Metric | Baseline | This run | Δ | Status |")
             .AppendLine("|---|---|---|---|---|---|");
 
         foreach (var c in comparisons)
@@ -119,16 +129,16 @@ public static class RegressionCheck
 
     private static string Fmt(double v) => v.ToString("0.###", CultureInfo.InvariantCulture);
 
-    private static double Median(List<double> values)
+    private static double Median(IReadOnlyList<double> values)
     {
         var sorted = values.Order().ToArray();
         var mid = sorted.Length / 2;
         return sorted.Length % 2 == 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
     }
 
-    private static string? Str(JsonNode? node, params string[] path) => Walk(node, path)?.GetValue<string>();
+    internal static string? Str(JsonNode? node, params string[] path) => Walk(node, path)?.GetValue<string>();
 
-    private static double? Num(JsonNode? node, string[] path) => Walk(node, path) is JsonValue v && v.TryGetValue<double>(out var d) ? d : null;
+    internal static double? Num(JsonNode? node, string[] path) => Walk(node, path) is JsonValue v && v.TryGetValue<double>(out var d) ? d : null;
 
     private static JsonNode? Walk(JsonNode? node, string[] path)
     {

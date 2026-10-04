@@ -43,7 +43,8 @@ else
     stack = new DaprTestEnvironment();
     try
     {
-        await stack.InitializeAsync(null, image);
+        // state-reads counts statements from Postgres' own log, so it needs log_statement=all.
+        await stack.InitializeAsync(null, image, enableQueryInstrumentation: options.Benchmark == Benchmarks.StateReads);
     }
     catch
     {
@@ -65,6 +66,11 @@ try
     await WaitForServerAsync(client, cts.Token);
 
     var environment = ResultStore.CaptureEnvironment(options.EnvLabel, server);
+    if (options.Benchmark == Benchmarks.StateReads)
+    {
+        return await RunStateReadsAsync(stack!, client, environment, options, cts.Token);
+    }
+
     var exitCode = 0;
     var runIds = new List<string>();
 
@@ -116,6 +122,30 @@ finally
     {
         await stack.DisposeAsync();
     }
+}
+
+static async Task<int> RunStateReadsAsync(DaprTestEnvironment stack, DaprMQClient client, RunEnvironment environment, PerfOptions options, CancellationToken ct)
+{
+    Console.WriteLine();
+    Console.WriteLine("=== State reads ===");
+    var steps = await new StateReadsScenario(stack, client).RunAsync(ct);
+
+    var timestamp = DateTimeOffset.UtcNow;
+    var runId = $"{timestamp:yyyyMMdd'T'HHmmss'Z'}_{options.EnvLabel}_state-reads";
+    var runPath = StateReadsStore.Save(options.OutDir, new StateReadsRunRecord(1, runId, timestamp, environment, steps));
+    Console.WriteLine($"Run:    {runPath}");
+
+    var history = StateReadsStore.LoadHistory(options.OutDir);
+    var comparisons = StateReadsRegressionCheck.Compare(history.Single(r => (string?)r["runId"] == runId), history, options.BaselineBranch);
+    var markdown = RegressionCheck.ToMarkdown(comparisons, options.BaselineBranch, "Actor state reads", "Step");
+    Console.WriteLine();
+    Console.WriteLine(markdown);
+    if (Environment.GetEnvironmentVariable("GITHUB_STEP_SUMMARY") is { Length: > 0 } summaryPath)
+    {
+        File.AppendAllText(summaryPath, markdown + "\n");
+    }
+
+    return options.Gate && comparisons.Any(c => c.Regressed) ? 3 : 0;
 }
 
 // Actors take a moment to register after the sidecar starts; wait on the gRPC health service.

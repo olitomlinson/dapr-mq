@@ -1,7 +1,15 @@
 namespace DaprMQ.Client.Perf;
 
+public static class Benchmarks
+{
+    public const string SessionDrain = "session-drain";
+    public const string StateReads = "state-reads";
+}
+
 public sealed record PerfOptions
 {
+    public string Benchmark { get; init; } = Benchmarks.SessionDrain;
+
     public string Profile { get; init; } = "full";
     public int Sessions { get; init; } = 1000;
     public int MessagesPerSession { get; init; } = 100;
@@ -94,6 +102,8 @@ public sealed record PerfOptions
     public const string Usage = """
         Usage: dotnet run -c Release -- [options]
 
+          --benchmark NAME       session-drain (default) or state-reads: actor state
+                                 reads/writes per operation, from the Postgres log
           --profile NAME         full: 1000 sessions x 100 msgs (default); quick: 100 x 20;
                                  CI: steady-drain, session-churn, deep-session,
                                  live-publish, sdk-defaults
@@ -138,6 +148,20 @@ public sealed record PerfOptions
             flags[name] = args[++i];
         }
 
+        if (flags.TryGetValue("--benchmark", out var benchmark))
+        {
+            if (benchmark is not (Benchmarks.SessionDrain or Benchmarks.StateReads))
+            {
+                throw new ArgumentException($"Unknown benchmark '{benchmark}'. Known: {Benchmarks.SessionDrain}, {Benchmarks.StateReads}.");
+            }
+
+            if (benchmark == Benchmarks.StateReads
+                && flags.Keys.FirstOrDefault(f => f is "--suite" or "--http" or "--grpc" || ScenarioFlags.Contains(f)) is { } conflict)
+            {
+                throw new ArgumentException($"{conflict} can't be combined with --benchmark state-reads: it runs fixed steps against its own instrumented stack.");
+            }
+        }
+
         if (flags.TryGetValue("--suite", out var suite))
         {
             if (!Suites.ContainsKey(suite!))
@@ -161,6 +185,7 @@ public sealed record PerfOptions
             options = name switch
             {
                 "--profile" => options,
+                "--benchmark" => options with { Benchmark = value! },
                 "--report" => options with { ReportOnly = true },
                 "--suite" => options with { Suite = value },
                 "--gate" => options with { Gate = true },

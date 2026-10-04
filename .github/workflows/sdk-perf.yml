@@ -82,6 +82,16 @@ jobs:
           --out perf-results/sdk-dotnet
           $ARGS
 
+      # Actor state reads/writes per operation, from Postgres' statement log. Runs even if the
+      # session drain failed, since the two measure unrelated things.
+      - name: Run state reads benchmark
+        if: ${{ !cancelled() }}
+        run: >
+          dotnet run -c Release --project sdks/dotnet/perf/DaprMQ.Client.Perf --
+          --benchmark state-reads
+          --env-label ci-ubuntu-latest
+          --out perf-results/sdk-dotnet
+
       - name: Publish results
         if: always() && github.event_name != 'pull_request'
         working-directory: perf-results
@@ -90,7 +100,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add sdk-dotnet
-          git commit -m "Session drain perf: ${GITHUB_SHA::7} (${GITHUB_EVENT_NAME})" || exit 0
+          git commit -m "Perf: ${GITHUB_SHA::7} (${GITHUB_EVENT_NAME})" || exit 0
           git push origin perf-results
 
       - uses: actions/upload-artifact@v4

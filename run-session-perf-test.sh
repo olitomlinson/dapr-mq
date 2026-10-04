@@ -11,6 +11,7 @@
 #   ./run-session-perf-test.sh --profile quick --idle-timeout 1
 #   ./run-session-perf-test.sh --http http://localhost:8002 --grpc http://localhost:8102
 #   ./run-session-perf-test.sh --report                 # only regenerate the report
+#   ./run-session-perf-test.sh --benchmark state-reads  # actor state reads/writes per operation, ~2 min
 
 set -e
 
@@ -18,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 if [[ " $* " == *" --help "* || " $* " == *" -h "* ]]; then
-    sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//'
     exit 0
 fi
 
