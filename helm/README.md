@@ -418,7 +418,12 @@ Test health endpoint directly (always on HTTP port 8080):
 kubectl exec -n <namespace> <pod-name> -c daprmq -- curl http://localhost:8080/health
 ```
 
-**Note:** The `/health` endpoint is only available on the HTTP port (8080), not the gRPC port (8081). Kubernetes liveness and readiness probes are configured to use port 8080.
+Readiness (sidecar up and connected to placement; on workers, also hosting `QueueActor`):
+```bash
+kubectl exec -n <namespace> <pod-name> -c daprmq -- curl http://localhost:8080/health/ready
+```
+
+**Note:** Liveness uses `/health` (the process is up) and readiness uses `/health/ready`, both on the HTTP port (8080). The same readiness check is also served on the gRPC port (8081) as the standard `grpc.health.v1.Health` service. A gateway's readiness doesn't prove any worker is ready; check the worker pods for that.
 
 ## Uninstallation
 

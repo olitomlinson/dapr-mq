@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using DaprMQ.ApiServer.Services;
 using DaprMQ.Interfaces;
 using Grpc.Net.Client;
@@ -242,6 +243,29 @@ if (registerActors)
 }
 // No else needed - Dapr Client (from AddDapr) is sufficient for actor invocation
 
+// Readiness: the sidecar is up and its actor runtime is connected to placement (and, on an
+// actor-hosting instance, hosts QueueActor). Served as grpc.health.v1.Health and /health/ready.
+builder.Services.AddSingleton(new DaprReadinessOptions
+{
+    DaprHttpEndpoint = daprHttpEndpoint,
+    RequiredActorType = registerActors ? actorConfig.QueueActorTypeName : null
+});
+builder.Services.AddHealthChecks()
+    .AddCheck<DaprReadinessHealthCheck>("dapr", tags: ["ready"], timeout: TimeSpan.FromSeconds(3));
+builder.Services.AddGrpcHealthChecks(o =>
+{
+    // "" = whole server; the named service = the DaprMQ API surface
+    o.Services.Map("", r => r.Tags.Contains("ready"));
+    o.Services.Map("daprmq.DaprMQ", r => r.Tags.Contains("ready"));
+});
+// Health.Watch is driven by the health-check publisher; its defaults (5 s delay / 30 s period)
+// would make Watch slower than polling.
+builder.Services.Configure<HealthCheckPublisherOptions>(o =>
+{
+    o.Delay = TimeSpan.Zero;
+    o.Period = TimeSpan.FromSeconds(2);
+});
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline
@@ -269,7 +293,12 @@ if (registerActors)
     app.MapActorsHandlers();
 }
 
-// Health check endpoint
+// Readiness is mapped on every instance (workers included), not just API-serving ones
+app.MapGrpcHealthChecksService();
+app.MapHealthChecks("/health/ready", new() { Predicate = r => r.Tags.Contains("ready") });
+
+// Liveness: the process is up. Deliberately independent of Dapr so a placement outage doesn't
+// make Kubernetes restart every pod.
 app.MapGet("/health", () => new { status = "healthy", service = "daprmq-api-dotnet" });
 
 app.Run();

@@ -19,7 +19,7 @@ Source of truth for the integration scenarios every DaprMQ client SDK must imple
 | API server | `daprmq-api:test` (override `DAPRMQ_API_IMAGE`) | `api-server` | expose 5000 (REST) + 5001 (gRPC); `REGISTER_ACTORS=true`, `DAPR_HTTP_ENDPOINT=http://dapr-sidecar:3500`, `DAPR_GRPC_ENDPOINT=http://dapr-sidecar:50001` |
 | daprd sidecar | `daprio/daprd:1.18.4` | `dapr-sidecar` | mounts [dapr-components](../../server/tests/DaprMQ.IntegrationTests/dapr-components) at `/tmp/dapr-components` and a temp dir at `/tmp/blobstore` |
 
-Readiness: poll a probe enqueue on the API until it returns 200 (actors registered) rather than fixed sleeps. Start the stack once per test session and use a unique queue ID per test. The API image is a prerequisite, built by `./build-and-test.sh --skip-tests` from the repo root (CI must run that step first). Skip (don't fail) when the Docker daemon is unavailable; fail when the image is missing.
+Readiness: poll `GET /health/ready` on the API until it returns 200 (sidecar connected to placement and hosting `QueueActor`), or wait on the gRPC health service (`grpc.health.v1.Health/Watch`, service `daprmq.DaprMQ`), rather than fixed sleeps. Don't use a probe enqueue: it writes a queue to the state store on every run. (Python, Java and TypeScript fixtures still use the probe enqueue and are being moved over.) Start the stack once per test session and use a unique queue ID per test. The API image is a prerequisite, built by `./build-and-test.sh --skip-tests` from the repo root (CI must run that step first). Skip (don't fail) when the Docker daemon is unavailable; fail when the image is missing.
 
 **CI:** [.github/workflows/sdk-integration-tests.yml](../../.github/workflows/sdk-integration-tests.yml) builds the API image once and each SDK job loads it via the shared composite action [actions/load-api-image](actions/load-api-image/action.yml). Add a job there when an SDK gains integration tests.
 
@@ -99,6 +99,7 @@ Legend: ✅ implemented and passing · ⬜ not yet · 🚫 permanently out of sc
 | X-01 | Construct from options (HTTP + gRPC addresses) and perform a round trip | ✅ | ⬜ | ⬜ | ⬜ |
 | X-02 | Dispose/close is idempotent and cancels in-flight streams | ✅ | ⬜ | ⬜ | ⬜ |
 | X-03 | Server unreachable surfaces a transport error (not a hang, not a domain error) | ✅ | ⬜ | ⬜ | ⬜ |
+| X-04 | Wait-for-ready (gRPC health `Watch`) returns against a running stack, and an enqueue then succeeds | ✅ | ⬜ | ⬜ | ⬜ |
 
 ## Out of scope (not exposed by any SDK today)
 

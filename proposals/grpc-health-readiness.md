@@ -35,8 +35,8 @@ they can handle an enqueue.
 ## Change
 
 Implement the standard [gRPC Health Checking Protocol](https://github.com/grpc/grpc/blob/master/doc/health-checking.md)
-(`grpc.health.v1.Health`). Back it with a readiness check that exercises the same path the probe
-enqueue does, but without writing state. Clients wait on `Health.Watch`, a server stream, so they are
+(`grpc.health.v1.Health`). Back it with a readiness check that asks the sidecar for its own view of
+the actor runtime. The check doesn't call or activate an actor, and it doesn't write state. Clients wait on `Health.Watch`, a server stream, so they are
 told when the server becomes ready and don't have to poll for it.
 
 Why the standard protocol rather than a custom frame or RPC:
@@ -51,54 +51,65 @@ Why the standard protocol rather than a custom frame or RPC:
 
 ### What "ready" means
 
-The check has to give the same answer as the probe enqueue, or the startup race comes back. The
-deployment topologies differ:
+The sidecar already reports whether its actor runtime is up. `GET /v1.0/metadata` returns an
+`actorRuntime` object, computed in daprd's `actors.RuntimeStatus()` (`pkg/actors/actors.go`):
 
-| Instance | `ENABLE_API` / `REGISTER_ACTORS` | Ready when |
+| Field | Value when ready | Meaning |
 |---|---|---|
-| Gateway ([docker-compose](../docker-compose.yml#L76), Helm gateway) | true / false | sidecar healthy **and** a QueueActor on some worker answers |
-| Worker | false / true | sidecar healthy **and** its own actor types are registered with placement |
-| Single process (default) | true / true | both of the above |
+| `runtimeStatus` | `RUNNING` | The app has finished registering its actor types (none, on a gateway) |
+| `placement` | `placement: connected` | The sidecar is connected to placement |
+| `hostReady` | `true` | Both of the above, and the actor runtime has started |
+| `activeActors[].type` | includes `QueueActor` | This sidecar hosts `QueueActor` (only when `REGISTER_ACTORS=true`) |
 
-On a gateway, the sidecar's `/v1.0/metadata` doesn't list actor types hosted on other pods, so
-"placement connected" doesn't prove that an enqueue will land. The only reliable signal is a real actor
-round trip.
+What that proves for each topology:
 
-### 1. `Ping` on the queue actor
+| Instance | `ENABLE_API` / `REGISTER_ACTORS` | Ready when | Same answer as the probe enqueue? |
+|---|---|---|---|
+| Single process (default, and every SDK fixture) | true / true | sidecar healthy, `hostReady`, hosts `QueueActor` | Yes. The actor type is local. |
+| Worker | false / true | sidecar healthy, `hostReady`, hosts `QueueActor` | Yes, for this worker's share of actors. |
+| Gateway ([docker-compose](../docker-compose.yml#L76), Helm gateway) | true / false | sidecar healthy, `hostReady` | **No.** See below. |
 
-Add `Task Ping()` to [IQueueActor.cs](../server/src/DaprMQ.Interfaces/IQueueActor.cs), with a matching
-`ActorMethodNames.Ping` constant. It returns immediately and doesn't touch `StateManager`.
+**Gateway limitation.** A gateway's metadata doesn't list actor types hosted on other pods, so a ready
+gateway only knows it can reach placement, not that any worker is hosting `QueueActor`. If every
+worker is down or still starting, the gateway reports `SERVING` and enqueues fail. We accept this
+rather than activate an actor to prove readiness:
 
-The health check calls it on one fixed actor id, `__daprmq-health`. That actor is activated once and
-then stays warm, because the check runs every few seconds, which is well inside the idle timeout. The
-id is reserved: the controller's id validation rejects it on the public API.
+- Workers have their own readiness probe, so Kubernetes and operators can already see when no worker is
+  ready.
+- Every SDK integration fixture runs the single-process topology, where the check is exact.
+- An actor round trip would make every health check an actor call, with a reserved actor id kept
+  permanently active, for a case that worker readiness already covers.
 
-Activation runs the lazy lock sweep, which only reads the lock index. With no state there is nothing to
-sweep, so it doesn't save anything. A test should assert this.
-
-### 2. `ActorReadinessHealthCheck` (server)
+### 1. `DaprReadinessHealthCheck` (server)
 
 An `IHealthCheck` in `DaprMQ.ApiServer/Services` with two steps:
 
-1. `DaprClient.CheckHealthAsync()`. If the sidecar isn't up, return `Unhealthy("sidecar")`.
-2. `IQueueActorInvoker` → `Ping` on `__daprmq-health`, with a short timeout (2 s). If it throws or
-   times out, return `Unhealthy("actors")`. Otherwise return `Healthy`.
+1. `DaprClient.CheckOutboundHealthAsync()` (`/v1.0/healthz/outbound`). If the sidecar isn't up,
+   return `Unhealthy("sidecar")`. Use the outbound check, not `CheckHealthAsync()` (`/v1.0/healthz`):
+   `/healthz` also waits for the app side of the sidecar. In single-process mode that app is this
+   process, and the question here is only whether it can call Dapr.
+2. `GET {DAPR_HTTP_ENDPOINT}/v1.0/metadata` with a 2 s timeout. Return `Unhealthy("actors")` unless
+   `actorRuntime.hostReady` is `true` and, when `REGISTER_ACTORS=true`, `actorRuntime.activeActors`
+   includes `QueueActor`. Otherwise return `Healthy`.
+
+Read the metadata over HTTP: neither `DaprClient.GetMetadataAsync()` nor `Dapr.Metadata` exposes
+`hostReady` or `placement`. Deserialise only the `actorRuntime` fields that are used.
 
 Register it with the tag `ready`.
 
-### 3. Wire up the health service (server)
+### 2. Wire up the health service (server)
 
 In [Program.cs](../server/src/DaprMQ.ApiServer/Program.cs):
 
 ```csharp
 builder.Services.AddHealthChecks()
-    .AddCheck<ActorReadinessHealthCheck>("actors", tags: ["ready"]);
+    .AddCheck<DaprReadinessHealthCheck>("dapr", tags: ["ready"], timeout: TimeSpan.FromSeconds(3));
 
 builder.Services.AddGrpcHealthChecks(o =>
 {
     // "" = whole server; the named service = the DaprMQ API surface
     o.Services.Map("", r => r.Tags.Contains("ready"));
-    o.Services.Map("daprmq.ApiServer.Grpc.DaprMQ", r => r.Tags.Contains("ready"));
+    o.Services.Map("daprmq.DaprMQ", r => r.Tags.Contains("ready"));
 });
 
 // Watch is driven by the health-check publisher; defaults are 5 s delay / 30 s period
@@ -117,15 +128,15 @@ Notes:
 - **Map the health service whether or not `ENABLE_API` is set**, so that workers expose it too. It goes
   outside the `if (enableApi)` block at [Program.cs:262](../server/src/DaprMQ.ApiServer/Program.cs#L262).
 - **The publisher period is the Watch latency.** The defaults (first run at 5 s, then every 30 s) would
-  make `Watch` slower than today's 1 s poll. 2 s keeps detection quick, and the cost is one cheap actor
-  call per pod every 2 s.
-- **Keep `/health` as liveness.** If liveness depended on actors, a placement outage would make
+  make `Watch` slower than today's 1 s poll. 2 s keeps detection quick, and the cost is two local sidecar
+  calls per pod every 2 s.
+- **Keep `/health` as liveness.** If liveness depended on placement, a placement outage would make
   Kubernetes restart every pod, which makes the outage worse. Liveness stays "the process is up", and
   readiness moves to `/health/ready`.
 
 Package: `Grpc.AspNetCore.HealthChecks` (same 2.68.x line as `Grpc.AspNetCore`).
 
-### 4. `WaitForReadyAsync` (.NET SDK)
+### 3. `WaitForReadyAsync` (.NET SDK)
 
 Add this to [IDaprMQClient.cs](../sdks/dotnet/src/DaprMQ.Client/IDaprMQClient.cs) and `DaprMQClient`:
 
@@ -135,7 +146,7 @@ Task WaitForReadyAsync(CancellationToken ct = default);
 
 Implementation:
 
-- Open `Health.Watch(service: "daprmq.ApiServer.Grpc.DaprMQ")` and return on the first `SERVING`.
+- Open `Health.Watch(service: "daprmq.DaprMQ")` and return on the first `SERVING`.
 - If the server isn't listening yet, the call fails with `Unavailable`. Reconnect with capped backoff
   (250 ms → 2 s) until `ct` is cancelled.
 - If the server is too old to have the health service, the call fails with `Unimplemented`. Throw a
@@ -153,7 +164,7 @@ readyCts.CancelAfter(TimeSpan.FromMinutes(2));
 await client.WaitForReadyAsync(readyCts.Token);
 ```
 
-### 5. Helm
+### 4. Helm
 
 Point `readinessProbe` at `/health/ready` for both gateway and worker in
 [values.yaml](../helm/values.yaml). Leave `livenessProbe` on `/health`. An HTTP probe is used rather
@@ -169,9 +180,12 @@ same check.
   `Grpc.Net.Client` keepalive already does. They say nothing about the sidecar or actors.
 - **gRPC `WaitForReady` call option.** This waits for the channel to connect, not for actors. A probe
   enqueue would still fail with an actor error after the channel is up.
-- **Sidecar metadata (`/v1.0/metadata` → `actorRuntime.placement`).** No actor call is needed, but it
-  is wrong on gateways (see [What "ready" means](#what-ready-means)), which is exactly where clients
-  connect.
+- **An actor round trip (`Ping` on a reserved actor id).** This is the only check that is exact on a
+  gateway, and it's what the Dapr .NET SDK's own actor integration tests do
+  (`ActorRuntimeHelper.WaitForActorRuntimeAsync`). It was rejected because it activates and keeps an
+  actor alive just for health checks, adds an actor method and a reserved id to the public API, and
+  puts an actor call (with its own timeout, since daprd holds actor calls until placement is ready) on
+  every check. See [Gateway limitation](#what-ready-means) for why the cheaper check is enough.
 
 ## Out of scope
 
@@ -188,35 +202,40 @@ same check.
 Server ([DaprMQ.Tests](../server/tests/DaprMQ.Tests/)):
 
 1. **Integration (HTTP contract):** `grpc.health.v1.Health/Check` with service
-   `daprmq.ApiServer.Grpc.DaprMQ` returns `SERVING` against the running stack, and `/health/ready`
+   `daprmq.DaprMQ` returns `SERVING` against the running stack, and `/health/ready`
    returns 200.
 2. **Health check, mocked dependencies:**
-   - sidecar unhealthy → `Unhealthy`, and the actor isn't called;
-   - `Ping` throws → `Unhealthy`;
-   - `Ping` hangs past the timeout → `Unhealthy`;
-   - both succeed → `Healthy`.
-3. **Actor:** `Ping` on a fresh actor with an empty state dictionary makes no `SetStateAsync` or
-   `SaveStateAsync` calls.
-4. **Controller:** an enqueue to `__daprmq-health` returns 400.
+   - sidecar unhealthy → `Unhealthy`, and metadata isn't fetched;
+   - metadata request throws or times out → `Unhealthy`;
+   - `hostReady: false` → `Unhealthy`;
+   - `REGISTER_ACTORS=true` and `QueueActor` missing from `activeActors` → `Unhealthy`;
+   - `REGISTER_ACTORS=false`, `hostReady: true`, no actor types → `Healthy`;
+   - `REGISTER_ACTORS=true`, `hostReady: true`, `QueueActor` listed → `Healthy`.
 
 .NET SDK ([sdks/dotnet/tests](../sdks/dotnet/tests/)):
 
-5. `WaitForReadyAsync` returns after a `NOT_SERVING` → `SERVING` sequence from a mocked `Watch` stream.
-6. It retries through `Unavailable` and then succeeds.
-7. It throws `NotSupportedException` on `Unimplemented`.
-8. It honours cancellation.
-9. **Integration:** the SDK integration fixture uses `WaitForReadyAsync` in place of its probe, and
-   the existing suite passes unchanged. This is the end-to-end proof that readiness is no weaker than
-   the enqueue probe.
+3. `WaitForReadyAsync` returns after a `NOT_SERVING` → `SERVING` sequence from a mocked `Watch` stream.
+4. It retries through `Unavailable` and then succeeds.
+5. It throws `NotSupportedException` on `Unimplemented`.
+6. It honours cancellation.
+7. **Integration:** the shared integration fixture (`DaprTestEnvironment`, used by both the server
+   and .NET SDK suites) replaces its fixed 5 s sleep with a wait on `/health/ready`, and both suites
+   pass unchanged. The fixture runs the single-process topology, so this is the end-to-end proof that
+   readiness there is no weaker than the enqueue probe. X-04 checks `WaitForReadyAsync` against the
+   running stack.
 
 Run `dotnet test` in `server/tests/DaprMQ.Tests`, then `./build-and-test.sh` before committing.
 
 ## Verification
 
-- **Cold start:** `docker compose up` from nothing, and run `grpcurl -plaintext localhost:8102
-  grpc.health.v1.Health/Watch`. It should stream `NOT_SERVING` and then `SERVING`. The first enqueue
-  after `SERVING` should succeed every time (run it 20× in a loop).
-- **Worker loss:** stop both workers. The gateway's `Watch` should go to `NOT_SERVING` within about
-  one publisher period plus the 2 s ping timeout, and return to `SERVING` once a worker is back.
+- **Cold start, single process:** start the SDK fixture's stack and run `grpcurl -plaintext
+  localhost:<grpc port> grpc.health.v1.Health/Watch`. It should stream `NOT_SERVING` and then
+  `SERVING`. The first enqueue after `SERVING` should succeed every time (run it 20× in a loop).
+- **Cold start, docker compose:** each worker's `/health/ready` should return 200 only after its
+  sidecar shows `hostReady` and lists `QueueActor`. Once at least one worker is ready, the first
+  enqueue through the gateway should succeed.
+- **Worker loss:** stop both workers. Their readiness goes to failing, and the gateway stays `SERVING`,
+  as described in the gateway limitation. Stop placement instead, and the gateway's `Watch` should go to
+  `NOT_SERVING` within about one publisher period.
 - **Perf harness:** startup wait is no slower than today. No `perf-probe-*` queues appear in the state
   store afterwards.
