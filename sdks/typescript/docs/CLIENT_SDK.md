@@ -32,7 +32,7 @@ const client = new DaprMQClient({
 client.close();
 ```
 
-`DaprMQClient` is REST-backed for every operation except `consumeSession`, which is the one method built on the `ConsumeSession` gRPC streaming RPC - everything else (`enqueue`, `dequeueLocked`, `acknowledge`, `extendLock`, `deadLetter`, `acceptSession`, `renewSessionLease`, `releaseSession`) is a plain `fetch` call under the hood.
+`DaprMQClient` is REST-backed for every operation except `consumeSession`, which is the one method built on the `ConsumeSession` gRPC streaming RPC - everything else (`enqueue`, `dequeueLocked`, `acknowledge`, `extendLock`, `nack`, `deadLetter`, `acceptSession`, `renewSessionLease`, `releaseSession`) is a plain `fetch` call under the hood.
 
 `grpcAddress` is required unless you pass a pre-built `grpcClient` (e.g. in tests - see `fetch`/`grpcClient` in `DaprMQClientOptions`, both DI/test seams). `client.close()` only tears down the gRPC client if this instance built it; a `grpcClient` you supplied yourself is left alone.
 
@@ -94,6 +94,10 @@ consumer.start();
 // ... run your application ...
 await consumer.stop(); // stops claiming, drains in-flight handlers, closes streams
 ```
+
+`onHandlerException` is one of `"deadLetterMessage"` (default), `"nackMessage"` (return the item to the front of the session for redelivery - counts toward the server's max delivery count, past which it is dead-lettered), `"abandonSession"`, or `"both"`.
+
+`client.nack(queueId, lockId, { leaseId })` (and `delivery.nack()` on a `SessionDelivery`) returns a locked item to its original position; it resolves to `{ deadLettered, deliveryCount, dlqId }`.
 
 `SessionMessageContext` deliberately has no `leaseId` - the `ConsumeSession` wire protocol never exposes one to the client (the server tracks it internally and applies it when calling `acknowledge`/`deadLetter` on your behalf), which is exactly what makes the managed loop simpler than the manual API above.
 

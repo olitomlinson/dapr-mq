@@ -28,7 +28,7 @@ var client = new DaprMQClient(new DaprMQClientOptions
 var client = new DaprMQClient(httpClient, grpcChannel);
 ```
 
-`IDaprMQClient` is REST-backed for every operation except `ConsumeSessionAsync`, which is the one method built on the `ConsumeSession` gRPC streaming RPC - everything else (`Enqueue`, `DequeueLocked`, `Acknowledge`, `ExtendLock`, `DeadLetter`, `AcceptSession`, `RenewSessionLease`, `ReleaseSession`) is a plain HTTP call under the hood.
+`IDaprMQClient` is REST-backed for every operation except `ConsumeSessionAsync`, which is the one method built on the `ConsumeSession` gRPC streaming RPC - everything else (`Enqueue`, `DequeueLocked`, `Acknowledge`, `ExtendLock`, `Nack`, `DeadLetter`, `AcceptSession`, `RenewSessionLease`, `ReleaseSession`) is a plain HTTP call under the hood.
 
 Errors map to typed exceptions under `DaprMQ.Client.Exceptions` (`LockNotFoundException`, `LockExpiredException`, `SessionNotFoundException`, `SessionLockedException`, `SessionLeaseExpiredException`, `InvalidLeaseIdException`, `SessionActorUnavailableException`, `NoSessionsAvailableException`, `SessionLostException`, `ValidationException`, `ActorNotFoundException`), all deriving from `DaprMQException`. A `204 No Content` (queue empty / no session available) is not an error - `DequeueLockedAsync`/`AcceptSessionAsync` return `null` instead of throwing.
 
@@ -88,6 +88,10 @@ await consumer.StartAsync();
 // ... run your application ...
 await consumer.StopAsync(); // stops claiming, drains in-flight handlers, closes streams
 ```
+
+`OnHandlerException` is one of `DeadLetterMessage` (default), `NackMessage` (return the item to the front of the session for redelivery - counts toward the server's max delivery count, past which it is dead-lettered), `AbandonSession`, or `Both`.
+
+`NackAsync(queueId, lockId, leaseId?)` on the client (and `NackAsync` on a `SessionDelivery`) returns a locked item to its original position; it returns `NackResult(DeadLettered, DeliveryCount, DlqId)`.
 
 `SessionMessageContext` deliberately has no `LeaseId` - the `ConsumeSession` wire protocol never exposes one to the client (the server tracks it internally and applies it when calling `Acknowledge`/`DeadLetter` on your behalf), which is exactly what makes the managed loop simpler than the manual API above.
 

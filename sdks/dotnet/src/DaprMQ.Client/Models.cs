@@ -10,13 +10,15 @@ public record DequeueLockedItemDto(JsonElement Item, int Priority, string LockId
 
 public record DequeueLockedResult(IReadOnlyList<DequeueLockedItemDto> Items, bool Locked, string? Message);
 
+public record NackResult(bool DeadLettered, int DeliveryCount, string? DlqId);
+
 public record SessionLease(string SessionId, string LeaseId, double LeaseExpiresAt);
 
 /// <summary>
 /// One delivered, locked item from a <see cref="IDaprMQClient.ConsumeSessionAsync"/> stream.
 /// There is no LeaseId here - the ConsumeSession wire protocol never exposes one to the client
 /// (the server tracks the lease internally and applies it when it calls Acknowledge/DeadLetter
-/// on the caller's behalf), so AckAsync/DeadLetterAsync are the only way to resolve this item.
+/// on the caller's behalf), so AckAsync/DeadLetterAsync/NackAsync are the only way to resolve this item.
 /// </summary>
 public sealed class SessionDelivery
 {
@@ -27,6 +29,9 @@ public sealed class SessionDelivery
     public required double LockExpiresAt { get; init; }
     public required Func<CancellationToken, Task> AckAsync { get; init; }
     public required Func<CancellationToken, Task> DeadLetterAsync { get; init; }
+
+    /// <summary>Returns the item to the front of the session for redelivery.</summary>
+    public required Func<CancellationToken, Task> NackAsync { get; init; }
 }
 
 public record DaprMQClientOptions

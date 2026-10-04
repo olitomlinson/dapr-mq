@@ -12,6 +12,13 @@ public interface IDaprMQClient
 
     Task DeadLetterAsync(string queueId, string lockId, string? leaseId = null, CancellationToken ct = default);
 
+    /// <summary>
+    /// Returns a locked item to its original position in the queue. Counts as a delivery attempt:
+    /// past the server's max delivery count the item is dead-lettered instead
+    /// (<see cref="NackResult.DeadLettered"/>).
+    /// </summary>
+    Task<NackResult> NackAsync(string queueId, string lockId, string? leaseId = null, CancellationToken ct = default);
+
     Task<SessionLease?> AcceptSessionAsync(string queueId, string? sessionId = null, int leaseSeconds = 30, CancellationToken ct = default);
 
     Task<SessionLease> RenewSessionLeaseAsync(string queueId, string sessionId, string leaseId, int additionalSeconds = 30, CancellationToken ct = default);

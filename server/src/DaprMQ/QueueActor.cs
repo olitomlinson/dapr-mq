@@ -1895,29 +1895,8 @@ public class QueueActor : Actor, IQueueActor
                 };
             }
 
-            // Get the locked item from lock state (item already dequeued during DequeueLocked)
-            string itemJson = lockData.ItemJson;
-
-            // Enqueue to DLQ using actor invoker (enables testing)
-            string dlqActorId = $"{Id.GetId()}-deadletter";
-            var enqueueRequest = new EnqueueRequest
-            {
-                Items = new List<EnqueueItem>
-                {
-                    new EnqueueItem
-                    {
-                        ItemJson = itemJson,
-                        Priority = lockData.Priority
-                    }
-                }
-            };
-
-            var enqueueResult = await _actorInvoker.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
-                new ActorId(dlqActorId),
-                "Enqueue",
-                enqueueRequest);
-
-            if (!enqueueResult.Success)
+            string? dlqActorId = await MoveLockToDeadLetterAsync(lockId, lockData, metadata);
+            if (dlqActorId == null)
             {
                 return new DeadLetterResponse
                 {
@@ -1926,15 +1905,6 @@ public class QueueActor : Actor, IQueueActor
                     Message = "Failed to enqueue item to dead letter queue"
                 };
             }
-
-            // Successfully enqueued to DLQ - item already removed from main queue during DequeueLocked
-            // Remove lock and decrement counter
-            await StateManager.RemoveStateAsync($"{lockId}-lock");
-
-            await DeindexSessionLockAsync(lockId);
-            await SetMetadataAsync(metadata with { LockCount = metadata.LockCount - 1 });
-
-            await StateManager.SaveStateAsync();
 
             return new DeadLetterResponse
             {
@@ -1951,6 +1921,156 @@ public class QueueActor : Actor, IQueueActor
                 Status = "ERROR",
                 ErrorCode = "INTERNAL_ERROR",
                 Message = $"Error: {ex.Message}"
+            };
+        }
+    }
+
+    /// <summary>
+    /// Enqueues a locked item to the dead-letter queue, then voids its lock and commits. DLQ-first,
+    /// so a failure leaves the lock in place rather than losing the item. Returns the DLQ actor id,
+    /// or null if the DLQ refused it.
+    /// </summary>
+    private async Task<string?> MoveLockToDeadLetterAsync(string lockId, LockState lockData, ActorMetadata metadata)
+    {
+        string dlqActorId = $"{Id.GetId()}{DeadLetterActorIdSuffix}";
+        var enqueueResult = await _actorInvoker.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
+            new ActorId(dlqActorId),
+            "Enqueue",
+            new EnqueueRequest
+            {
+                Items = [new EnqueueItem { ItemJson = lockData.ItemJson, Priority = lockData.Priority }]
+            });
+
+        if (!enqueueResult.Success)
+        {
+            return null;
+        }
+
+        // Item already removed from the main queue during DequeueLocked - just void the lock.
+        await StateManager.RemoveStateAsync($"{lockId}-lock");
+
+        await DeindexSessionLockAsync(lockId);
+        await SetMetadataAsync(metadata with { LockCount = metadata.LockCount - 1 });
+
+        await StateManager.SaveStateAsync();
+
+        return dlqActorId;
+    }
+
+    /// <summary>
+    /// Returns a locked item to the position it was taken from and voids the lock - an immediate,
+    /// holder-initiated version of lock expiry. Counts as a delivery attempt, so past
+    /// MaxDeliveryCount the item is dead-lettered instead, which stops a nack loop spinning forever.
+    /// </summary>
+    public async Task<NackResponse> Nack(NackRequest request)
+    {
+        try
+        {
+            var metadata = await GetMetadataAsync();
+            if (!TryAuthorizeSessionLease(metadata, request.LeaseId, out var leaseErrorCode, out var leaseErrorMessage))
+            {
+                return new NackResponse
+                {
+                    Success = false,
+                    Message = leaseErrorMessage ?? string.Empty,
+                    ErrorCode = leaseErrorCode
+                };
+            }
+
+            if (string.IsNullOrEmpty(request.LockId))
+            {
+                return new NackResponse
+                {
+                    Success = false,
+                    Message = "lock_id cannot be empty",
+                    ErrorCode = "INVALID_LOCK_ID"
+                };
+            }
+
+            string lockId = request.LockId;
+
+            var lockState = await StateManager.TryGetStateAsync<LockState>($"{lockId}-lock");
+            if (!lockState.HasValue)
+            {
+                return new NackResponse
+                {
+                    Success = false,
+                    Message = "Lock not found",
+                    ErrorCode = "LOCK_NOT_FOUND"
+                };
+            }
+
+            var lockData = lockState.Value;
+
+            // Same rule as Acknowledge: on a plain queue an expired lock already belongs to the sweep;
+            // on a session actor the lease (checked above) is the only authority.
+            if (!IsSessionActor() && DateTimeOffset.UtcNow.ToUnixTimeSeconds() >= lockData.ExpiresAt)
+            {
+                return new NackResponse
+                {
+                    Success = false,
+                    Message = "Lock has expired",
+                    ErrorCode = "LOCK_EXPIRED"
+                };
+            }
+
+            int deliveryCount = lockData.DeliveryCount + 1;
+
+            if (deliveryCount > _lockConfig.MaxDeliveryCount)
+            {
+                string? dlqActorId = await MoveLockToDeadLetterAsync(lockId, lockData, metadata);
+                if (dlqActorId == null)
+                {
+                    return new NackResponse
+                    {
+                        Success = false,
+                        Message = "Failed to enqueue item to dead letter queue",
+                        ErrorCode = "DLQ_ENQUEUE_FAILED",
+                        DeliveryCount = lockData.DeliveryCount
+                    };
+                }
+
+                Logger.LogWarning(
+                    "Nack of lock {LockId} exceeded MaxDeliveryCount {MaxDeliveryCount}; dead-lettered",
+                    lockId, _lockConfig.MaxDeliveryCount);
+
+                return new NackResponse
+                {
+                    Success = true,
+                    Message = "Item exceeded max delivery count and was moved to dead letter queue",
+                    DeadLettered = true,
+                    DeliveryCount = deliveryCount,
+                    DlqId = dlqActorId
+                };
+            }
+
+            await RestoreInOrderInternal([(ReclaimedItem(lockData, deliveryCount), lockData.Priority)]);
+            await StateManager.RemoveStateAsync($"{lockId}-lock");
+            await DeindexSessionLockAsync(lockId);
+
+            // Re-read: the restore staged queue/metadata updates of its own.
+            metadata = await GetMetadataAsync();
+            await SetMetadataAsync(metadata with { LockCount = Math.Max(0, metadata.LockCount - 1) });
+
+            await StateManager.SaveStateAsync();
+
+            Logger.LogDebug("Nacked lock {LockId}; item returned to its original position", lockId);
+
+            return new NackResponse
+            {
+                Success = true,
+                Message = "Item returned to queue",
+                DeliveryCount = deliveryCount
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error in NackAsync");
+            return new NackResponse
+            {
+                Success = false,
+                Message = $"Error: {ex.Message}",
+                ErrorCode = "INTERNAL_ERROR"
             };
         }
     }

@@ -19,6 +19,8 @@ internal record ExtendLockResponseWire(long NewExpiresAt, string LockId);
 
 internal record DeadLetterResponseWire(bool Success, string Message, string? ErrorCode = null, string? DlqId = null);
 
+internal record NackResponseWire(bool Success, string Message, bool DeadLettered = false, int DeliveryCount = 0, string? DlqId = null, string? ErrorCode = null);
+
 internal record ErrorResponseWire(string Message, bool Success = false);
 
 internal record AcceptSessionResponseWire(string SessionId, string LeaseId, double LeaseExpiresAt);

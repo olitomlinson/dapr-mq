@@ -92,3 +92,21 @@ async def test_dead_letter_writes_a_dead_letter_frame() -> None:
         await delivery.dead_letter()
 
     assert call.written[1].dead_letter.lock_id == "L2"
+
+
+async def test_nack_writes_a_nack_frame() -> None:
+    call = FakeStreamStreamCall()
+    client = make_client(call)
+
+    call.emit(daprmq_pb2.ConsumeSessionResponse(session_assigned=daprmq_pb2.SessionAssigned(session_id="s1", lease_expires_at=1.0)))
+    call.emit(
+        daprmq_pb2.ConsumeSessionResponse(
+            delivered=daprmq_pb2.SessionDelivered(lock_id="L3", item_json="{}", priority=1, lock_expires_at=1.0)
+        )
+    )
+    call.emit_end()
+
+    async for delivery in client.consume_session("q", session_id="s1"):
+        await delivery.nack()
+
+    assert call.written[1].nack.lock_id == "L3"

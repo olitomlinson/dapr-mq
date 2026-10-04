@@ -11,6 +11,7 @@ Most endpoints are scoped to a queue via `{queueId}` in the path — each distin
 - [Dequeue](#dequeue)
 - [Acknowledge](#acknowledge)
 - [Extend Lock](#extend-lock)
+- [Nack](#nack)
 - [Dead Letter](#dead-letter)
 - [HTTP Sink](#http-sink)
 - [Topics](#topics)
@@ -274,6 +275,57 @@ Content-Type: application/json
 
 ---
 
+## Nack
+
+Return a locked item to the queue for redelivery and void the lock (Azure Service Bus *Abandon*). The item goes back to the **position it was taken from**, not the tail, so it is the next item delivered and FIFO order is kept.
+
+A nack counts as a delivery attempt. It increments the item's delivery count, and once that exceeds the server's max delivery count (`DAPRMQ_MAX_DELIVERY_COUNT`, default 10) the item is moved to `{queueId}-deadletter` instead. The response reports this as `deadLettered: true`.
+
+```
+POST /queue/{queueId}/nack
+Content-Type: application/json
+```
+
+**Headers**
+
+| Header | Default | Description |
+|---|---|---|
+| `lease-id` | _(none)_ | Required when `{queueId}` is a session-scoped queue with an active lease — see [Sessions](#sessions). |
+
+**Body**
+
+```json
+{ "lockId": "aB3xQ9k2LmZ" }
+```
+
+**Response — `200 OK`**
+
+```json
+{ "success": true, "message": "Item returned to queue", "deadLettered": false, "deliveryCount": 1 }
+```
+
+Past the max delivery count:
+
+```json
+{ "success": true, "message": "Item exceeded max delivery count and was moved to dead letter queue", "deadLettered": true, "deliveryCount": 11, "dlqId": "my-queue-deadletter" }
+```
+
+**Error responses** — `404` (`LOCK_NOT_FOUND`), `410` (`LOCK_EXPIRED`, `SESSION_LEASE_EXPIRED`), `400` (`INVALID_LOCK_ID`, `INVALID_LEASE_ID`, `DLQ_ENQUEUE_FAILED`).
+
+On a session queue with `prefetchCount` > 1, items delivered after the nacked one are already locked, so the nacked item is redelivered after them.
+
+**Example**
+
+```bash
+curl -X POST http://localhost:8002/queue/my-queue/nack \
+  -H "Content-Type: application/json" \
+  -d '{"lockId": "aB3xQ9k2LmZ"}'
+```
+
+gRPC: `Nack(NackRequest { queue_id, lock_id, lease_id? }) → NackResponse { success, message, error_code, dead_lettered, delivery_count, dlq_id }`.
+
+---
+
 ## Dead Letter
 
 Move a locked item to its dead letter queue (`{queueId}-deadletter`) and void the lock.
@@ -522,7 +574,7 @@ GET /topic/{topicId}/subscribers/{subscriberId}/circuit-breaker
 
 ## Sessions
 
-Exclusive, leased ownership of an ordered sub-group within a queue (modeled on Azure Service Bus sessions). A consumer calls `Accept Session` to claim a session, then calls the existing, unmodified `dequeue`/`acknowledge`/`extend-lock`/`deadletter` routes with `{queueId}` set to `{originalQueueId}-session-{sessionId}` and a `lease-id` header carrying the returned `leaseId` — no new routes are needed for those four. See [SESSIONS_IMPLEMENTATION.md](SESSIONS_IMPLEMENTATION.md) for the underlying actor design.
+Exclusive, leased ownership of an ordered sub-group within a queue (modeled on Azure Service Bus sessions). A consumer calls `Accept Session` to claim a session, then calls the existing, unmodified `dequeue`/`acknowledge`/`extend-lock`/`nack`/`deadletter` routes with `{queueId}` set to `{originalQueueId}-session-{sessionId}` and a `lease-id` header carrying the returned `leaseId` — no new routes are needed for those five. See [SESSIONS_IMPLEMENTATION.md](SESSIONS_IMPLEMENTATION.md) for the underlying actor design.
 
 ### Accept Session
 
@@ -614,7 +666,7 @@ Idempotent — releasing an already-released or unknown session also returns `20
 
 The same three operations are also exposed as unary RPCs on the `DaprMQ` gRPC service (`AcceptSession`/`RenewSessionLease`/`ReleaseSession`, plain request/response messages, failures surfaced as `RpcException` with a mapped `StatusCode`) — see `daprmq.proto` for exact field names.
 
-For a managed multi-item consume loop, `ConsumeSession` is a bidirectional streaming RPC: the client sends a `Start { queueId, sessionId?, leaseSeconds, prefetchCount, sessionIdleTimeoutSeconds }` frame first, the server claims the session server-side and streams back one `SessionAssigned` frame followed by a `Delivered` frame per item; the client sends `Ack`/`DeadLetter` frames as it finishes each item. The stream's own liveness is the heartbeat — the server renews the lease on its own schedule for as long as the stream stays open, so no explicit client heartbeat traffic is needed. Closing the stream releases the session immediately. If no message arrives within `sessionIdleTimeoutSeconds` (0/unset defaults to `leaseSeconds`), the server treats the session as drained: it releases the session and ends the stream with a terminal `SessionDrained` frame — not an error, equivalent to the stream ending cleanly. Other terminal frames are `Error` (the initial claim failed) or `SessionLost` (the lease couldn't be maintained after a successful claim).
+For a managed multi-item consume loop, `ConsumeSession` is a bidirectional streaming RPC: the client sends a `Start { queueId, sessionId?, leaseSeconds, prefetchCount, sessionIdleTimeoutSeconds }` frame first, the server claims the session server-side and streams back one `SessionAssigned` frame followed by a `Delivered` frame per item; the client sends `Ack`/`DeadLetter`/`Nack` frames as it finishes each item (a `Nack` puts the item back at the head of the session, and the stream redelivers it). The stream's own liveness is the heartbeat — the server renews the lease on its own schedule for as long as the stream stays open, so no explicit client heartbeat traffic is needed. Closing the stream releases the session immediately. If no message arrives within `sessionIdleTimeoutSeconds` (0/unset defaults to `leaseSeconds`), the server treats the session as drained: it releases the session and ends the stream with a terminal `SessionDrained` frame — not an error, equivalent to the stream ending cleanly. Other terminal frames are `Error` (the initial claim failed) or `SessionLost` (the lease couldn't be maintained after a successful claim).
 
 ---
 

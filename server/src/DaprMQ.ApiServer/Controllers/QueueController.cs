@@ -593,6 +593,57 @@ public class QueueController : ControllerBase
     }
 
     /// <summary>
+    /// Return a locked item to its original position in the queue and void the lock. Past the
+    /// max delivery count the item is dead-lettered instead (DeadLettered=true in the response).
+    /// </summary>
+    [HttpPost("{queueId}/nack")]
+    public async Task<IActionResult> Nack(
+        string queueId,
+        [FromBody] ApiNackRequest request,
+        [FromHeader(Name = "lease-id")] string? lease_id = null)
+    {
+        try
+        {
+            _logger.LogDebug($"Nack request for queue {queueId} with lock_id {request.LockId}");
+
+            var result = await _actorInvoker.InvokeMethodAsync<NackRequest, NackResponse>(
+                new ActorId(queueId),
+                ActorMethodNames.Nack,
+                new NackRequest
+                {
+                    LockId = request.LockId,
+                    LeaseId = lease_id
+                });
+
+            var response = new ApiNackResponse(
+                result.Success,
+                result.Message,
+                result.DeadLettered,
+                result.DeliveryCount,
+                result.DlqId,
+                result.ErrorCode
+            );
+
+            if (!result.Success)
+            {
+                return result.ErrorCode switch
+                {
+                    "LOCK_EXPIRED" or "SESSION_LEASE_EXPIRED" => StatusCode(410, response),
+                    "LOCK_NOT_FOUND" => NotFound(response),
+                    _ => BadRequest(response)
+                };
+            }
+
+            return Ok(response);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Error nacking item in {queueId}");
+            return StatusCode(500, new ApiErrorResponse($"Internal error: {ex.Message}"));
+        }
+    }
+
+    /// <summary>
     /// Move a locked item to the dead letter queue and void the lock.
     /// </summary>
     [HttpPost("{queueId}/deadletter")]

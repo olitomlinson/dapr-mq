@@ -21,11 +21,13 @@ class DeliveryHandle:
     delivery: SessionDelivery
     acked: list[bool]
     dead_lettered: list[bool]
+    nacked: list[bool]
 
 
 def make_delivery(session_id: str, lock_id: str) -> DeliveryHandle:
     acked = [False]
     dead_lettered = [False]
+    nacked = [False]
 
     async def ack() -> None:
         acked[0] = True
@@ -33,10 +35,20 @@ def make_delivery(session_id: str, lock_id: str) -> DeliveryHandle:
     async def dead_letter() -> None:
         dead_lettered[0] = True
 
+    async def nack() -> None:
+        nacked[0] = True
+
     delivery = SessionDelivery(
-        session_id=session_id, lock_id=lock_id, item={}, priority=0, lock_expires_at=0, ack=ack, dead_letter=dead_letter
+        session_id=session_id,
+        lock_id=lock_id,
+        item={},
+        priority=0,
+        lock_expires_at=0,
+        ack=ack,
+        dead_letter=dead_letter,
+        nack=nack,
     )
-    return DeliveryHandle(delivery=delivery, acked=acked, dead_lettered=dead_lettered)
+    return DeliveryHandle(delivery=delivery, acked=acked, dead_lettered=dead_lettered, nacked=nacked)
 
 
 async def macrotask_yield() -> None:
@@ -180,6 +192,30 @@ async def test_dead_letters_the_message_by_default_when_the_handler_throws() -> 
     await consumer.stop()
 
     assert handle.dead_lettered[0] is True
+    assert handle.acked[0] is False
+
+
+async def test_nack_message_nacks_instead_of_dead_lettering_when_the_handler_throws() -> None:
+    handle = make_delivery("s1", "L1")
+
+    client = FakeClient(lambda: single_item_then_complete(handle.delivery))
+
+    async def handler(_ctx: SessionMessageContext) -> None:
+        raise RuntimeError("handler blew up")
+
+    consumer = SessionQueueConsumer(
+        client,
+        "q",
+        SessionQueueConsumerOptions(max_concurrent_sessions=1, on_handler_exception=SessionHandlerFailureAction.NACK_MESSAGE),
+        handler,
+    )
+
+    consumer.start()
+    await wait_until(lambda: handle.nacked[0])
+    await consumer.stop()
+
+    assert handle.nacked[0] is True
+    assert handle.dead_lettered[0] is False
     assert handle.acked[0] is False
 
 

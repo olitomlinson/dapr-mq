@@ -325,6 +325,53 @@ public class DaprMQGrpcServiceConsumeSessionTests
     }
 
     [Fact]
+    public async Task ConsumeSession_NackFrame_InvokesNackOnSessionActor()
+    {
+        var h = new RefillHarness(firstBatchSize: 1);
+        ActorModels.NackRequest? capturedNack = null;
+        h.QueueInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.NackRequest, ActorModels.NackResponse>(
+                It.IsAny<ActorId>(), "Nack", It.IsAny<ActorModels.NackRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<ActorId, string, ActorModels.NackRequest, CancellationToken>((_, _, req, _) => capturedNack = req)
+            .ReturnsAsync(new ActorModels.NackResponse { Success = true, DeliveryCount = 1 });
+
+        var service = CreateService(h.QueueInvoker.Object, h.SessionInvoker.Object);
+        h.Reader.Add(StartRequest("test-queue", "s1"));
+        var task = service.ConsumeSession(h.Reader, h.Writer, _mockContext.Object);
+        await WaitUntilAsync(() => h.DeliveredCount == 1);
+
+        h.Nack(1, 1);
+        await WaitUntilAsync(() => capturedNack != null);
+
+        await StopAsync(h, task);
+
+        Assert.Equal("lock-1", capturedNack!.LockId);
+        Assert.Equal("lease-1", capturedNack.LeaseId);
+        Assert.DoesNotContain(h.Writer.Written, r => r.PayloadCase == ConsumeSessionResponse.PayloadOneofCase.Error);
+    }
+
+    [Fact]
+    public async Task ConsumeSession_RejectedNack_WritesSessionError()
+    {
+        var h = new RefillHarness(firstBatchSize: 1);
+        h.QueueInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.NackRequest, ActorModels.NackResponse>(
+                It.IsAny<ActorId>(), "Nack", It.IsAny<ActorModels.NackRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.NackResponse { Success = false, ErrorCode = "LOCK_NOT_FOUND", Message = "Lock not found" });
+
+        var service = CreateService(h.QueueInvoker.Object, h.SessionInvoker.Object);
+        h.Reader.Add(StartRequest("test-queue", "s1"));
+        var task = service.ConsumeSession(h.Reader, h.Writer, _mockContext.Object);
+        await WaitUntilAsync(() => h.DeliveredCount == 1);
+
+        h.Nack(1, 1);
+        await WaitUntilAsync(() => h.Writer.Written.Any(r => r.PayloadCase == ConsumeSessionResponse.PayloadOneofCase.Error));
+
+        await StopAsync(h, task);
+
+        var error = h.Writer.Written.First(r => r.PayloadCase == ConsumeSessionResponse.PayloadOneofCase.Error).Error;
+        Assert.Equal("LOCK_NOT_FOUND", error.ErrorCode);
+    }
+
+    [Fact]
     public async Task ConsumeSession_IdleTimeoutElapsed_WritesSessionDrainedAndReleases()
     {
         var mockQueueInvoker = new Mock<IQueueActorInvoker>();
@@ -499,6 +546,14 @@ public class DaprMQGrpcServiceConsumeSessionTests
             }
         }
 
+        public void Nack(int from, int to)
+        {
+            for (var n = from; n <= to; n++)
+            {
+                Reader.Add(new ConsumeSessionRequest { Nack = new ConsumeSessionNack { LockId = $"lock-{n}" } });
+            }
+        }
+
         public void DeadLetter(int from, int to)
         {
             for (var n = from; n <= to; n++)
@@ -571,6 +626,21 @@ public class DaprMQGrpcServiceConsumeSessionTests
         var (h, task) = await StartRefillSessionAsync(prefetchCount: 10);
 
         h.DeadLetter(1, 5);
+        await WaitUntilAsync(() => h.DequeueRequests.Count >= 2);
+
+        Assert.True(h.DequeueRequests.ElementAt(1).Count >= 5);
+        await StopAsync(h, task);
+    }
+
+    [Fact]
+    public async Task ConsumeSession_NacksHalfDrainWindow_RefillsBeforePollInterval()
+    {
+        var (h, task) = await StartRefillSessionAsync(prefetchCount: 10);
+        h.QueueInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.NackRequest, ActorModels.NackResponse>(
+                It.IsAny<ActorId>(), "Nack", It.IsAny<ActorModels.NackRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.NackResponse { Success = true, DeliveryCount = 1 });
+
+        h.Nack(1, 5);
         await WaitUntilAsync(() => h.DequeueRequests.Count >= 2);
 
         Assert.True(h.DequeueRequests.ElementAt(1).Count >= 5);

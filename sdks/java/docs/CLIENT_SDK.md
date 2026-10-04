@@ -35,7 +35,7 @@ DaprMQClient client = new DaprMQClient("http://localhost:8002", myManagedChannel
 client.close();
 ```
 
-`DaprMQClient` is REST-backed for every operation except `consumeSession`, which is the one method built on the `ConsumeSession` gRPC streaming RPC - everything else (`enqueue`, `dequeueLocked`, `acknowledge`, `extendLock`, `deadLetter`, `acceptSession`, `renewSessionLease`, `releaseSession`) is a plain HTTP call under the hood.
+`DaprMQClient` is REST-backed for every operation except `consumeSession`, which is the one method built on the `ConsumeSession` gRPC streaming RPC - everything else (`enqueue`, `dequeueLocked`, `acknowledge`, `extendLock`, `nack`, `deadLetter`, `acceptSession`, `renewSessionLease`, `releaseSession`) is a plain HTTP call under the hood.
 
 `close()` only shuts down the gRPC channel if `create(...)` built it; a channel you constructed and passed in yourself is left alone. Every method blocks the calling thread (there's no async/`Future` variant) except `consumeSession`, which hands back a lazily-pulled `SessionStream`.
 
@@ -97,6 +97,10 @@ consumer.start();
 // ... run your application ...
 consumer.stop(); // stops claiming, cancels blocked streams, drains in-flight handlers
 ```
+
+`onHandlerException` is one of `DEAD_LETTER_MESSAGE` (default), `NACK_MESSAGE` (return the item to the front of the session for redelivery - counts toward the server's max delivery count, past which it is dead-lettered), `ABANDON_SESSION`, or `BOTH`.
+
+`nack(queueId, lockId[, leaseId])` on the client (and `nack()` on a `SessionDelivery`) returns a locked item to its original position; it returns `NackResult(deadLettered, deliveryCount, dlqId)`.
 
 `SessionMessageContext` deliberately has no `leaseId` - the `ConsumeSession` wire protocol never exposes one to the client (the server tracks it internally and applies it when calling `acknowledge`/`deadLetter` on your behalf), which is exactly what makes the managed loop simpler than the manual API above.
 

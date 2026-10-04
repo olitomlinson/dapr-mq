@@ -682,6 +682,128 @@ public class QueueActorLockExpiryTests
     }
 
     [Fact]
+    public async Task Nack_RestoresTheItemToItsOriginalPosition()
+    {
+        var (actor, state) = await CreateActorAsync();
+        await EnqueueAsync(actor, "{\"n\":1}", "{\"n\":2}", "{\"n\":3}");
+
+        var locked = await actor.DequeueLocked(new DequeueLockedRequest { TtlSeconds = 30, AllowCompetingConsumers = true });
+
+        var nack = await actor.Nack(new NackRequest { LockId = locked.Items[0].LockId });
+
+        Assert.True(nack.Success);
+        Assert.False(nack.DeadLettered);
+        Assert.Equal([1, 2, 3], await DrainAsync(actor, 3));
+    }
+
+    [Fact]
+    public async Task Nack_IncrementsDeliveryCount_AndReleasesTheLock()
+    {
+        var (actor, state) = await CreateActorAsync();
+        await EnqueueAsync(actor, "{\"id\":\"A\"}");
+
+        var locked = await actor.DequeueLocked(new DequeueLockedRequest { TtlSeconds = 30, AllowCompetingConsumers = true });
+        var lockId = locked.Items[0].LockId;
+
+        var nack = await actor.Nack(new NackRequest { LockId = lockId });
+
+        Assert.Equal(1, nack.DeliveryCount);
+        Assert.False(state.ContainsKey($"{lockId}-lock"));
+        var metadata = (ActorMetadata)state["metadata"];
+        Assert.Equal(0, metadata.LockCount);
+        Assert.Equal(1, metadata.Queues[1].Count);
+        Assert.Equal(1, ((Queue<QueueSegmentItem>)state["queue_1_seg_0"]).Peek().DeliveryCount);
+    }
+
+    [Fact]
+    public async Task Nack_PastMaxDeliveryCount_DeadLettersInstead()
+    {
+        var (actor, state, invoker) = await CreateActorWithInvokerAsync(
+            lockConfig: new LockConfig { MaxDeliveryCount = 2, SweepBatchSize = 200 });
+        await EnqueueAsync(actor, "{\"id\":\"A\"}");
+
+        var locked = await actor.DequeueLocked(new DequeueLockedRequest { TtlSeconds = 30, AllowCompetingConsumers = true });
+        var lockId = locked.Items[0].LockId;
+        state[$"{lockId}-lock"] = ((LockState)state[$"{lockId}-lock"]) with { DeliveryCount = 2 };
+
+        var nack = await actor.Nack(new NackRequest { LockId = lockId });
+
+        Assert.True(nack.Success);
+        Assert.True(nack.DeadLettered);
+        Assert.Equal(3, nack.DeliveryCount);
+        Assert.Equal("test-queue-deadletter", nack.DlqId);
+        invoker.Verify(i => i.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
+            It.Is<ActorId>(id => id.GetId() == "test-queue-deadletter"),
+            "Enqueue",
+            It.IsAny<EnqueueRequest>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        Assert.False(state.ContainsKey($"{lockId}-lock"));
+        var metadata = (ActorMetadata)state["metadata"];
+        Assert.Equal(0, metadata.LockCount);
+        Assert.False(metadata.Queues.ContainsKey(1));
+    }
+
+    [Fact]
+    public async Task Nack_PastMaxDeliveryCount_DlqFailureKeepsTheLock()
+    {
+        var (actor, state, invoker) = await CreateActorWithInvokerAsync(
+            lockConfig: new LockConfig { MaxDeliveryCount = 0, SweepBatchSize = 200 });
+        await EnqueueAsync(actor, "{\"id\":\"A\"}");
+
+        var locked = await actor.DequeueLocked(new DequeueLockedRequest { TtlSeconds = 30, AllowCompetingConsumers = true });
+        var lockId = locked.Items[0].LockId;
+
+        invoker.Setup(i => i.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
+                It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<EnqueueRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new EnqueueResponse { Success = false });
+
+        var nack = await actor.Nack(new NackRequest { LockId = lockId });
+
+        Assert.False(nack.Success);
+        Assert.Equal("DLQ_ENQUEUE_FAILED", nack.ErrorCode);
+        Assert.True(state.ContainsKey($"{lockId}-lock"));
+        Assert.Equal(1, ((ActorMetadata)state["metadata"]).LockCount);
+    }
+
+    [Fact]
+    public async Task Nack_OnPlainActor_RejectsAnExpiredLock()
+    {
+        var (actor, state) = await CreateActorAsync();
+        await EnqueueAsync(actor, "{\"id\":\"A\"}");
+
+        var locked = await actor.DequeueLocked(new DequeueLockedRequest { TtlSeconds = 30, AllowCompetingConsumers = true });
+        var lockId = locked.Items[0].LockId;
+        state[$"{lockId}-lock"] = ((LockState)state[$"{lockId}-lock"]) with { ExpiresAt = Now() - 1 };
+
+        var nack = await actor.Nack(new NackRequest { LockId = lockId });
+
+        Assert.False(nack.Success);
+        Assert.Equal("LOCK_EXPIRED", nack.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Nack_UnknownLock_ReturnsLockNotFound()
+    {
+        var (actor, _) = await CreateActorAsync();
+
+        var nack = await actor.Nack(new NackRequest { LockId = "missing" });
+
+        Assert.False(nack.Success);
+        Assert.Equal("LOCK_NOT_FOUND", nack.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Nack_EmptyLockId_ReturnsInvalidLockId()
+    {
+        var (actor, _) = await CreateActorAsync();
+
+        var nack = await actor.Nack(new NackRequest { LockId = "" });
+
+        Assert.Equal("INVALID_LOCK_ID", nack.ErrorCode);
+    }
+
+    [Fact]
     public async Task DequeueLocked_ComputesMaxConcurrencyCapacityAfterSweeping()
     {
         // Capacity sized against dead locks would refuse a consumer that should be allowed through.
@@ -753,6 +875,44 @@ public class QueueActorLockExpiryTests
         var ack = await actor.Acknowledge(new AcknowledgeRequest { LockId = lockId, LeaseId = "lease-1" });
 
         Assert.True(ack.Success);
+    }
+
+    [Fact]
+    public async Task Nack_OnSessionActor_RestoresToTheFrontAndPrunesTheSessionIndex()
+    {
+        var (actor, state) = await CreateActorAsync(actorId: SessionActorId);
+        await EnqueueAsync(actor, "{\"n\":1}", "{\"n\":2}", "{\"n\":3}");
+
+        var result = await LeaseAndLockAsync(actor, "lease-1", Now() + 600, 2);
+
+        // The per-item ExpiresAt is informational under a live lease, as with Acknowledge.
+        state[$"{result.Items[0].LockId}-lock"] = ((LockState)state[$"{result.Items[0].LockId}-lock"]) with { ExpiresAt = Now() - 1 };
+
+        var nack = await actor.Nack(new NackRequest { LockId = result.Items[0].LockId, LeaseId = "lease-1" });
+
+        Assert.True(nack.Success);
+        Assert.Equal([result.Items[1].LockId], Assert.IsType<List<string>>(state["locks_session"]));
+
+        var next = await actor.DequeueLocked(new DequeueLockedRequest
+        {
+            TtlSeconds = 30, LeaseId = "lease-1", AllowCompetingConsumers = true
+        });
+        Assert.Equal("{\"n\":1}", next.Items[0].ItemJson);
+    }
+
+    [Fact]
+    public async Task Nack_OnSessionActor_WrongLease_IsRejected()
+    {
+        var (actor, state) = await CreateActorAsync(actorId: SessionActorId);
+        await EnqueueAsync(actor, "{\"id\":\"A\"}");
+
+        var result = await LeaseAndLockAsync(actor, "lease-1", Now() + 600, 1);
+
+        var nack = await actor.Nack(new NackRequest { LockId = result.Items[0].LockId, LeaseId = "someone-else" });
+
+        Assert.False(nack.Success);
+        Assert.Equal("INVALID_LEASE_ID", nack.ErrorCode);
+        Assert.True(state.ContainsKey($"{result.Items[0].LockId}-lock"));
     }
 
     [Fact]

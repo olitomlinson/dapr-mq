@@ -20,7 +20,15 @@ from .session_queue_consumer import (
     SessionQueueConsumer,
     SessionQueueConsumerOptions,
 )
-from .types import DequeueLockedItem, DequeueLockedResult, EnqueueItem, EnqueueResult, SessionDelivery, SessionLease
+from .types import (
+    DequeueLockedItem,
+    DequeueLockedResult,
+    EnqueueItem,
+    EnqueueResult,
+    NackResult,
+    SessionDelivery,
+    SessionLease,
+)
 
 __all__ = [
     "DaprMQClient",
@@ -41,6 +49,7 @@ __all__ = [
     "DequeueLockedItem",
     "DequeueLockedResult",
     "SessionLease",
+    "NackResult",
     "SessionDelivery",
     "SessionQueueConsumer",
     "SessionQueueConsumerOptions",

@@ -18,6 +18,10 @@ public record ApiAcknowledgeRequest(
     string LockId
 );
 
+public record ApiNackRequest(
+    string LockId
+);
+
 public record ApiExtendLockRequest(
     string LockId,
     int AdditionalTtlSeconds = 30
@@ -57,6 +61,15 @@ public record ApiAcknowledgeResponse(
     bool Success,
     string Message,
     int ItemsAcknowledged = 0,
+    string? ErrorCode = null
+);
+
+public record ApiNackResponse(
+    bool Success,
+    string Message,
+    bool DeadLettered = false,
+    int DeliveryCount = 0,
+    string? DlqId = null,
     string? ErrorCode = null
 );
 

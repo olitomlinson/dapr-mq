@@ -38,6 +38,7 @@ function App() {
     dequeueLocked,
     acknowledgeMessage,
     deadLetterMessage,
+    nackMessage,
     acknowledgeByLockId,
     deadLetterByLockId,
     wiremockLockStates,
@@ -128,6 +129,7 @@ function App() {
               messages={dequeuedMessages}
               onAcknowledge={acknowledgeMessage}
               onDeadLetter={deadLetterMessage}
+              onNack={nackMessage}
               onAcknowledgeByLockId={acknowledgeByLockId}
               onDeadLetterByLockId={deadLetterByLockId}
               wiremockLockStates={wiremockLockStates}

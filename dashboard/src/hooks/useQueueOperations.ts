@@ -177,6 +177,25 @@ export const useQueueOperations = (queueId: string) => {
     }
   };
 
+  const nackMessage = async (lockId: string, index: number) => {
+    try {
+      const data = await queueApi.nack(queueId, { lockId });
+      setDequeuedMessages(prev => prev.map((msg, i) =>
+        i !== index
+          ? msg
+          : data.deadLettered
+          ? { ...msg, deadLettered: true, dlqId: data.dlqId || `${queueId}-deadletter` }
+          : { ...msg, nacked: true, deliveryCount: data.deliveryCount }
+      ));
+    } catch (err) {
+      if (err instanceof QueueApiError) {
+        setError(createApiError(err.status, err.data));
+      } else {
+        setError(createApiError('Network Error', (err as Error).message));
+      }
+    }
+  };
+
   // Acknowledge without updating local state (for WireMock/HTTP sink items)
   const acknowledgeByLockId = async (lockId: string) => {
     try {
@@ -258,6 +277,7 @@ export const useQueueOperations = (queueId: string) => {
     dequeueLocked,
     acknowledgeMessage,
     deadLetterMessage,
+    nackMessage,
     acknowledgeByLockId,
     deadLetterByLockId,
     wiremockLockStates,

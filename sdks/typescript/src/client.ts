@@ -19,11 +19,12 @@ import {
   type DaprMQGrpcClient,
 } from "./grpc/daprmqGrpcClient.js";
 import { AsyncMessageQueue } from "./asyncMessageQueue.js";
-import type { DequeueLockedResult, EnqueueItem, EnqueueResult, SessionDelivery, SessionLease } from "./types.js";
+import type { DequeueLockedResult, EnqueueItem, EnqueueResult, NackResult, SessionDelivery, SessionLease } from "./types.js";
 import type {
   AcceptSessionResponseWire,
   AcknowledgeResponseWire,
   DeadLetterResponseWire,
+  NackResponseWire,
   DequeueLockedResponseWire,
   EnqueueResponseWire,
   LockedResponseWire,
@@ -193,6 +194,25 @@ export class DaprMQClient {
     throw this.mapLockError(body?.errorCode, body?.message ?? this.errorMessageFrom(text, response.status));
   }
 
+  /**
+   * Returns a locked item to its original position in the queue. Counts as a delivery attempt:
+   * past the server's max delivery count the item is dead-lettered instead (deadLettered: true).
+   */
+  async nack(
+    queueId: string,
+    lockId: string,
+    options: { leaseId?: string; signal?: AbortSignal } = {},
+  ): Promise<NackResult> {
+    const response = await this.postJson(this.path(queueId, "nack"), { lockId }, options.leaseId, options.signal);
+    const text = await this.readBodyText(response);
+    const body = this.tryParseJson<NackResponseWire>(text);
+    if (response.ok) {
+      return { deadLettered: body?.deadLettered ?? false, deliveryCount: body?.deliveryCount ?? 0, dlqId: body?.dlqId ?? undefined };
+    }
+
+    throw this.mapLockError(body?.errorCode, body?.message ?? this.errorMessageFrom(text, response.status));
+  }
+
   async acceptSession(
     queueId: string,
     options: { sessionId?: string; leaseSeconds?: number; signal?: AbortSignal } = {},
@@ -314,6 +334,9 @@ export class DaprMQClient {
               },
               deadLetter: async () => {
                 call.write({ deadLetter: { lockId: delivered.lockId } });
+              },
+              nack: async () => {
+                call.write({ nack: { lockId: delivered.lockId } });
               },
             };
             break;

@@ -475,13 +475,29 @@ This ensures:
 - Items can be reprocessed after lock expiration
 - Queue integrity is maintained
 
+## Nack
+
+`POST /queue/{queue_id}/nack` with `{"lockId": "..."}` gives a locked item back without waiting
+for its lock to expire: it is the holder-initiated, immediate version of the expiry path.
+
+- The item is merged back into the head segment by its `Sequence`, so it returns to the exact
+  position it was taken from and is the next item delivered.
+- `DeliveryCount` is incremented, the same as a lock expiry. Once it exceeds `MaxDeliveryCount`
+  the item is routed to `{queue_id}-deadletter` instead, and the response carries
+  `deadLettered: true` and the `dlqId`.
+- The guards match Acknowledge: `LOCK_NOT_FOUND`, `LOCK_EXPIRED` (plain queues only, since a
+  session's lease is the authority there), and the session lease check.
+- Session streams accept a `Nack` frame (`ConsumeSessionNack`) alongside `Ack`/`DeadLetter`.
+
+See [API_REFERENCE.md](../docs/API_REFERENCE.md#nack).
+
 ## Best Practices
 
 1. **Set Appropriate TTL**: Base TTL on expected processing time + buffer
 2. **Implement Idempotency**: Handle duplicate deliveries gracefully
 3. **Monitor Lock Expirations**: Track how often locks expire without ack
 4. **Use for Critical Tasks**: Reserve acknowledgements for important work
-5. **Clean Up on Failure**: Acknowledge or let expire, don't leave locks dangling
+5. **Clean Up on Failure**: Acknowledge, nack, or dead-letter rather than waiting out the lock TTL
 
 ## References
 

@@ -101,6 +101,34 @@ class SessionQueueConsumerTest {
     }
 
     @Test
+    void nacksOnHandlerExceptionWhenConfigured() throws InterruptedException {
+        FakeRequestObserver requestObserver = new FakeRequestObserver();
+        SessionStream stream = streamDeliveringOneItem(requestObserver, "L3");
+
+        CountDownLatch handled = new CountDownLatch(1);
+        SessionCapableClient fakeClient = (queueId, options) -> stream;
+        SessionQueueConsumerOptions options = new SessionQueueConsumerOptions()
+                .maxConcurrentSessions(1)
+                .drainTimeoutMillis(2000)
+                .onHandlerException(SessionHandlerFailureAction.NACK_MESSAGE);
+
+        SessionQueueConsumer consumer = new SessionQueueConsumer(fakeClient, "q", options, ctx -> {
+            handled.countDown();
+            throw new RuntimeException("boom");
+        });
+
+        consumer.start();
+        try {
+            assertTrue(handled.await(2, TimeUnit.SECONDS));
+            awaitFrames(requestObserver, 2);
+        } finally {
+            consumer.stop();
+        }
+
+        assertEquals("L3", requestObserver.sent.get(1).getNack().getLockId());
+    }
+
+    @Test
     void backsOffWithDoublingDelaysOnRepeatedClaimFailures() throws InterruptedException {
         SessionCapableClient fakeClient = (queueId, options) -> {
             throw new NoSessionsAvailableException("none available");

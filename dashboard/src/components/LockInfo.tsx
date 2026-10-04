@@ -5,11 +5,12 @@ interface LockInfoProps {
   message: DequeuedMessage;
   onAcknowledge: () => void;
   onDeadLetter: () => void;
+  onNack?: () => void;
   downloadUrl?: string;
 }
 
-export const LockInfo = ({ message, onAcknowledge, onDeadLetter, downloadUrl }: LockInfoProps) => {
-  const { lockId, lockExpiresAt, acknowledged, deadLettered, dlqId } = message;
+export const LockInfo = ({ message, onAcknowledge, onDeadLetter, onNack, downloadUrl }: LockInfoProps) => {
+  const { lockId, lockExpiresAt, acknowledged, deadLettered, dlqId, nacked, deliveryCount } = message;
 
   if (!lockId) return null;
 
@@ -17,6 +18,8 @@ export const LockInfo = ({ message, onAcknowledge, onDeadLetter, downloadUrl }: 
     ? `${styles.lockInfo} ${styles.acknowledged}`
     : deadLettered
     ? `${styles.lockInfo} ${styles.deadlettered}`
+    : nacked
+    ? `${styles.lockInfo} ${styles.nacked}`
     : styles.lockInfo;
 
   const downloadLink = downloadUrl && (
@@ -47,6 +50,11 @@ export const LockInfo = ({ message, onAcknowledge, onDeadLetter, downloadUrl }: 
           </div>
           {downloadLink && <div className={styles.lockActions}>{downloadLink}</div>}
         </>
+      ) : nacked ? (
+        <>
+          <div>↩ <strong>Message returned to queue</strong> (delivery count {deliveryCount})</div>
+          {downloadLink && <div className={styles.lockActions}>{downloadLink}</div>}
+        </>
       ) : (
         <>
           🔒 <strong>Locked</strong> - Requires acknowledgement
@@ -59,6 +67,11 @@ export const LockInfo = ({ message, onAcknowledge, onDeadLetter, downloadUrl }: 
             <button className={styles.ackBtn} onClick={onAcknowledge}>
               ✓ Acknowledge
             </button>
+            {onNack && (
+              <button className={styles.nackBtn} onClick={onNack}>
+                ↩ Nack
+              </button>
+            )}
             <button className={styles.deadletterBtn} onClick={onDeadLetter}>
               ✕ Dead Letter
             </button>

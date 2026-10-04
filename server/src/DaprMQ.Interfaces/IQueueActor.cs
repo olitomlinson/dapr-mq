@@ -43,6 +43,12 @@ public interface IQueueActor : IActor
     Task<AcknowledgeResponse> Acknowledge(AcknowledgeRequest request);
 
     /// <summary>
+    /// Return a locked item to its original position in the queue and void the lock. Counts as a
+    /// delivery attempt: past LockConfig.MaxDeliveryCount the item is dead-lettered instead.
+    /// </summary>
+    Task<NackResponse> Nack(NackRequest request);
+
+    /// <summary>
     /// Extend an existing lock by adding additional TTL seconds.
     /// </summary>
     /// <param name="request">ExtendLock request containing lock_id and additional_ttl_seconds</param>

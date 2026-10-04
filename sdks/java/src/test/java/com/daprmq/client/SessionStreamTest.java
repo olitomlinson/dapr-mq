@@ -90,6 +90,20 @@ class SessionStreamTest {
     }
 
     @Test
+    void nackWritesToTheStream() {
+        SessionStream stream = newStream(ConsumeSessionOptions.defaults());
+        responseObserver.onNext(ConsumeSessionResponse.newBuilder()
+                .setDelivered(SessionDelivered.newBuilder().setLockId("L3").setItemJson("{}").setPriority(1).setLockExpiresAt(1).build())
+                .build());
+        responseObserver.onCompleted();
+
+        SessionDelivery delivery = stream.iterator().next();
+        delivery.nack().run();
+
+        assertEquals("L3", requestObserver.sent.get(1).getNack().getLockId());
+    }
+
+    @Test
     void errorFrameThrowsMappedException() {
         SessionStream stream = newStream(ConsumeSessionOptions.defaults());
         responseObserver.onNext(ConsumeSessionResponse.newBuilder()

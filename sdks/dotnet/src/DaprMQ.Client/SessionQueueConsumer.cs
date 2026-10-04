@@ -31,7 +31,10 @@ public enum SessionHandlerFailureAction
 {
     DeadLetterMessage,
     AbandonSession,
-    Both
+    Both,
+
+    /// <summary>Return the message to the front of the session for redelivery.</summary>
+    NackMessage
 }
 
 /// <summary>
@@ -202,6 +205,9 @@ public sealed class SessionQueueConsumer : IAsyncDisposable
                 case SessionHandlerFailureAction.Both:
                     await delivery.DeadLetterAsync(ct);
                     throw;
+                case SessionHandlerFailureAction.NackMessage:
+                    await delivery.NackAsync(ct);
+                    break;
             }
         }
     }

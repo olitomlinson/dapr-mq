@@ -22,6 +22,8 @@ class SessionHandlerFailureAction(str, Enum):
     DEAD_LETTER_MESSAGE = "dead_letter_message"
     ABANDON_SESSION = "abandon_session"
     BOTH = "both"
+    NACK_MESSAGE = "nack_message"
+    """Return the message to the front of the session for redelivery."""
 
 
 @dataclass
@@ -182,5 +184,7 @@ class SessionQueueConsumer:
             action = self.options.on_handler_exception
             if action in (SessionHandlerFailureAction.DEAD_LETTER_MESSAGE, SessionHandlerFailureAction.BOTH):
                 await delivery.dead_letter()
+            if action == SessionHandlerFailureAction.NACK_MESSAGE:
+                await delivery.nack()
             if action in (SessionHandlerFailureAction.ABANDON_SESSION, SessionHandlerFailureAction.BOTH):
                 raise

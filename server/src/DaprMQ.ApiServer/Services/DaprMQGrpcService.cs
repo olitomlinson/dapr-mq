@@ -23,7 +23,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
     internal TimeSpan PollInterval { get; set; } = TimeSpan.FromMilliseconds(200);
 
     /// <summary>
-    /// Upper bound on applying one Ack/DeadLetter frame on a ConsumeSession stream. Settlement runs
+    /// Upper bound on applying one Ack/DeadLetter/Nack frame on a ConsumeSession stream. Settlement runs
     /// on its own token, not the call's: the client was already told the ack succeeded, so the
     /// client going away mid-ack must not abandon it.
     /// </summary>
@@ -358,6 +358,56 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         }
     }
 
+    public override async Task<NackResponse> Nack(NackRequest request, ServerCallContext context)
+    {
+        try
+        {
+            _logger.LogDebug($"gRPC Nack request for queue {request.QueueId}, lockId={request.LockId}");
+
+            var result = await _queueActorInvoker.InvokeMethodAsync<ActorModels.NackRequest, ActorModels.NackResponse>(
+                new ActorId(request.QueueId),
+                ActorMethodNames.Nack,
+                new ActorModels.NackRequest
+                {
+                    LockId = request.LockId,
+                    LeaseId = request.HasLeaseId ? request.LeaseId : null
+                },
+                context.CancellationToken);
+
+            if (!result.Success)
+            {
+                var statusCode = result.ErrorCode switch
+                {
+                    "LOCK_EXPIRED" or "SESSION_LEASE_EXPIRED" => StatusCode.FailedPrecondition,
+                    "LOCK_NOT_FOUND" => StatusCode.NotFound,
+                    "INVALID_LOCK_ID" or "INVALID_LEASE_ID" => StatusCode.InvalidArgument,
+                    _ => StatusCode.Internal
+                };
+
+                throw new RpcException(new Status(statusCode, result.Message));
+            }
+
+            return new NackResponse
+            {
+                Success = result.Success,
+                Message = result.Message,
+                ErrorCode = result.ErrorCode ?? "",
+                DeadLettered = result.DeadLettered,
+                DeliveryCount = result.DeliveryCount,
+                DlqId = result.DlqId ?? ""
+            };
+        }
+        catch (RpcException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Error nacking item in queue {request.QueueId}");
+            throw new RpcException(new Status(StatusCode.Internal, $"Internal error: {ex.Message}"));
+        }
+    }
+
     public override async Task<ExtendLockResponse> ExtendLock(ExtendLockRequest request, ServerCallContext context)
     {
         try
@@ -589,7 +639,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
 
     /// <summary>
     /// Managed consume loop for exactly one session: claims it (any-available or targeted),
-    /// streams delivered items back, accepts Ack/DeadLetter frames, and renews the lease on its
+    /// streams delivered items back, accepts Ack/DeadLetter/Nack frames, and renews the lease on its
     /// own schedule for as long as the stream stays open - no client heartbeat needed. On
     /// disconnect (or a fatal lease failure) the session is released immediately. One stream =
     /// one session - see plan §2.4.1 for why multiplexing many sessions over one stream was
@@ -664,7 +714,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
             }
         }
 
-        // Reads Ack/DeadLetter frames from the client for the life of the stream. Cancels the
+        // Reads Ack/DeadLetter/Nack frames from the client for the life of the stream. Cancels the
         // shared token when the client closes its send side (natural end, no exception) or when
         // the poll loop below cancels first (a fatal lease failure) - either way, the other side
         // unwinds promptly.
@@ -726,6 +776,35 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                                 {
                                     ErrorCode = dlqResult.ErrorCode ?? "DEAD_LETTER_FAILED",
                                     Message = dlqResult.Message ?? "Failed to dead-letter message"
+                                }
+                            });
+                        }
+
+                        Settled();
+                    }
+                    else if (req.PayloadCase == ConsumeSessionRequest.PayloadOneofCase.Nack)
+                    {
+                        // The item goes back to the head of the session, so the poll loop below
+                        // redelivers it without anything further here.
+                        using var settleCts = new CancellationTokenSource(SettleTimeout);
+                        var nackResult = await _queueActorInvoker.InvokeMethodAsync<ActorModels.NackRequest, ActorModels.NackResponse>(
+                            sessionActorId,
+                            ActorMethodNames.Nack,
+                            new ActorModels.NackRequest { LockId = req.Nack.LockId, LeaseId = leaseId },
+                            settleCts.Token);
+
+                        if (!nackResult.Success)
+                        {
+                            _logger.LogWarning(
+                                "Nack rejected for lock {LockId} on session {SessionId}: {ErrorCode} {Message}",
+                                req.Nack.LockId, sessionId, nackResult.ErrorCode, nackResult.Message);
+
+                            await responseStream.WriteAsync(new ConsumeSessionResponse
+                            {
+                                Error = new SessionError
+                                {
+                                    ErrorCode = nackResult.ErrorCode ?? "NACK_FAILED",
+                                    Message = nackResult.Message ?? "Failed to nack message"
                                 }
                             });
                         }

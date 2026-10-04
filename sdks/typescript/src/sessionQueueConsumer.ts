@@ -7,7 +7,8 @@ import {
 } from "./errors.js";
 import type { SessionDelivery } from "./types.js";
 
-export type SessionHandlerFailureAction = "deadLetterMessage" | "abandonSession" | "both";
+/** nackMessage returns the message to the front of the session for redelivery. */
+export type SessionHandlerFailureAction = "deadLetterMessage" | "abandonSession" | "both" | "nackMessage";
 
 export interface SessionQueueConsumerOptions {
   maxConcurrentSessions?: number;
@@ -233,6 +234,9 @@ export class SessionQueueConsumer {
         case "both":
           await delivery.deadLetter();
           throw err;
+        case "nackMessage":
+          await delivery.nack();
+          break;
       }
     }
   }

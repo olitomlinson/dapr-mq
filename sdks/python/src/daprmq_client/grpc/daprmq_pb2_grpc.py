@@ -56,6 +56,11 @@ class DaprMQStub:
                 request_serializer=daprmq__pb2.AcknowledgeRequest.SerializeToString,
                 response_deserializer=daprmq__pb2.AcknowledgeResponse.FromString,
                 _registered_method=True)
+        self.Nack = channel.unary_unary(
+                '/daprmq.DaprMQ/Nack',
+                request_serializer=daprmq__pb2.NackRequest.SerializeToString,
+                response_deserializer=daprmq__pb2.NackResponse.FromString,
+                _registered_method=True)
         self.ExtendLock = channel.unary_unary(
                 '/daprmq.DaprMQ/ExtendLock',
                 request_serializer=daprmq__pb2.ExtendLockRequest.SerializeToString,
@@ -126,6 +131,14 @@ class DaprMQServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Nack(self, request, context):
+        """Return a locked item to its original position in the queue and void the lock. Counts as a
+        delivery attempt: past the server's max delivery count the item is dead-lettered instead.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def ExtendLock(self, request, context):
         """Extend the TTL of an existing lock.
         Useful for long-running processing that needs more time.
@@ -169,7 +182,7 @@ class DaprMQServicer:
 
     def ConsumeSession(self, request_iterator, context):
         """Managed consume loop for exactly one session per call: claims a session (any-available or
-        targeted), streams delivered items back, accepts Ack/DeadLetter, and renews the lease on the
+        targeted), streams delivered items back, accepts Ack/DeadLetter/Nack, and renews the lease on the
         server's own schedule for as long as the stream stays open - no client heartbeat needed. On
         disconnect the server releases the session immediately, faster than the lease TTL would.
         One stream = one session (see plan §2.4.1) - a client wanting N concurrent sessions opens N
@@ -201,6 +214,11 @@ def add_DaprMQServicer_to_server(servicer, server):
                     servicer.Acknowledge,
                     request_deserializer=daprmq__pb2.AcknowledgeRequest.FromString,
                     response_serializer=daprmq__pb2.AcknowledgeResponse.SerializeToString,
+            ),
+            'Nack': grpc.unary_unary_rpc_method_handler(
+                    servicer.Nack,
+                    request_deserializer=daprmq__pb2.NackRequest.FromString,
+                    response_serializer=daprmq__pb2.NackResponse.SerializeToString,
             ),
             'ExtendLock': grpc.unary_unary_rpc_method_handler(
                     servicer.ExtendLock,
@@ -343,6 +361,33 @@ class DaprMQ:
             '/daprmq.DaprMQ/Acknowledge',
             daprmq__pb2.AcknowledgeRequest.SerializeToString,
             daprmq__pb2.AcknowledgeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Nack(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/daprmq.DaprMQ/Nack',
+            daprmq__pb2.NackRequest.SerializeToString,
+            daprmq__pb2.NackResponse.FromString,
             options,
             channel_credentials,
             insecure,

@@ -41,7 +41,7 @@ finally:
     await client.aclose()
 ```
 
-`DaprMQClient` is REST-backed for every operation except `consume_session`, which is the one method built on the `ConsumeSession` gRPC streaming RPC - everything else (`enqueue`, `dequeue_locked`, `acknowledge`, `extend_lock`, `dead_letter`, `accept_session`, `renew_session_lease`, `release_session`) is a plain HTTP call under the hood (via `httpx.AsyncClient`).
+`DaprMQClient` is REST-backed for every operation except `consume_session`, which is the one method built on the `ConsumeSession` gRPC streaming RPC - everything else (`enqueue`, `dequeue_locked`, `acknowledge`, `extend_lock`, `nack`, `dead_letter`, `accept_session`, `renew_session_lease`, `release_session`) is a plain HTTP call under the hood (via `httpx.AsyncClient`).
 
 `grpc_address` is required unless you pass a pre-built `grpc_stub` (e.g. in tests - `http_client`/`grpc_stub` are both DI/test seams). `aclose()` only tears down the `httpx.AsyncClient`/gRPC channel this instance built itself; an `http_client` or `grpc_stub` you supplied yourself is left alone.
 
@@ -97,6 +97,10 @@ async def handler(context):
 async with SessionQueueConsumer(client, "my-queue", options, handler):
     ...  # consumer.start() ran on entry; consumer.stop() runs on exit
 ```
+
+`on_handler_exception` is one of `DEAD_LETTER_MESSAGE` (default), `NACK_MESSAGE` (return the item to the front of the session for redelivery - counts toward the server's max delivery count, past which it is dead-lettered), `ABANDON_SESSION`, or `BOTH`.
+
+`await client.nack(queue_id, lock_id, lease_id=...)` (and `await delivery.nack()` on a `SessionDelivery`) returns a locked item to its original position; it returns `NackResult(dead_lettered, delivery_count, dlq_id)`.
 
 or without the context manager:
 

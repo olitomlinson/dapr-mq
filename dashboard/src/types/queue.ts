@@ -54,6 +54,18 @@ export interface DeadLetterResponse {
   dlqId: string;
 }
 
+export interface NackRequest {
+  lockId: string;
+}
+
+export interface NackResponse {
+  success: boolean;
+  message: string;
+  deadLettered: boolean;
+  deliveryCount: number;
+  dlqId?: string;
+}
+
 // UI state types
 export interface DequeuedMessage {
   item: unknown;
@@ -64,6 +76,8 @@ export interface DequeuedMessage {
   acknowledged?: boolean;
   deadLettered?: boolean;
   dlqId?: string;
+  nacked?: boolean;
+  deliveryCount?: number;
 }
 
 export interface ApiError {

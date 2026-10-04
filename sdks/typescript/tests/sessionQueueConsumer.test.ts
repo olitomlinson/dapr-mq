@@ -3,9 +3,13 @@ import { NoSessionsAvailableError } from "../src/errors.js";
 import { SessionQueueConsumer, type SessionCapableClient, type SessionMessageContext } from "../src/sessionQueueConsumer.js";
 import type { SessionDelivery } from "../src/types.js";
 
-function makeDelivery(sessionId: string, lockId: string): { delivery: SessionDelivery; acked: () => boolean; deadLettered: () => boolean } {
+function makeDelivery(
+  sessionId: string,
+  lockId: string,
+): { delivery: SessionDelivery; acked: () => boolean; deadLettered: () => boolean; nacked: () => boolean } {
   let acked = false;
   let deadLettered = false;
+  let nacked = false;
   const delivery: SessionDelivery = {
     sessionId,
     lockId,
@@ -18,8 +22,11 @@ function makeDelivery(sessionId: string, lockId: string): { delivery: SessionDel
     deadLetter: async () => {
       deadLettered = true;
     },
+    nack: async () => {
+      nacked = true;
+    },
   };
-  return { delivery, acked: () => acked, deadLettered: () => deadLettered };
+  return { delivery, acked: () => acked, deadLettered: () => deadLettered, nacked: () => nacked };
 }
 
 function macrotaskYield(): Promise<void> {
@@ -146,6 +153,25 @@ describe("SessionQueueConsumer", () => {
     await consumer.stop();
 
     expect(deadLettered()).toBe(true);
+    expect(acked()).toBe(false);
+  });
+
+  it("nackMessage nacks instead of dead-lettering when the handler throws", async () => {
+    const { delivery, acked, deadLettered, nacked } = makeDelivery("s1", "L1");
+    const client: SessionCapableClient = {
+      consumeSession: () => singleItemThenComplete(delivery),
+    };
+
+    const consumer = new SessionQueueConsumer(client, "q", { maxConcurrentSessions: 1, onHandlerException: "nackMessage" }, async () => {
+      throw new Error("handler blew up");
+    });
+
+    consumer.start();
+    await waitUntil(nacked, 2000);
+    await consumer.stop();
+
+    expect(nacked()).toBe(true);
+    expect(deadLettered()).toBe(false);
     expect(acked()).toBe(false);
   });
 

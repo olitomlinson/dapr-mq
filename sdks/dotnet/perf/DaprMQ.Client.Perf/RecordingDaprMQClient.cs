@@ -73,6 +73,9 @@ public sealed class RecordingDaprMQClient(IDaprMQClient inner, Func<double> cloc
     public Task DeadLetterAsync(string queueId, string lockId, string? leaseId = null, CancellationToken ct = default) =>
         inner.DeadLetterAsync(queueId, lockId, leaseId, ct);
 
+    public Task<NackResult> NackAsync(string queueId, string lockId, string? leaseId = null, CancellationToken ct = default) =>
+        inner.NackAsync(queueId, lockId, leaseId, ct);
+
     public Task<SessionLease?> AcceptSessionAsync(string queueId, string? sessionId = null, int leaseSeconds = 30, CancellationToken ct = default) =>
         inner.AcceptSessionAsync(queueId, sessionId, leaseSeconds, ct);
 

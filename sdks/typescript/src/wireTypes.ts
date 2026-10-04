@@ -45,6 +45,15 @@ export interface DeadLetterResponseWire {
   dlqId?: string;
 }
 
+export interface NackResponseWire {
+  success: boolean;
+  message: string;
+  deadLettered?: boolean;
+  deliveryCount?: number;
+  dlqId?: string;
+  errorCode?: string;
+}
+
 export interface ErrorResponseWire {
   message: string;
   success?: boolean;

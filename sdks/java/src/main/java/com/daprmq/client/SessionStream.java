@@ -10,6 +10,7 @@ import com.daprmq.client.internal.Json;
 import com.daprmq.client.types.SessionDelivery;
 import com.daprmq.grpc.ConsumeSessionAck;
 import com.daprmq.grpc.ConsumeSessionDeadLetter;
+import com.daprmq.grpc.ConsumeSessionNack;
 import com.daprmq.grpc.ConsumeSessionRequest;
 import com.daprmq.grpc.ConsumeSessionResponse;
 import com.daprmq.grpc.SessionDelivered;
@@ -193,6 +194,9 @@ public final class SessionStream implements Iterable<SessionDelivery>, AutoClose
                                         .build()),
                                 () -> send(ConsumeSessionRequest.newBuilder()
                                         .setDeadLetter(ConsumeSessionDeadLetter.newBuilder().setLockId(lockId))
+                                        .build()),
+                                () -> send(ConsumeSessionRequest.newBuilder()
+                                        .setNack(ConsumeSessionNack.newBuilder().setLockId(lockId))
                                         .build()));
                         fetched = true;
                         return;

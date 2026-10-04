@@ -26,6 +26,10 @@ service DaprMQ {
   // Requires valid lock_id from DequeueLocked.
   rpc Acknowledge(AcknowledgeRequest) returns (AcknowledgeResponse);
 
+  // Return a locked item to its original position in the queue and void the lock. Counts as a
+  // delivery attempt: past the server's max delivery count the item is dead-lettered instead.
+  rpc Nack(NackRequest) returns (NackResponse);
+
   // Extend the TTL of an existing lock.
   // Useful for long-running processing that needs more time.
   rpc ExtendLock(ExtendLockRequest) returns (ExtendLockResponse);
@@ -48,7 +52,7 @@ service DaprMQ {
   rpc ReleaseSession(ReleaseSessionRequest) returns (ReleaseSessionResponse);
 
   // Managed consume loop for exactly one session per call: claims a session (any-available or
-  // targeted), streams delivered items back, accepts Ack/DeadLetter, and renews the lease on the
+  // targeted), streams delivered items back, accepts Ack/DeadLetter/Nack, and renews the lease on the
   // server's own schedule for as long as the stream stays open - no client heartbeat needed. On
   // disconnect the server releases the session immediately, faster than the lease TTL would.
   // One stream = one session (see plan §2.4.1) - a client wanting N concurrent sessions opens N
@@ -231,6 +235,41 @@ message AcknowledgeResponse {
   string error_code = 4;
 }
 
+// Request to return a locked item to the queue
+message NackRequest {
+  // Queue identifier (actor ID)
+  string queue_id = 1;
+
+  // Lock identifier from DequeueLocked
+  string lock_id = 2;
+
+  // Required when targeting a session-scoped queue actor with an active lease synced onto it
+  // (unset otherwise, e.g. an ordinary queue). Must match the current lease holder's lease_id.
+  optional string lease_id = 3;
+}
+
+// Response from nack operation
+message NackResponse {
+  // Whether the nack was successful
+  bool success = 1;
+
+  // Human-readable message
+  string message = 2;
+
+  // Error code if failed (LOCK_EXPIRED, LOCK_NOT_FOUND, INVALID_LOCK_ID, DLQ_ENQUEUE_FAILED,
+  // SESSION_LEASE_EXPIRED, INVALID_LEASE_ID)
+  string error_code = 3;
+
+  // True if the nack exceeded the max delivery count, so the item went to the dead letter queue
+  bool dead_lettered = 4;
+
+  // The item's delivery count after this nack
+  int32 delivery_count = 5;
+
+  // Dead letter queue ID, when dead_lettered
+  string dlq_id = 6;
+}
+
 // Request to extend lock TTL
 message ExtendLockRequest {
   // Queue identifier (actor ID)
@@ -382,6 +421,9 @@ message ConsumeSessionRequest {
 
     // Move a previously delivered item to the dead letter queue.
     ConsumeSessionDeadLetter dead_letter = 3;
+
+    // Return a previously delivered item to its original position in the session for redelivery.
+    ConsumeSessionNack nack = 4;
   }
 }
 
@@ -416,6 +458,11 @@ message ConsumeSessionAck {
 
 // Move a previously delivered item to the dead letter queue.
 message ConsumeSessionDeadLetter {
+  string lock_id = 1;
+}
+
+// Return a previously delivered item to its original position in the session for redelivery.
+message ConsumeSessionNack {
   string lock_id = 1;
 }
 

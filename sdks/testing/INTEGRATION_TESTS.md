@@ -60,6 +60,9 @@ Legend: ✅ implemented and passing · ⬜ not yet · 🚫 permanently out of sc
 | **Dead-letter** | | | | | |
 | D-01 | `DeadLetter` removes item from source queue and it appears on `{queueId}-deadletter` | ✅ | ⬜ | ⬜ | ⬜ |
 | D-02 | `DeadLetter` with unknown/expired lock raises the matching error | ✅ | ⬜ | ⬜ | ⬜ |
+| **Nack** | | | | | |
+| N-01 | `Nack` returns the item to its original position; it is redelivered ahead of later items with `DeliveryCount` incremented | ✅ | ⬜ | ⬜ | ⬜ |
+| N-02 | `Nack` past the max delivery count dead-letters the item (`DeadLettered`, appears on `{queueId}-deadletter`) | ✅ | ⬜ | ⬜ | ⬜ |
 | **Sessions (manual API)** | | | | | |
 | S-01 | Enqueue with `SessionId` → `AcceptSession` (targeted) → dequeue/ack yields that session's items in FIFO order | ✅ | ⬜ | ⬜ | ⬜ |
 | S-02 | `AcceptSession` with no ID claims any available session and returns its ID | ✅ | ⬜ | ⬜ | ⬜ |

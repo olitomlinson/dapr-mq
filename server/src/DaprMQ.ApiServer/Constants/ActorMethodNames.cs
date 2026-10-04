@@ -9,6 +9,7 @@ public static class ActorMethodNames
     public const string Dequeue = "Dequeue";
     public const string DequeueLocked = "DequeueLocked";
     public const string Acknowledge = "Acknowledge";
+    public const string Nack = "Nack";
     public const string ExtendLock = "ExtendLock";
     public const string DeadLetter = "DeadLetter";
     public const string InitializeHttpSink = "InitializeHttpSink";
