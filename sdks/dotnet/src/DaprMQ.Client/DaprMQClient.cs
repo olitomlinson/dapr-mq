@@ -5,6 +5,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using DaprMQ.Client.Exceptions;
 using Grpc.Core;
+using Grpc.Health.V1;
 using Grpc.Net.Client;
 using GrpcService = DaprMQ.ApiServer.Grpc.DaprMQ;
 
@@ -14,9 +15,16 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
+    // Fully-qualified gRPC service name (proto package + service), as registered with the server's
+    // grpc.health.v1.Health service.
+    private const string HealthServiceName = "daprmq.DaprMQ";
+    private static readonly TimeSpan ReadyBackoffInitial = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan ReadyBackoffMax = TimeSpan.FromSeconds(2);
+
     private readonly HttpClient _httpClient;
     private readonly GrpcChannel? _grpcChannel;
     private readonly GrpcService.DaprMQClient _grpcClient;
+    private readonly Health.HealthClient? _healthClient;
     private readonly bool _ownsHttpClient;
     private readonly bool _ownsGrpcChannel;
 
@@ -25,7 +33,7 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
     /// (base address / target) by the caller and are not disposed by this instance.
     /// </summary>
     public DaprMQClient(HttpClient httpClient, GrpcChannel grpcChannel)
-        : this(httpClient, new GrpcService.DaprMQClient(grpcChannel))
+        : this(httpClient, new GrpcService.DaprMQClient(grpcChannel), new Health.HealthClient(grpcChannel))
     {
         _grpcChannel = grpcChannel;
     }
@@ -34,11 +42,12 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
     /// Test seam - lets tests substitute a CallInvoker-backed generated client (CallInvoker's
     /// methods are virtual, so it's directly Moq-mockable) without needing a live GrpcChannel.
     /// </summary>
-    internal DaprMQClient(HttpClient httpClient, GrpcService.DaprMQClient grpcClient)
+    internal DaprMQClient(HttpClient httpClient, GrpcService.DaprMQClient grpcClient, Health.HealthClient? healthClient = null)
     {
         _httpClient = httpClient;
         _grpcChannel = null;
         _grpcClient = grpcClient;
+        _healthClient = healthClient;
         _ownsHttpClient = false;
         _ownsGrpcChannel = false;
     }
@@ -291,6 +300,51 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
             {
                 // best-effort - the stream may already be broken/cancelled
             }
+        }
+    }
+
+    /// <summary>
+    /// Waits until the server reports SERVING over the standard gRPC health protocol
+    /// (grpc.health.v1.Health/Watch). Retries while the server isn't listening yet; has no deadline
+    /// of its own, so apply one with <paramref name="ct"/>.
+    /// </summary>
+    /// <exception cref="NotSupportedException">The server predates the health service.</exception>
+    public async Task WaitForReadyAsync(CancellationToken ct = default)
+    {
+        var healthClient = _healthClient
+            ?? throw new InvalidOperationException("This DaprMQClient was created without a health client.");
+        var backoff = ReadyBackoffInitial;
+
+        while (true)
+        {
+            try
+            {
+                using var call = healthClient.Watch(new HealthCheckRequest { Service = HealthServiceName }, cancellationToken: ct);
+                await foreach (var response in call.ResponseStream.ReadAllAsync(ct))
+                {
+                    if (response.Status == HealthCheckResponse.Types.ServingStatus.Serving)
+                    {
+                        return;
+                    }
+                    backoff = ReadyBackoffInitial;
+                }
+                // Stream ended before SERVING (e.g. server shutting down) - reconnect.
+            }
+            catch (RpcException ex) when (ex.StatusCode == StatusCode.Unimplemented)
+            {
+                throw new NotSupportedException("The DaprMQ server does not expose the gRPC health service; upgrade the server.", ex);
+            }
+            catch (RpcException ex) when (ex.StatusCode == StatusCode.Cancelled && ct.IsCancellationRequested)
+            {
+                throw new OperationCanceledException(ct);
+            }
+            catch (RpcException ex) when (ex.StatusCode == StatusCode.Unavailable)
+            {
+                // Server not listening yet - retry with backoff.
+            }
+
+            await Task.Delay(backoff, ct);
+            backoff = TimeSpan.FromTicks(Math.Min(backoff.Ticks * 2, ReadyBackoffMax.Ticks));
         }
     }
 

@@ -118,28 +118,18 @@ finally
     }
 }
 
-// Actors take a moment to register after the sidecar starts; poll a probe enqueue until it lands.
+// Actors take a moment to register after the sidecar starts; wait on the gRPC health service.
 static async Task WaitForServerAsync(DaprMQClient client, CancellationToken ct)
 {
-    var deadline = DateTime.UtcNow.AddMinutes(2);
-    while (true)
+    using var readyCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+    readyCts.CancelAfter(TimeSpan.FromMinutes(2));
+    try
     {
-        try
-        {
-            var probe = await client.EnqueueAsync($"perf-probe-{Guid.NewGuid():N}", [new EnqueueItemDto(new { probe = true })], ct);
-            if (probe.Success)
-            {
-                return;
-            }
-        }
-        catch (Exception) when (DateTime.UtcNow < deadline && !ct.IsCancellationRequested) { }
-
-        if (DateTime.UtcNow >= deadline)
-        {
-            throw new TimeoutException("Server did not accept a probe enqueue within 2 minutes.");
-        }
-
-        await Task.Delay(1000, ct);
+        await client.WaitForReadyAsync(readyCts.Token);
+    }
+    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+    {
+        throw new TimeoutException("Server did not report ready within 2 minutes.");
     }
 }
 

@@ -266,12 +266,36 @@ public class DaprTestEnvironment : IAsyncLifetime
         DaprHttpEndpoint = $"http://localhost:{daprHttpPort}";
         DaprGrpcEndpoint = $"http://localhost:{daprGrpcPort}";
 
-        // Wait for everything to stabilize - give Dapr time to connect to placement and register actors
-        await Task.Delay(TimeSpan.FromSeconds(5));
-
         // Initialize HTTP clients
         ApiClient = new HttpClient { BaseAddress = new Uri(ApiServerUrl), Timeout = TimeSpan.FromMinutes(5) };
         DaprSidecarClient = new HttpClient { BaseAddress = new Uri(DaprHttpEndpoint) };
+
+        // Wait until the sidecar is connected to placement and hosts our actor types
+        await WaitForReadyAsync(TimeSpan.FromMinutes(2));
+    }
+
+    private async Task WaitForReadyAsync(TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (true)
+        {
+            try
+            {
+                using var response = await ApiClient.GetAsync("/health/ready");
+                if (response.IsSuccessStatusCode)
+                {
+                    return;
+                }
+            }
+            catch (HttpRequestException) { }
+
+            if (DateTime.UtcNow >= deadline)
+            {
+                throw new TimeoutException($"API server did not report ready at /health/ready within {timeout}.");
+            }
+
+            await Task.Delay(250);
+        }
     }
 
     /// <summary>
