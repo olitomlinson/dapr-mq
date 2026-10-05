@@ -57,7 +57,7 @@ public class OperatorExternalScalerTests
     }
 
     [Fact]
-    public async Task GetMetrics_Messages_IncludesLockedByDefault()
+    public async Task GetMetrics_Messages_CountsReadyAndLocked()
     {
         SetupDepth(new QueueDepthResult { QueueId = "orders", Ready = 7, Locked = 3 });
 
@@ -71,14 +71,19 @@ public class OperatorExternalScalerTests
     }
 
     [Fact]
-    public async Task GetMetrics_Messages_ExcludesLockedWhenDisabled()
+    public async Task GetMetrics_AllItemsLocked_IsActive()
     {
-        SetupDepth(new QueueDepthResult { QueueId = "orders", Ready = 7, Locked = 3 });
+        // Locked items aren't in the queue's Count. If they didn't count here, a fully locked queue
+        // would read 0, KEDA would scale consumers to zero, and - since lock expiry is swept lazily by
+        // the next dequeue - nothing would ever reclaim the items.
+        SetupDepth(new QueueDepthResult { QueueId = "orders", Ready = 0, Locked = 3 });
+        var scaler = CreateScaler();
 
-        var response = await CreateScaler().GetMetrics(
-            new GetMetricsRequest { ScaledObjectRef = Ref(("queueId", "orders"), ("includeLocked", "false")) }, _context.Object);
+        var metrics = await scaler.GetMetrics(new GetMetricsRequest { ScaledObjectRef = Ref(("queueId", "orders")) }, _context.Object);
+        var active = await scaler.IsActive(Ref(("queueId", "orders")), _context.Object);
 
-        Assert.Equal(7, response.MetricValues[0].MetricValueFloat);
+        Assert.Equal(3, metrics.MetricValues[0].MetricValueFloat);
+        Assert.True(active.Result);
     }
 
     [Fact]

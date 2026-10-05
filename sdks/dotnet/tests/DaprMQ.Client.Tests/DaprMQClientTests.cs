@@ -62,6 +62,19 @@ public class DaprMQClientTests
     }
 
     [Fact]
+    public async Task DequeueLockedAsync_CompetingConsumers_SendsHeaderOnlyWhenEnabled()
+    {
+        var handler = new FakeHttpMessageHandler(HttpStatusCode.NoContent);
+        var client = CreateClient(handler);
+
+        await client.DequeueLockedAsync("q");
+        Assert.False(handler.LastRequest!.Headers.Contains("allow-competing-consumers"));
+
+        await client.DequeueLockedAsync("q", allowCompetingConsumers: true);
+        Assert.Equal("true", handler.LastRequest!.Headers.GetValues("allow-competing-consumers").First());
+    }
+
+    [Fact]
     public async Task DequeueLockedAsync_204_ReturnsNull()
     {
         var handler = new FakeHttpMessageHandler(HttpStatusCode.NoContent);

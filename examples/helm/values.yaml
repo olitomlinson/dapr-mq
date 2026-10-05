@@ -24,6 +24,11 @@ daprmq:
   httpPort: 8080
   grpcPort: 8081
 
+  # The main chart's operator (KEDA external scaler) - only used when autoscale.enabled. Same
+  # naming rule as the gateway; set operatorServiceName to override. Must match operator.grpcPort.
+  operatorServiceName: ""
+  operatorGrpcPort: 8081
+
 # Port each example container's own control API (health/config/scenarios/reset) listens on.
 controlPort: 8080
 
@@ -114,3 +119,19 @@ fullnameOverride: ""
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# KEDA autoscale demo (scenario `autoscale`, see shared/SCENARIOS.md). Requires KEDA in the cluster
+# and the main chart installed with operator.enabled=true. For each listed language this adds a
+# `<lang>-worker` Deployment - the consumer image in worker mode, continuously draining
+# examples-<lang>-autoscale - plus a ScaledObject that scales it 0..maxReplicaCount on that queue's
+# depth. Only dotnet implements worker mode so far.
+autoscale:
+  enabled: false
+  languages: [dotnet]
+  targetValue: 50          # queued items per worker replica
+  minReplicaCount: 0
+  maxReplicaCount: 4
+  pollingInterval: 5
+  cooldownPeriod: 30
+  workerBatchSize: 5
+  workerItemDelayMs: 200   # simulated work per item

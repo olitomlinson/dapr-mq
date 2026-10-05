@@ -14,7 +14,7 @@ public sealed class ScalerOptions
 /// KEDA external scaler (type: external / external-push) that scales consumer workloads on a DaprMQ
 /// queue's depth. Trigger metadata: see ScalerMetadata.
 ///
-/// The metric is ready (+ locked) items in messages mode, or the number of non-empty sessions in
+/// The metric is ready + locked items in messages mode, or the number of non-empty sessions in
 /// sessions mode. A failed depth read is Unavailable - never 0, which would scale consumers to zero
 /// during a DaprMQ outage; KEDA's ScaledObject `fallback` decides what happens instead.
 /// </summary>
@@ -124,9 +124,11 @@ public sealed class DaprMQExternalScaler : ExternalScaler.ExternalScalerBase
             throw Unavailable(metadata, result.Error);
         }
 
+        // Locked items always count: they're out of the queue's Count, and lock expiry is only swept by
+        // the next dequeue - scaling consumers to zero over a fully locked queue would strand them.
         return metadata.Mode == QueueDepthMode.Sessions
             ? result.NonEmptySessions
-            : result.Ready + (metadata.IncludeLocked ? result.Locked : 0);
+            : result.Ready + result.Locked;
     }
 
     private static RpcException Unavailable(ScalerMetadata metadata, string detail) =>

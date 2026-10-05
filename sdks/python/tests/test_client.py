@@ -63,6 +63,15 @@ class TestDequeueLocked:
         assert transport.last_request.headers["ttl-seconds"] == "60"
         assert transport.last_request.headers["lease-id"] == "lease-1"
 
+    async def test_sends_competing_consumers_header_only_when_enabled(self) -> None:
+        client, transport = make_client(204)
+
+        await client.dequeue_locked("q")
+        assert "allow-competing-consumers" not in transport.last_request.headers
+
+        await client.dequeue_locked("q", allow_competing_consumers=True)
+        assert transport.last_request.headers["allow-competing-consumers"] == "true"
+
     async def test_returns_none_on_204(self) -> None:
         client, _ = make_client(204)
 

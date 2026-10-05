@@ -41,19 +41,21 @@ public class OperatorScalerTests(OperatorTestFixture fixture)
     }
 
     [Fact]
-    public async Task GetMetrics_ReportsQueueDepth_AndLockedItemsByDefault()
+    public async Task GetMetrics_ReportsQueueDepth_IncludingLockedItems()
     {
         var queueId = $"keda-{Guid.NewGuid():N}";
         await EnqueueAsync(queueId, 5);
 
         Assert.Equal(5, await GetMetricAsync(Ref(queueId)));
 
+        // Lock every item: the queue's own Count drops to 0, but the work is still outstanding.
         using var dequeue = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/dequeue");
         dequeue.Headers.Add("require-ack", "true");
+        dequeue.Headers.Add("count", "5");
         (await fixture.ApiClient.SendAsync(dequeue)).EnsureSuccessStatusCode();
 
         Assert.Equal(5, await GetMetricAsync(Ref(queueId)));
-        Assert.Equal(4, await GetMetricAsync(Ref(queueId, ("includeLocked", "false"))));
+        Assert.True((await CreateClient().IsActiveAsync(Ref(queueId))).Result);
     }
 
     [Fact]

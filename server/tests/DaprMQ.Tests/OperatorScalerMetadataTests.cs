@@ -24,7 +24,6 @@ public class OperatorScalerMetadataTests
         Assert.Equal(QueueDepthMode.Messages, metadata.Mode);
         Assert.Equal(10, metadata.TargetValue);
         Assert.Equal(0, metadata.ActivationValue);
-        Assert.True(metadata.IncludeLocked);
         Assert.False(metadata.IncludeDeadLetter);
     }
 
@@ -32,12 +31,11 @@ public class OperatorScalerMetadataTests
     public void AllFields_Parsed()
     {
         var metadata = Parse(("queueId", "orders"), ("mode", "Sessions"), ("targetValue", "2.5"),
-            ("activationValue", "1"), ("includeLocked", "false"));
+            ("activationValue", "1"));
 
         Assert.Equal(QueueDepthMode.Sessions, metadata.Mode);
         Assert.Equal(2.5, metadata.TargetValue);
         Assert.Equal(1, metadata.ActivationValue);
-        Assert.False(metadata.IncludeLocked);
     }
 
     [Fact]
@@ -61,6 +59,6 @@ public class OperatorScalerMetadataTests
     [Fact] public void NonPositiveTarget_Invalid() => AssertInvalid(("queueId", "orders"), ("targetValue", "0"));
     [Fact] public void NonNumericTarget_Invalid() => AssertInvalid(("queueId", "orders"), ("targetValue", "ten"));
     [Fact] public void NegativeActivation_Invalid() => AssertInvalid(("queueId", "orders"), ("activationValue", "-1"));
-    [Fact] public void NonBooleanIncludeLocked_Invalid() => AssertInvalid(("queueId", "orders"), ("includeLocked", "yes"));
+    [Fact] public void NonBooleanIncludeDeadLetter_Invalid() => AssertInvalid(("queueId", "orders"), ("includeDeadLetter", "yes"));
     [Fact] public void SessionsWithDeadLetter_Invalid() => AssertInvalid(("queueId", "orders"), ("mode", "sessions"), ("includeDeadLetter", "true"));
 }

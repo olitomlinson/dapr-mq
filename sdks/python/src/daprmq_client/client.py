@@ -96,10 +96,13 @@ class DaprMQClient:
         count: int = 1,
         ttl_seconds: int = 30,
         lease_id: str | None = None,
+        allow_competing_consumers: bool = False,
     ) -> DequeueLockedResult | None:
         headers = {"require-ack": "true", "count": str(count), "ttl-seconds": str(ttl_seconds)}
         if lease_id is not None:
             headers["lease-id"] = lease_id
+        if allow_competing_consumers:
+            headers["allow-competing-consumers"] = "true"
 
         response = await self._http_client.post(self._path(queue_id, "dequeue"), headers=headers)
 

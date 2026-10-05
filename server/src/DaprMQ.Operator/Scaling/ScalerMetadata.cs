@@ -20,9 +20,6 @@ public sealed partial record ScalerMetadata
     /// <summary>The scale-from/to-zero threshold: active while the metric is above this.</summary>
     public double ActivationValue { get; init; }
 
-    /// <summary>Messages mode: count items currently locked by consumers as well as ready ones.</summary>
-    public bool IncludeLocked { get; init; } = true;
-
     /// <summary>Messages mode: also count {queueId}-deadletter.</summary>
     public bool IncludeDeadLetter { get; init; }
 
@@ -48,7 +45,6 @@ public sealed partial record ScalerMetadata
             Mode = metadata.TryGetValue("mode", out var mode) ? ParseMode(mode) : QueueDepthMode.Messages,
             TargetValue = ParseDouble(metadata, "targetValue", 10),
             ActivationValue = ParseDouble(metadata, "activationValue", 0),
-            IncludeLocked = ParseBool(metadata, "includeLocked", true),
             IncludeDeadLetter = ParseBool(metadata, "includeDeadLetter", false)
         };
 

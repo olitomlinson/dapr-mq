@@ -5,10 +5,9 @@
 #
 # Trigger metadata (all strings):
 #   queueId            required  queue to measure
-#   mode               messages  "messages": ready (+ locked) items; "sessions": number of non-empty sessions
+#   mode               messages  "messages": ready + locked items; "sessions": number of non-empty sessions
 #   targetValue        10        metric per consumer replica the HPA aims for
 #   activationValue    0         active (scaled up from zero) while the metric is above this
-#   includeLocked      true      messages mode: count items consumers hold locked as well as ready ones
 #   includeDeadLetter  false     messages mode: also count {queueId}-deadletter
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject

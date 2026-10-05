@@ -1,0 +1,89 @@
+{{- if .Values.autoscale.enabled }}
+{{- $root := . -}}
+{{- range $lang := .Values.autoscale.languages }}
+{{- $cfg := index $root.Values.languages $lang }}
+{{- if $cfg.enabled }}
+{{- $name := printf "%s-%s-worker" (include "daprmq-examples.fullname" $root) $lang }}
+---
+# Consumer image in worker mode (WORKER_QUEUE_SUFFIX): drains examples-{{ $lang }}-autoscale
+# continuously. No Service - nothing calls it; KEDA owns its replica count (no `replicas` here).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "daprmq-examples.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $lang }}-worker
+spec:
+  selector:
+    matchLabels:
+      {{- include "daprmq-examples.selectorLabels" $root | nindent 6 }}
+      app.kubernetes.io/component: {{ $lang }}-worker
+  template:
+    metadata:
+      labels:
+        {{- include "daprmq-examples.selectorLabels" $root | nindent 8 }}
+        app.kubernetes.io/component: {{ $lang }}-worker
+    spec:
+      containers:
+      - name: app
+        image: "{{ if $root.Values.image.registry }}{{ $root.Values.image.registry }}/{{ end }}{{ $cfg.consumer.image.repository }}:{{ $cfg.consumer.image.tag }}"
+        imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ $root.Values.controlPort }}
+        env:
+        - name: LANGUAGE
+          value: {{ $lang | quote }}
+        - name: ROLE
+          value: "consumer"
+        - name: CONTROL_PORT
+          value: {{ $root.Values.controlPort | quote }}
+        - name: DAPRMQ_HTTP_BASE_URL
+          value: {{ include "daprmq-examples.gatewayHttpUrl" $root | quote }}
+        - name: DAPRMQ_GRPC_ADDRESS
+          value: {{ include "daprmq-examples.gatewayGrpcAddress" $root | quote }}
+        - name: DAPRMQ_QUEUE_PREFIX
+          value: {{ printf "examples-%s" $lang | quote }}
+        - name: WORKER_QUEUE_SUFFIX
+          value: "autoscale"
+        - name: WORKER_BATCH_SIZE
+          value: {{ $root.Values.autoscale.workerBatchSize | quote }}
+        - name: WORKER_ITEM_DELAY_MS
+          value: {{ $root.Values.autoscale.workerItemDelayMs | quote }}
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: {{ $root.Values.controlPort }}
+          initialDelaySeconds: 2
+          periodSeconds: 5
+        resources:
+          {{- toYaml $cfg.resources | nindent 10 }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "daprmq-examples.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $lang }}-worker
+spec:
+  scaleTargetRef:
+    name: {{ $name }}
+  minReplicaCount: {{ $root.Values.autoscale.minReplicaCount }}
+  maxReplicaCount: {{ $root.Values.autoscale.maxReplicaCount }}
+  pollingInterval: {{ $root.Values.autoscale.pollingInterval }}
+  cooldownPeriod: {{ $root.Values.autoscale.cooldownPeriod }}
+  # A failed depth read is an error from the scaler (never 0): hold one worker meanwhile.
+  fallback:
+    failureThreshold: 3
+    replicas: 1
+  triggers:
+  - type: external-push
+    metadata:
+      scalerAddress: {{ include "daprmq-examples.operatorAddress" $root | quote }}
+      queueId: {{ printf "examples-%s-autoscale" $lang | quote }}
+      targetValue: {{ $root.Values.autoscale.targetValue | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
