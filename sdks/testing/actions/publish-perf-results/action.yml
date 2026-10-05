@@ -1,0 +1,62 @@
+name: Publish perf results
+description: >
+  Merges every perf-sdk-* artifact from this run into the perf-results branch (history unioned by
+  runId, so runs published by other workflows meanwhile are kept), regenerates the cross-SDK
+  report.html, uploads it as the perf-report artifact and, when push is true, commits and pushes -
+  retrying on a fresh checkout if another run pushed first. Needs .NET and the repo checked out.
+
+inputs:
+  push:
+    description: Commit and push to perf-results
+    required: true
+  message:
+    description: Commit message
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: perf-sdk-*
+        path: new-results
+
+    - uses: ./sdks/testing/actions/checkout-perf-results
+
+    - name: Merge, report and push
+      shell: bash
+      env:
+        PUSH: ${{ inputs.push }}
+        MESSAGE: ${{ inputs.message }}
+      run: |
+        report() { dotnet run -c Release --project sdks/testing/perf/DaprMQ.PerfReport -- "$@"; }
+        merge_all() {
+          shopt -s nullglob
+          # Each artifact holds one SDK's sdk-<sdk>/ directory.
+          for dir in new-results/perf-sdk-*; do
+            report merge --results "perf-results/${dir#new-results/perf-}" --from "$dir"
+          done
+          report report --results perf-results
+        }
+
+        merge_all
+        cp perf-results/report.html report.html
+        [[ "$PUSH" == "true" ]] || exit 0
+
+        git -C perf-results config user.name "github-actions[bot]"
+        git -C perf-results config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        for attempt in 1 2 3; do
+          git -C perf-results add -A
+          git -C perf-results commit -q -m "$MESSAGE" || exit 0
+          git -C perf-results push origin perf-results && exit 0
+          echo "Push rejected (attempt $attempt); re-merging onto the latest perf-results"
+          git -C perf-results fetch origin perf-results
+          git -C perf-results reset -q --hard origin/perf-results
+          merge_all
+        done
+        exit 1
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: perf-report
+        path: report.html

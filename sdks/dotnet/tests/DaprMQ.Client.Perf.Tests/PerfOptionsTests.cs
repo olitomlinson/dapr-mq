@@ -111,19 +111,63 @@ public class PerfOptionsTests
     }
 
     [Fact]
-    public void CiSuite_ExpandsToTheFiveProfiles_SharingRunSettings()
+    public void PrSuite_ExpandsToEveryPrProfile_SharingRunSettings()
     {
-        var options = PerfOptions.Parse(["--suite", "ci", "--env-label", "ci-x", "--http", "http://h", "--grpc", "http://g"]);
+        var options = PerfOptions.Parse(["--suite", "pr", "--env-label", "ci-x", "--http", "http://h", "--grpc", "http://g"]);
 
         var runs = options.Runs();
 
-        Assert.Equal(["steady-drain", "session-churn", "deep-session", "live-publish", "sdk-defaults"], runs.Select(r => r.Profile));
+        Assert.Equal(
+            ["enqueue", "enqueue-hot", "enqueue-batch", "dequeue-ack", "steady-drain", "session-churn", "deep-session", "live-publish", "sdk-defaults"],
+            runs.Select(r => r.Profile));
         Assert.All(runs, r =>
         {
             Assert.Equal("ci-x", r.EnvLabel);
             Assert.Equal("http://h", r.HttpEndpoint);
             Assert.Equal("http://g", r.GrpcEndpoint);
+            Assert.Equal("pr", r.Scale);
+            Assert.Equal(1, r.ApiReplicas);
         });
+    }
+
+    [Fact]
+    public void ExtremeSuite_RunsTheRampsAndBigDrains_OnThreeReplicasByDefault()
+    {
+        var runs = PerfOptions.Parse(["--suite", "extreme"]).Runs();
+
+        Assert.Equal(["enqueue-ramp", "enqueue-hot-ramp", "enqueue-batch-ramp", "dequeue-ack-ramp", "full", "wide-drain"], runs.Select(r => r.Profile));
+        Assert.All(runs, r => Assert.Equal(3, r.ApiReplicas));
+        Assert.All(runs, r => Assert.Equal("extreme", r.Scale));
+        Assert.Equal(5, PerfOptions.Parse(["--suite", "extreme", "--api-replicas", "5"]).ApiReplicas);
+    }
+
+    [Fact]
+    public void LoadProfiles_MatchTheSpec()
+    {
+        var enqueue = PerfOptions.Parse(["--profile", "enqueue"]).Load!;
+        Assert.Equal(new LoadParams("enqueue", [8], Queues: 8, BatchSize: 1, DequeueCount: 1, PayloadBytes: 256, SeedPerQueue: 0, WarmupSeconds: 3, DurationSeconds: 15), enqueue);
+        Assert.Equal("P-01", enqueue.Id);
+        Assert.Equal("enqueue:c8/q8/b1/256B/3+15s", enqueue.Key);
+
+        Assert.Equal(1, PerfOptions.Parse(["--profile", "enqueue-hot"]).Load!.Queues);
+        Assert.Equal(100, PerfOptions.Parse(["--profile", "enqueue-batch"]).Load!.BatchSize);
+        Assert.Equal("P-03", PerfOptions.Parse(["--profile", "dequeue-ack"]).Load!.Id);
+
+        var ramp = PerfOptions.Parse(["--profile", "enqueue-ramp"]).Load!;
+        Assert.Equal([1, 2, 4, 8, 16, 32, 64, 128, 256], ramp.Concurrency);
+        Assert.Null(ramp.Queues); // = concurrency at each step
+        Assert.Equal("enqueue:c1,2,4,8,16,32,64,128,256/q=c/b1/256B/5+30s", ramp.Key);
+
+        Assert.Null(PerfOptions.Parse(["--profile", "steady-drain"]).Load);
+    }
+
+    [Fact]
+    public void Scale_IsTheProfilesOwn_UnlessItsParametersWereOverridden()
+    {
+        Assert.Equal("pr", PerfOptions.Parse(["--profile", "steady-drain"]).Scale);
+        Assert.Equal("extreme", PerfOptions.Parse(["--profile", "full"]).Scale);
+        Assert.Equal("adhoc", PerfOptions.Parse(["--profile", "quick"]).Scale);
+        Assert.Equal("adhoc", PerfOptions.Parse(["--profile", "steady-drain", "--sessions", "5"]).Scale);
     }
 
     [Fact]
@@ -137,8 +181,9 @@ public class PerfOptionsTests
     [Fact]
     public void Suite_RejectsScenarioOverridesAndUnknownSuites()
     {
-        Assert.Throws<ArgumentException>(() => PerfOptions.Parse(["--suite", "ci", "--sessions", "5"]));
-        Assert.Throws<ArgumentException>(() => PerfOptions.Parse(["--suite", "ci", "--profile", "quick"]));
+        Assert.Throws<ArgumentException>(() => PerfOptions.Parse(["--suite", "pr", "--sessions", "5"]));
+        Assert.Throws<ArgumentException>(() => PerfOptions.Parse(["--suite", "pr", "--profile", "quick"]));
+        Assert.Throws<ArgumentException>(() => PerfOptions.Parse(["--suite", "ci"]));
         Assert.Throws<ArgumentException>(() => PerfOptions.Parse(["--suite", "nightly"]));
     }
 
@@ -177,10 +222,11 @@ public class PerfOptionsTests
     }
 
     [Theory]
-    [InlineData("--suite", "ci")]
+    [InlineData("--suite", "pr")]
+    [InlineData("--api-replicas", "2")]
     [InlineData("--sessions", "10")]
     [InlineData("--profile", "quick")]
-    public void StateReads_RejectsSessionDrainScenarioFlags(string flag, string value)
+    public void StateReads_RejectsScenarioAndTopologyFlags(string flag, string value)
     {
         Assert.Throws<ArgumentException>(() => PerfOptions.Parse(["--benchmark", "state-reads", flag, value]));
     }
@@ -190,5 +236,18 @@ public class PerfOptionsTests
     {
         Assert.Throws<ArgumentException>(() =>
             PerfOptions.Parse(["--benchmark", "state-reads", "--http", "http://x", "--grpc", "http://y"]));
+    }
+
+    [Fact]
+    public void ApiReplicas_MustBePositive_AndCantCombineWithAnExternalServer()
+    {
+        Assert.Throws<ArgumentException>(() => PerfOptions.Parse(["--api-replicas", "0"]));
+        Assert.Throws<ArgumentException>(() => PerfOptions.Parse(["--api-replicas", "2", "--http", "http://x", "--grpc", "http://y"]));
+    }
+
+    [Fact]
+    public void OutDir_DefaultsToTheRepoWidePerfResults()
+    {
+        Assert.Equal("perf-results", Path.GetFileName(PerfOptions.Parse([]).OutDir));
     }
 }

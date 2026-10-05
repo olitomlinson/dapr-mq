@@ -219,9 +219,12 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for technical details.
 
 ## Performance
 
-Given 40 virtual users, each making 10,000 operations. The avg latency is around 10ms. This is 3 worker containers (hosting actors) + 1 gateway container for the API server.
+Every client SDK runs the same performance profiles through its public API, against a Testcontainers stack that matches production (3-node Dapr scheduler HA, optionally N API replicas behind a load balancer). One report compares the SDKs side by side. See [sdks/testing/PERFORMANCE_TESTS.md](sdks/testing/PERFORMANCE_TESTS.md).
 
-![Alt text of the image](https://github.com/olitomlinson/dapr-mq/blob/main/server/tests/DaprMQ.PerformanceTests/results/performance-results_2026-03-08_22-15-12.png)
+- **pr scale:** small, runs on every PR and nightly ([perf.yml](.github/workflows/perf.yml)).
+- **extreme scale:** concurrency ramps to 256 workers and large session drains, run by hand ([perf-extreme.yml](.github/workflows/perf-extreme.yml)).
+
+The latest report is `report.html` on the [`perf-results`](https://github.com/olitomlinson/dapr-mq/tree/perf-results) branch, and every workflow run uploads it as the `perf-report` artifact. Locally: `./build-and-test.sh --skip-tests && ./run-perf-test.sh --suite pr`, then open `perf-results/report.html`.
 
 **Time Complexity:**
 - `Enqueue`: O(1) amortized append operation

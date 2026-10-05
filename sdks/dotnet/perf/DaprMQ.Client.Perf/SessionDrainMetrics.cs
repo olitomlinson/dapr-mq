@@ -94,19 +94,19 @@ public sealed record SlotTimeBreakdown(
     public double Utilization => CapacitySlotSeconds > 0 ? HandlingSeconds / CapacitySlotSeconds : 0;
 }
 
-public sealed record Distribution(int Count, double Mean, double P50, double P95, double Max)
+public sealed record Distribution(int Count, double Mean, double P50, double P95, double P99, double Max)
 {
     public static Distribution Of(IEnumerable<double> values)
     {
         var sorted = values.Order().ToArray();
         if (sorted.Length == 0)
         {
-            return new Distribution(0, 0, 0, 0, 0);
+            return new Distribution(0, 0, 0, 0, 0, 0);
         }
 
         double Percentile(double p) => sorted[Math.Clamp((int)Math.Ceiling(p * sorted.Length) - 1, 0, sorted.Length - 1)];
 
-        return new Distribution(sorted.Length, sorted.Average(), Percentile(0.50), Percentile(0.95), sorted[^1]);
+        return new Distribution(sorted.Length, sorted.Average(), Percentile(0.50), Percentile(0.95), Percentile(0.99), sorted[^1]);
     }
 }
 

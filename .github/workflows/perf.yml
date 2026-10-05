@@ -1,0 +1,173 @@
+name: Performance (pr)
+
+# The `pr` scale of sdks/testing/PERFORMANCE_TESTS.md: every SDK runs its pr profiles against its own
+# Testcontainers stack (1 API replica, 3-node scheduler HA), compared with the median of recent
+# `main` runs (table in each job's summary). Report-only: a job fails on lost/reordered messages or
+# failed operations, not on a slower number. Add --gate once each metric's noise is known.
+#
+# Results accumulate on the orphan `perf-results` branch (sdk-<sdk>/ per SDK, report.html at the
+# root). SDK jobs only read it (baselines); the publish job merges their new runs in by runId,
+# regenerates the cross-SDK report and pushes - on main, nightly and manual runs. Every run, PRs
+# included, uploads the report as the perf-report artifact.
+#
+# The extreme scale is manual only: perf-extreme.yml.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - 'sdks/**'
+      - '.github/workflows/perf.yml'
+  pull_request:
+    paths:
+      - 'server/**'
+      - 'sdks/**'
+      - '.github/workflows/perf.yml'
+  schedule:
+    - cron: '0 4 * * *' # nightly, so main keeps a baseline even on quiet days
+  workflow_dispatch:
+    inputs:
+      dotnet_args:
+        description: '.NET harness flags, e.g. --suite pr | --profile enqueue | --profile steady-drain --idle-timeout 1'
+        required: false
+        default: '--suite pr'
+
+permissions:
+  contents: write
+
+concurrency:
+  # PR runs replace each other; runs that write results queue so pushes to perf-results never race.
+  group: ${{ github.event_name == 'pull_request' && format('perf-{0}', github.ref) || 'perf-results' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Which SDKs to run, from the changed paths (same rules as sdk-integration-tests.yml):
+  #   server/** or sdks/testing/** or this file -> every SDK; sdks/<sdk>/** -> that SDK.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      dotnet: ${{ steps.decide.outputs.dotnet }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          base: ${{ github.event_name == 'push' && github.event.before || '' }}
+          filters: |
+            all:
+              - 'server/**'
+              - 'sdks/testing/**'
+              - '.github/workflows/perf.yml'
+            dotnet:
+              - 'sdks/dotnet/**'
+
+      - name: Decide
+        id: decide
+        run: |
+          all=${{ steps.filter.outputs.all }}
+          [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "schedule" ]] && all=true
+          dotnet=$all
+          [[ "${{ steps.filter.outputs.dotnet }}" == "true" ]] && dotnet=true
+          echo "dotnet=$dotnet" | tee -a "$GITHUB_OUTPUT"
+
+  # Harness and report-tool unit tests: quick, and catch a broken harness before the stack starts.
+  unit:
+    name: Perf tooling unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet test sdks/testing/perf/DaprMQ.PerfReport.Tests
+      - run: dotnet test sdks/dotnet/tests/DaprMQ.Client.Perf.Tests
+
+  build-image:
+    name: Build daprmq-api image
+    needs: changes
+    if: needs.changes.outputs.dotnet == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: server
+          file: server/Dockerfile
+          tags: daprmq-api:test
+          outputs: type=docker,dest=daprmq-api.tar
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - uses: actions/upload-artifact@v4
+        with:
+          name: daprmq-api-image
+          path: daprmq-api.tar
+          retention-days: 1
+
+  dotnet:
+    name: .NET SDK
+    needs: [changes, unit, build-image]
+    if: needs.changes.outputs.dotnet == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./sdks/testing/actions/load-api-image
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: ./sdks/testing/actions/checkout-perf-results
+
+      - name: Run pr profiles
+        env:
+          ARGS: ${{ inputs.dotnet_args || '--suite pr' }}
+        # ARGS is deliberately unquoted so it splits into separate flags. The comparison table is
+        # appended to the job summary by the harness itself (GITHUB_STEP_SUMMARY).
+        run: >
+          dotnet run -c Release --project sdks/dotnet/perf/DaprMQ.Client.Perf --
+          --env-label ci-ubuntu-latest
+          --out perf-results
+          $ARGS
+
+      # Actor state reads/writes per operation, from Postgres' statement log. Runs even if the
+      # profiles failed, since the two measure unrelated things.
+      - name: Run state reads benchmark
+        if: ${{ !cancelled() }}
+        run: >
+          dotnet run -c Release --project sdks/dotnet/perf/DaprMQ.Client.Perf --
+          --benchmark state-reads
+          --env-label ci-ubuntu-latest
+          --out perf-results
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: perf-sdk-dotnet
+          path: perf-results/sdk-dotnet
+          if-no-files-found: ignore
+
+  # Merges every SDK job's results into perf-results, regenerates the cross-SDK report, and pushes
+  # (not on PRs). Each SDK job only ever writes its own sdk-<sdk>/ directory.
+  publish:
+    name: Report and publish
+    needs: [dotnet]
+    if: ${{ !cancelled() && (contains(needs.*.result, 'success') || contains(needs.*.result, 'failure')) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: ./sdks/testing/actions/publish-perf-results
+        with:
+          push: ${{ github.event_name != 'pull_request' }}
+          message: 'Perf: ${{ github.sha }} (${{ github.event_name }})'

@@ -1,24 +1,39 @@
 using System.Text.Json.Nodes;
-using DaprMQ.Client.Perf;
 
-namespace DaprMQ.Client.Perf.Tests;
+namespace DaprMQ.PerfReport.Tests;
 
 public class RegressionCheckTests
 {
     private static JsonObject Run(string runId, string branch, double wall, double efficiency = 0.9, double claimP95 = 100,
-        string key = "10x10@100ms/4slots", string env = "ci") =>
+        string key = "10x10@100ms/4slots", string env = "ci", string sdk = "dotnet", int apiReplicas = 1, bool passed = true) =>
         JsonNode.Parse($$"""
         {
-          "runId": "{{runId}}", "profile": "steady-drain",
+          "schemaVersion": 2, "runId": "{{runId}}",
+          "sdk": { "name": "{{sdk}}" },
           "environment": { "label": "{{env}}", "gitBranch": "{{branch}}" },
-          "scenario": { "key": "{{key}}" },
+          "topology": { "apiReplicas": {{apiReplicas}} },
+          "scenario": { "id": "P-04", "name": "session-drain", "profile": "steady-drain", "key": "{{key}}" },
           "metrics": {
             "wallClockSeconds": {{wall}}, "efficiency": {{efficiency}},
             "peak": { "utilization": 0.9 },
             "claimLatencyMs": { "p95": {{claimP95}} },
             "interMessageGapMs": { "p95": 5 },
             "deliveryLatencyMs": { "p95": 200 }
-          }
+          },
+          "checks": { "passed": {{(passed ? "true" : "false")}} }
+        }
+        """)!.AsObject();
+
+    private static JsonObject LoadRun(string runId, string branch, double messagesPerSecond, double p95 = 10, double p99 = 20) =>
+        JsonNode.Parse($$"""
+        {
+          "schemaVersion": 2, "runId": "{{runId}}",
+          "sdk": { "name": "python" },
+          "environment": { "label": "ci", "gitBranch": "{{branch}}" },
+          "topology": { "apiReplicas": 1 },
+          "scenario": { "id": "P-01", "name": "enqueue", "profile": "enqueue", "key": "enqueue:c8/q8/b1/256B/3+15s" },
+          "metrics": { "messagesPerSecond": {{messagesPerSecond}}, "latencyMs": { "p95": {{p95}}, "p99": {{p99}} } },
+          "checks": { "passed": true }
         }
         """)!.AsObject();
 
@@ -74,13 +89,16 @@ public class RegressionCheckTests
     }
 
     [Fact]
-    public void BaselineIsOnlySameEnvSameScenarioBaselineBranch_ExcludingTheRunItself_LastTen()
+    public void BaselineIsOnlySameSdkEnvTopologyScenarioBaselineBranch_PassingRunsOnly_ExcludingTheRunItself_LastTen()
     {
         var history = new List<JsonObject>
         {
             Run("other-branch", "feature", 1000),
             Run("other-env", "main", 1000, env: "local"),
             Run("other-key", "main", 1000, key: "1x1@1ms/1slots"),
+            Run("other-sdk", "main", 1000, sdk: "java"),
+            Run("other-topology", "main", 1000, apiReplicas: 3),
+            Run("failed", "main", 1000, passed: false),
         };
         history.AddRange(Enumerable.Range(0, 3).Select(i => Run($"old{i}", "main", 1000)));
         history.AddRange(Enumerable.Range(0, 10).Select(i => Run($"recent{i}", "main", 100)));
@@ -124,5 +142,18 @@ public class RegressionCheckTests
         var markdown = RegressionCheck.ToMarkdown([comparison], "main");
 
         Assert.Contains("| steady-drain | Wall clock (s) | 100 (n=3) | 130 | +30.0% | ❌ regressed |", markdown);
+    }
+
+    [Fact]
+    public void LoadScenarios_AreJudgedOnThroughputAndTailLatency()
+    {
+        var history = Enumerable.Range(0, 3).Select(i => LoadRun($"base{i}", "main", 1000)).ToList();
+
+        var comparison = RegressionCheck.Compare(LoadRun("now", "feature", 700, p95: 30, p99: 40), history, "main");
+
+        Assert.Equal(["Messages/s", "Latency p95 (ms)", "Latency p99 (ms)"], comparison.Metrics.Select(m => m.Metric));
+        Assert.Equal(ComparisonStatus.Regressed, Metric(comparison, "Messages/s").Status);
+        Assert.Equal(ComparisonStatus.Regressed, Metric(comparison, "Latency p95 (ms)").Status);
+        Assert.Equal(ComparisonStatus.Ok, Metric(comparison, "Latency p99 (ms)").Status); // p99 is noisier: 100% tolerance
     }
 }

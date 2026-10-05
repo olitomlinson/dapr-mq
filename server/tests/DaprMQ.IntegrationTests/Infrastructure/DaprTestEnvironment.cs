@@ -19,9 +19,10 @@ public class DaprTestEnvironment : IAsyncLifetime
     private PostgreSqlContainer? _postgresContainer;
     private IContainer? _wireMockContainer;
     private IContainer? _daprPlacementContainer;
-    private IContainer? _daprSchedulerContainer;
-    private IContainer? _daprSidecarContainer;
-    private IContainer? _apiServerContainer;
+    private readonly List<IContainer> _daprSchedulerContainers = [];
+    private readonly List<IContainer> _daprSidecarContainers = [];
+    private readonly List<IContainer> _apiServerContainers = [];
+    private IContainer? _loadBalancerContainer;
 
     // Exposed endpoints and connection strings
     public string PostgresConnectionString { get; private set; } = string.Empty;
@@ -31,6 +32,8 @@ public class DaprTestEnvironment : IAsyncLifetime
     public string DaprGrpcEndpoint { get; private set; } = string.Empty;
     public string ApiServerUrl { get; private set; } = string.Empty;
     public string ApiServerGrpcUrl { get; private set; } = string.Empty;
+
+    public DaprTopology Topology { get; private set; } = DaprTopology.Default;
 
     // HTTP clients for testing
     public HttpClient ApiClient { get; private set; } = null!;
@@ -70,8 +73,17 @@ public class DaprTestEnvironment : IAsyncLifetime
     public Task InitializeAsync(IReadOnlyDictionary<string, string>? extraApiServerEnvironment, string? apiServerImage) =>
         InitializeAsync(extraApiServerEnvironment, apiServerImage, false);
 
-    public async Task InitializeAsync(IReadOnlyDictionary<string, string>? extraApiServerEnvironment, string? apiServerImage, bool enableQueryInstrumentation)
+    public Task InitializeAsync(IReadOnlyDictionary<string, string>? extraApiServerEnvironment, string? apiServerImage, bool enableQueryInstrumentation) =>
+        InitializeAsync(extraApiServerEnvironment, apiServerImage, enableQueryInstrumentation, DaprTopology.Default);
+
+    /// <summary>
+    /// <paramref name="topology"/> scales the stack out for the perf harness: N API replicas (each
+    /// with its own sidecar) behind an nginx load balancer, and a scheduler HA cluster.
+    /// <see cref="ApiServerUrl"/>/<see cref="ApiServerGrpcUrl"/> then point at the load balancer.
+    /// </summary>
+    public async Task InitializeAsync(IReadOnlyDictionary<string, string>? extraApiServerEnvironment, string? apiServerImage, bool enableQueryInstrumentation, DaprTopology topology)
     {
+        Topology = topology;
         // Check if container logs should be redirected to console
         var enableContainerLogs = Environment.GetEnvironmentVariable("ENABLE_CONTAINER_LOGS")?.Equals("true", StringComparison.OrdinalIgnoreCase) ?? false;
 
@@ -142,33 +154,96 @@ public class DaprTestEnvironment : IAsyncLifetime
         const string schedulerContainerDataDir = "/data/dapr-scheduler";
         _schedulerTestDirectory = TestDirectoryManager.CreateTestDirectory("scheduler");
         _blobStoreTestDirectory = TestDirectoryManager.CreateTestDirectory("blobstore");
-        // 4. Start Dapr scheduler service
-        _daprSchedulerContainer = new ContainerBuilder()
-            .WithImage("daprio/dapr:1.18.4")
-            .WithNetwork(_network)
-            .WithNetworkAliases("dapr-scheduler")
-            .WithBindMount(_schedulerTestDirectory, schedulerContainerDataDir, AccessMode.ReadWrite)
-            .WithCommand("./scheduler", "--port", "50006", "--log-level", "info", "--etcd-data-dir", schedulerContainerDataDir)
-            .WithPortBinding(50006, true)
-            .Build();
+        // 4. Start Dapr scheduler service (one member, or an HA cluster of topology.SchedulerReplicas)
+        for (var member = 0; member < topology.SchedulerReplicas; member++)
+        {
+            var schedulerBuilder = new ContainerBuilder()
+                .WithImage("daprio/dapr:1.18.4")
+                .WithNetwork(_network)
+                .WithNetworkAliases(topology.SchedulerAlias(member))
+                .WithPortBinding(DaprTopology.SchedulerPort, true);
 
-        await _daprSchedulerContainer.StartAsync();
+            // HA members keep etcd in the container (ephemeral); the single scheduler keeps its
+            // historical bind-mounted data dir.
+            schedulerBuilder = topology.SchedulerHa
+                ? schedulerBuilder.WithCommand(topology.SchedulerCommand(member))
+                : schedulerBuilder
+                    .WithBindMount(_schedulerTestDirectory, schedulerContainerDataDir, AccessMode.ReadWrite)
+                    .WithCommand("./scheduler", "--port", "50006", "--log-level", "info", "--etcd-data-dir", schedulerContainerDataDir);
+
+            var scheduler = schedulerBuilder.Build();
+            _daprSchedulerContainers.Add(scheduler);
+        }
+
+        // HA members only report healthy once they reach quorum, so start them all before waiting.
+        await Task.WhenAll(_daprSchedulerContainers.Select(c => c.StartAsync()));
 
         // Wait a bit for scheduler to be ready
         await Task.Delay(TimeSpan.FromSeconds(2));
 
-        // 5. Start API server container WITHOUT wait strategy (will be ready after Dapr starts)
+        // 5./6. API server replicas, each with its own Dapr sidecar
+        var testProjectRoot = Path.Combine(Directory.GetCurrentDirectory(), "..", "..", "..");
+        var componentsPath = Path.GetFullPath(Path.Combine(testProjectRoot, "dapr-components"));
+
+        await Task.WhenAll(Enumerable.Range(0, topology.ApiReplicas).Select(replica =>
+            StartReplicaAsync(replica, topology, apiServerImage, extraApiServerEnvironment, componentsPath, enableContainerLogs)));
+
+        var api = _apiServerContainers[0];
+        ApiServerUrl = $"http://localhost:{api.GetMappedPublicPort(5000)}";
+        ApiServerGrpcUrl = $"http://localhost:{api.GetMappedPublicPort(5001)}";
+
+        var sidecar = _daprSidecarContainers[0];
+        DaprHttpEndpoint = $"http://localhost:{sidecar.GetMappedPublicPort(3500)}";
+        DaprGrpcEndpoint = $"http://localhost:{sidecar.GetMappedPublicPort(50001)}";
+
+        // Wait until every sidecar is connected to placement and hosts our actor types
+        await WaitForReadyAsync(TimeSpan.FromMinutes(2));
+
+        // 7. Load balancer in front of the replicas. nginx resolves its upstreams at startup, so it
+        // goes last, once every replica's alias exists.
+        if (topology.LoadBalanced)
+        {
+            _loadBalancerContainer = new ContainerBuilder()
+                .WithImage("nginx:1.27-alpine")
+                .WithNetwork(_network)
+                .WithNetworkAliases(DaprTopology.LoadBalancerAlias)
+                .WithResourceMapping(System.Text.Encoding.UTF8.GetBytes(topology.NginxConfig()), "/etc/nginx/nginx.conf")
+                .WithPortBinding(5000, true)
+                .WithPortBinding(5001, true)
+                .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(5000).UntilInternalTcpPortIsAvailable(5001))
+                .Build();
+
+            await _loadBalancerContainer.StartAsync();
+
+            ApiServerUrl = $"http://localhost:{_loadBalancerContainer.GetMappedPublicPort(5000)}";
+            ApiServerGrpcUrl = $"http://localhost:{_loadBalancerContainer.GetMappedPublicPort(5001)}";
+        }
+
+        // Initialize HTTP clients
+        ApiClient = new HttpClient { BaseAddress = new Uri(ApiServerUrl), Timeout = TimeSpan.FromMinutes(5) };
+        DaprSidecarClient = new HttpClient { BaseAddress = new Uri(DaprHttpEndpoint) };
+    }
+
+    private async Task StartReplicaAsync(int replica, DaprTopology topology, string? apiServerImage,
+        IReadOnlyDictionary<string, string>? extraApiServerEnvironment, string componentsPath, bool enableContainerLogs)
+    {
+        // Replica 0 also answers to the historical single-instance aliases.
+        var apiAliases = replica == 0 ? new[] { DaprTopology.ApiServerAlias(replica), "api-server" } : [DaprTopology.ApiServerAlias(replica)];
+        var sidecarAliases = replica == 0 ? new[] { DaprTopology.SidecarAlias(replica), "dapr-sidecar" } : [DaprTopology.SidecarAlias(replica)];
+        var sidecarHost = sidecarAliases[0];
+
+        // API server starts WITHOUT a wait strategy (it's ready only after its sidecar starts)
         var apiServerBuilder = new ContainerBuilder()
             .WithImage(apiServerImage ?? "daprmq-api:test")
             .WithNetwork(_network)
-            .WithNetworkAliases("api-server")
+            .WithNetworkAliases(apiAliases)
             .WithPortBinding(5000, true) // HTTP/1.1 REST endpoint
             .WithPortBinding(5001, true) // HTTP/2 gRPC endpoint
             .WithEnvironment("ASPNETCORE_URLS", "http://+:5000")
             .WithEnvironment("REGISTER_ACTORS", "true")
-            // Tell the API server where to find Dapr sidecar on the Docker network using FULL endpoint URLs
-            .WithEnvironment("DAPR_HTTP_ENDPOINT", "http://dapr-sidecar:3500")
-            .WithEnvironment("DAPR_GRPC_ENDPOINT", "http://dapr-sidecar:50001")
+            // Tell the API server where to find its own Dapr sidecar on the Docker network using FULL endpoint URLs
+            .WithEnvironment("DAPR_HTTP_ENDPOINT", $"http://{sidecarHost}:3500")
+            .WithEnvironment("DAPR_GRPC_ENDPOINT", $"http://{sidecarHost}:50001")
             // Configure logging for integration tests
             .WithEnvironment("Logging__LogLevel__Default", "Warning")
             .WithEnvironment("Logging__LogLevel__DaprMQ", "Debug")
@@ -195,35 +270,31 @@ public class DaprTestEnvironment : IAsyncLifetime
             apiServerBuilder = apiServerBuilder.WithOutputConsumer(Consume.RedirectStdoutAndStderrToConsole());
         }
 
-        _apiServerContainer = apiServerBuilder.Build();
+        var apiServer = apiServerBuilder.Build();
+        lock (_apiServerContainers)
+        {
+            _apiServerContainers.Add(apiServer);
+        }
 
-        await _apiServerContainer.StartAsync();
-
-        var apiPort = _apiServerContainer.GetMappedPublicPort(5000);
-        var grpcPort = _apiServerContainer.GetMappedPublicPort(5001);
-        ApiServerUrl = $"http://localhost:{apiPort}";
-        ApiServerGrpcUrl = $"http://localhost:{grpcPort}";
+        await apiServer.StartAsync();
 
         // Give API server a moment to start listening
         await Task.Delay(TimeSpan.FromSeconds(2));
 
-        // 6. Start Dapr sidecar (connects to API server via Docker network)
-        // Mount the components directory from project root (3 levels up from bin/Debug/net10.0)
-        var testProjectRoot = Path.Combine(Directory.GetCurrentDirectory(), "..", "..", "..");
-        var componentsPath = Path.GetFullPath(Path.Combine(testProjectRoot, "dapr-components"));
-
+        // Dapr sidecar (connects to its API server via Docker network). Mounts the components
+        // directory from the project root (3 levels up from bin/Debug/net10.0).
         var daprSidecarBuilder = new ContainerBuilder()
             .WithImage("daprio/daprd:1.18.4")
             .WithNetwork(_network)
-            .WithNetworkAliases("dapr-sidecar")
+            .WithNetworkAliases(sidecarAliases)
             .WithCommand("./daprd",
                 "--app-id", "daprmq-api",
-                "--app-channel-address", "api-server",  // Connect to API server via Docker network
+                "--app-channel-address", apiAliases[0],  // Connect to API server via Docker network
                 "--app-port", "5000",
                 "--dapr-http-port", "3500",
                 "--dapr-grpc-port", "50001",
                 "--placement-host-address", "dapr-placement:50005",
-                "--scheduler-host-address", "dapr-scheduler:50006",
+                "--scheduler-host-address", topology.SchedulerHostAddress,
                 "--resources-path", "/tmp/dapr-components",
                 "--config", "/tmp/dapr-components/config.yml",
                 "--log-level", "info")  // Enable debug logging for Dapr
@@ -238,45 +309,45 @@ public class DaprTestEnvironment : IAsyncLifetime
             daprSidecarBuilder = daprSidecarBuilder.WithOutputConsumer(Consume.RedirectStdoutAndStderrToConsole());
         }
 
-        _daprSidecarContainer = daprSidecarBuilder.Build();
+        var sidecar = daprSidecarBuilder.Build();
+        lock (_daprSidecarContainers)
+        {
+            _daprSidecarContainers.Add(sidecar);
+        }
 
-        await _daprSidecarContainer.StartAsync();
-
-        // Get exposed Dapr sidecar ports
-        var daprHttpPort = _daprSidecarContainer.GetMappedPublicPort(3500);
-        var daprGrpcPort = _daprSidecarContainer.GetMappedPublicPort(50001);
-        DaprHttpEndpoint = $"http://localhost:{daprHttpPort}";
-        DaprGrpcEndpoint = $"http://localhost:{daprGrpcPort}";
-
-        // Initialize HTTP clients
-        ApiClient = new HttpClient { BaseAddress = new Uri(ApiServerUrl), Timeout = TimeSpan.FromMinutes(5) };
-        DaprSidecarClient = new HttpClient { BaseAddress = new Uri(DaprHttpEndpoint) };
-
-        // Wait until the sidecar is connected to placement and hosts our actor types
-        await WaitForReadyAsync(TimeSpan.FromMinutes(2));
+        await sidecar.StartAsync();
     }
 
+    /// <summary>
+    /// Polls every replica's own /health/ready (not the load balancer, which would answer as soon
+    /// as any one replica is up).
+    /// </summary>
     private async Task WaitForReadyAsync(TimeSpan timeout)
     {
+        using var probe = new HttpClient();
         var deadline = DateTime.UtcNow + timeout;
-        while (true)
+        foreach (var api in _apiServerContainers)
         {
-            try
+            var readyUrl = $"http://localhost:{api.GetMappedPublicPort(5000)}/health/ready";
+            while (true)
             {
-                using var response = await ApiClient.GetAsync("/health/ready");
-                if (response.IsSuccessStatusCode)
+                try
                 {
-                    return;
+                    using var response = await probe.GetAsync(readyUrl);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        break;
+                    }
                 }
-            }
-            catch (HttpRequestException) { }
+                catch (HttpRequestException) { }
 
-            if (DateTime.UtcNow >= deadline)
-            {
-                throw new TimeoutException($"API server did not report ready at /health/ready within {timeout}.");
-            }
+                if (DateTime.UtcNow >= deadline)
+                {
+                    throw new TimeoutException($"API server did not report ready at {readyUrl} within {timeout}.");
+                }
 
-            await Task.Delay(250);
+                await Task.Delay(250);
+            }
         }
     }
 
@@ -339,27 +410,34 @@ public class DaprTestEnvironment : IAsyncLifetime
         ApiClient?.Dispose();
         DaprSidecarClient?.Dispose();
 
-        if (_apiServerContainer != null)
+        if (_loadBalancerContainer != null)
         {
-            await _apiServerContainer.DisposeAsync();
+            await _loadBalancerContainer.DisposeAsync();
         }
 
-        if (_daprSidecarContainer != null)
+        foreach (var apiServer in _apiServerContainers)
         {
-            await _daprSidecarContainer.DisposeAsync();
-            TestDirectoryManager.CleanUpDirectory(_blobStoreTestDirectory);
+            await apiServer.DisposeAsync();
         }
+
+        foreach (var sidecar in _daprSidecarContainers)
+        {
+            await sidecar.DisposeAsync();
+        }
+
+        TestDirectoryManager.CleanUpDirectory(_blobStoreTestDirectory);
 
         if (_daprPlacementContainer != null)
         {
             await _daprPlacementContainer.DisposeAsync();
         }
 
-        if (_daprSchedulerContainer != null)
+        foreach (var scheduler in _daprSchedulerContainers)
         {
-            TestDirectoryManager.CleanUpDirectory(_schedulerTestDirectory);
-            await _daprSchedulerContainer.DisposeAsync();
+            await scheduler.DisposeAsync();
         }
+
+        TestDirectoryManager.CleanUpDirectory(_schedulerTestDirectory);
 
         if (_postgresContainer != null)
         {
