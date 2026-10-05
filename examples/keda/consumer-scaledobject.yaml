@@ -1,0 +1,52 @@
+# Scale a consumer Deployment on a DaprMQ queue's depth with KEDA.
+#
+# Prerequisites: KEDA installed in the cluster, and the DaprMQ chart installed with
+# --set operator.enabled=true (release "daprmq" in namespace "daprmq" below - adjust scalerAddress).
+#
+# Trigger metadata (all strings):
+#   queueId            required  queue to measure
+#   mode               messages  "messages": ready (+ locked) items; "sessions": number of non-empty sessions
+#   targetValue        10        metric per consumer replica the HPA aims for
+#   activationValue    0         active (scaled up from zero) while the metric is above this
+#   includeLocked      true      messages mode: count items consumers hold locked as well as ready ones
+#   includeDeadLetter  false     messages mode: also count {queueId}-deadletter
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: orders-consumer
+spec:
+  scaleTargetRef:
+    name: orders-consumer          # your consumer Deployment
+  minReplicaCount: 0               # scale to zero when the queue is empty
+  maxReplicaCount: 20
+  pollingInterval: 15
+  cooldownPeriod: 120
+  # If DaprMQ can't be read, the scaler returns an error (never 0); hold a safe replica count
+  # instead of letting the HPA act on stale data.
+  fallback:
+    failureThreshold: 3
+    replicas: 2
+  triggers:
+  - type: external-push            # push = fast scale from zero; "external" = polling only
+    metadata:
+      scalerAddress: daprmq-operator.daprmq:8081
+      queueId: orders
+      targetValue: "10"
+---
+# Session queue: one consumer replica per 5 active sessions.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: carts-consumer
+spec:
+  scaleTargetRef:
+    name: carts-consumer
+  minReplicaCount: 0
+  maxReplicaCount: 10
+  triggers:
+  - type: external-push
+    metadata:
+      scalerAddress: daprmq-operator.daprmq:8081
+      queueId: carts
+      mode: sessions
+      targetValue: "5"

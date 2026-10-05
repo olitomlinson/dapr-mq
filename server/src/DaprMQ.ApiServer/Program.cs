@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using DaprMQ.ApiServer.Endpoints;
 using DaprMQ.ApiServer.Services;
 using DaprMQ.Interfaces;
 using Grpc.Net.Client;
@@ -136,7 +137,13 @@ builder.Services.AddSingleton<DaprMQ.IQueueActorStateReader>(sp =>
     new DaprMQ.QueueActorStateReader(
         sp.GetRequiredService<IHttpClientFactory>(),
         actorConfig.QueueActorTypeName,
-        daprHttpEndpoint));
+        daprHttpEndpoint,
+        actorConfig.SessionCoordinatorActorTypeName));
+
+// Queue-depth read behind the worker's internal /internal/queue-depth endpoint (DaprMQ.Operator's
+// KEDA scaler). Only meaningful on workers - see QueueDepthEndpoint.
+builder.Services.AddSingleton<DaprMQ.IQueueDepthService>(sp =>
+    new DaprMQ.QueueDepthService(sp.GetRequiredService<DaprMQ.IQueueActorStateReader>()));
 
 // Register TopicActor tunables (global defaults - see TopicActorConfig)
 builder.Services.AddSingleton(new TopicActorConfig());
@@ -291,6 +298,7 @@ if (enableApi)
 if (registerActors)
 {
     app.MapActorsHandlers();
+    app.MapQueueDepthEndpoint();
 }
 
 // Readiness is mapped on every instance (workers included), not just API-serving ones

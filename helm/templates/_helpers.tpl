@@ -81,6 +81,35 @@ app.kubernetes.io/component: gateway
 {{- end }}
 
 {{/*
+Operator labels
+*/}}
+{{- define "daprmq.operator.labels" -}}
+{{ include "daprmq.labels" . }}
+app.kubernetes.io/component: operator
+{{- end }}
+
+{{/*
+Operator selector labels
+*/}}
+{{- define "daprmq.operator.selectorLabels" -}}
+{{ include "daprmq.selectorLabels" . }}
+app.kubernetes.io/component: operator
+{{- end }}
+
+{{/*
+Operator image reference (falls back to the global registry/tag)
+*/}}
+{{- define "daprmq.operator.image" -}}
+{{- $registry := .Values.operator.image.registry | default .Values.image.registry }}
+{{- $tag := .Values.operator.image.tag | default .Values.image.tag | default .Chart.AppVersion }}
+{{- if $registry }}
+{{- printf "%s/%s:%s" $registry .Values.operator.image.repository $tag }}
+{{- else }}
+{{- printf "%s:%s" .Values.operator.image.repository $tag }}
+{{- end }}
+{{- end }}
+
+{{/*
 Dashboard labels
 */}}
 {{- define "daprmq.dashboard.labels" -}}

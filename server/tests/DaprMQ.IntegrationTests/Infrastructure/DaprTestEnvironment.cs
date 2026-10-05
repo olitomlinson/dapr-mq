@@ -23,6 +23,9 @@ public class DaprTestEnvironment : IAsyncLifetime
     private readonly List<IContainer> _daprSidecarContainers = [];
     private readonly List<IContainer> _apiServerContainers = [];
     private IContainer? _loadBalancerContainer;
+    private IContainer? _operatorContainer;
+    private IContainer? _operatorSidecarContainer;
+    private string _componentsPath = string.Empty;
 
     // Exposed endpoints and connection strings
     public string PostgresConnectionString { get; private set; } = string.Empty;
@@ -184,6 +187,7 @@ public class DaprTestEnvironment : IAsyncLifetime
         // 5./6. API server replicas, each with its own Dapr sidecar
         var testProjectRoot = Path.Combine(Directory.GetCurrentDirectory(), "..", "..", "..");
         var componentsPath = Path.GetFullPath(Path.Combine(testProjectRoot, "dapr-components"));
+        _componentsPath = componentsPath;
 
         await Task.WhenAll(Enumerable.Range(0, topology.ApiReplicas).Select(replica =>
             StartReplicaAsync(replica, topology, apiServerImage, extraApiServerEnvironment, componentsPath, enableContainerLogs)));
@@ -405,10 +409,69 @@ public class DaprTestEnvironment : IAsyncLifetime
         return long.Parse(result.Stdout.Trim()) > 0;
     }
 
+    /// <summary>
+    /// Starts DaprMQ.Operator (KEDA external scaler) with its own Dapr sidecar under a *different*
+    /// app-id from the API server - the production split, where the operator can't read actor state
+    /// itself and must go through the workers' internal depth read. Returns the operator's gRPC URL.
+    /// </summary>
+    public async Task<string> StartOperatorAsync(string image = "daprmq-operator:test")
+    {
+        const string operatorAlias = "daprmq-operator";
+        const string operatorSidecarAlias = "daprmq-operator-sidecar";
+
+        _operatorContainer = new ContainerBuilder()
+            .WithImage(image)
+            .WithNetwork(_network)
+            .WithNetworkAliases(operatorAlias)
+            .WithPortBinding(5000, true)
+            .WithPortBinding(5001, true)
+            .WithEnvironment("ASPNETCORE_URLS", "http://+:5000")
+            .WithEnvironment("WORKER_APP_ID", "daprmq-api")
+            .WithEnvironment("DAPR_HTTP_ENDPOINT", $"http://{operatorSidecarAlias}:3500")
+            .WithEnvironment("DAPR_GRPC_ENDPOINT", $"http://{operatorSidecarAlias}:50001")
+            // No caching, so a test sees each enqueue/dequeue immediately
+            .WithEnvironment("DEPTH_CACHE_TTL_MS", "0")
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(r => r.ForPort(5000).ForPath("/health")))
+            .Build();
+        await _operatorContainer.StartAsync();
+
+        _operatorSidecarContainer = new ContainerBuilder()
+            .WithImage("daprio/daprd:1.18.4")
+            .WithNetwork(_network)
+            .WithNetworkAliases(operatorSidecarAlias)
+            .WithCommand("./daprd",
+                "--app-id", "daprmq-operator",
+                "--dapr-http-port", "3500",
+                "--dapr-grpc-port", "50001",
+                "--placement-host-address", "dapr-placement:50005",
+                "--scheduler-host-address", Topology.SchedulerHostAddress,
+                "--resources-path", "/tmp/dapr-components",
+                "--config", "/tmp/dapr-components/config.yml",
+                "--log-level", "info")
+            .WithBindMount(_componentsPath, "/tmp/dapr-components")
+            .WithBindMount(_blobStoreTestDirectory, "/tmp/blobstore")
+            .WithPortBinding(3500, true)
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(r => r.ForPort(3500).ForPath("/v1.0/healthz/outbound").ForStatusCode(System.Net.HttpStatusCode.NoContent)))
+            .Build();
+        await _operatorSidecarContainer.StartAsync();
+
+        return $"http://localhost:{_operatorContainer.GetMappedPublicPort(5001)}";
+    }
+
     public async Task DisposeAsync()
     {
         ApiClient?.Dispose();
         DaprSidecarClient?.Dispose();
+
+        if (_operatorSidecarContainer != null)
+        {
+            await _operatorSidecarContainer.DisposeAsync();
+        }
+
+        if (_operatorContainer != null)
+        {
+            await _operatorContainer.DisposeAsync();
+        }
 
         if (_loadBalancerContainer != null)
         {

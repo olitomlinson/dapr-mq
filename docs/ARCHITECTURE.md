@@ -295,6 +295,36 @@ Dapr's placement service:
 - Routes requests to correct instance
 - Handles actor migration during scaling/failures
 
+### Autoscaling consumers with KEDA
+
+`DaprMQ.Operator` (Helm `operator.enabled`) implements KEDA's
+[external scaler](https://keda.sh/docs/latest/scalers/external/) gRPC contract so consumer workloads scale on queue depth.
+
+```
+KEDA ──gRPC (externalscaler.proto)──▶ DaprMQ.Operator   (app-id {release}-daprmq-operator)
+                                         │ Dapr service invocation
+                                         ▼
+                                      workers ──▶ POST /internal/queue-depth
+                                         │ sidecar actor-state GET (no activation)
+                                         ▼
+                                      state store
+```
+
+**Why depth is read on the workers.** Dapr keys actor state by the *calling* sidecar's app-id
+(`{appId}||{actorType}||{actorId}||{key}`), so a `GET /v1.0/actors/{type}/{id}/state/metadata` from any other app-id
+silently returns empty (204). The read has no "hosted here" check, though, so any worker can read any queue, and it never
+activates the actor - polling doesn't keep idle queues alive. The workers expose that read as an internal endpoint
+(`QueueDepthEndpoint`, mapped whenever actors are registered), and the operator calls it.
+
+**Metric.** Messages mode: ready items (+ locked items unless `includeLocked: "false"`, + `{queueId}-deadletter` with
+`includeDeadLetter: "true"`), summed across priorities. Sessions mode: number of `{queueId}-session-{id}` actors in the
+queue's SessionCoordinatorActor directory holding any ready or locked items.
+
+**Failure.** A failed read is gRPC `Unavailable`, never 0 - reporting 0 would scale consumers to zero during a DaprMQ
+outage. Configure the ScaledObject's `fallback` for what should happen instead.
+
+Trigger fields and a full example: [examples/keda/consumer-scaledobject.yaml](../examples/keda/consumer-scaledobject.yaml).
+
 ## Integration Patterns
 
 ### 1. Direct Actor Invocation
