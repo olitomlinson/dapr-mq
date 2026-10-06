@@ -21,4 +21,6 @@ public interface IDaprMQClient
     IAsyncEnumerable<SessionDelivery> ConsumeSessionAsync(
         string queueId, string? sessionId, int leaseSeconds, int prefetchCount, CancellationToken ct = default,
         int sessionIdleTimeoutSeconds = 0);
+
+    Task WaitForReadyAsync(string service = DaprMQClient.OperationsHealthService, CancellationToken ct = default);
 }

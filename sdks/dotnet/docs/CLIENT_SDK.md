@@ -30,7 +30,37 @@ var client = new DaprMQClient(httpClient, grpcChannel);
 
 `IDaprMQClient` is REST-backed for every operation except `ConsumeSessionAsync`, which is the one method built on the `ConsumeSession` gRPC streaming RPC - everything else (`Enqueue`, `DequeueLocked`, `Acknowledge`, `ExtendLock`, `DeadLetter`, `AcceptSession`, `RenewSessionLease`, `ReleaseSession`) is a plain HTTP call under the hood.
 
-Errors map to typed exceptions under `DaprMQ.Client.Exceptions` (`LockNotFoundException`, `LockExpiredException`, `SessionNotFoundException`, `SessionLockedException`, `SessionLeaseExpiredException`, `InvalidLeaseIdException`, `SessionActorUnavailableException`, `NoSessionsAvailableException`, `SessionLostException`, `ValidationException`, `ActorNotFoundException`), all deriving from `DaprMQException`. A `204 No Content` (queue empty / no session available) is not an error - `DequeueLockedAsync`/`AcceptSessionAsync` return `null` instead of throwing.
+Errors map to typed exceptions under `DaprMQ.Client.Exceptions` (`LockNotFoundException`, `LockExpiredException`, `SessionNotFoundException`, `SessionLockedException`, `SessionLeaseExpiredException`, `InvalidLeaseIdException`, `SessionActorUnavailableException`, `NoSessionsAvailableException`, `SessionLostException`, `ValidationException`, `ActorNotFoundException`, `DaprMQUnavailableException`, `DeliveryUnknownException`), all deriving from `DaprMQException`. A `204 No Content` (queue empty / no session available) is not an error - `DequeueLockedAsync`/`AcceptSessionAsync` return `null` instead of throwing.
+
+## Retries, failures and waiting for a server
+
+Calls ride out a DaprMQ that briefly can't serve them, such as a worker restarting, under the shared
+contract in [RETRIES_AND_READINESS.md](../../testing/RETRIES_AND_READINESS.md):
+
+```csharp
+var client = new DaprMQClient(httpClient, grpcChannel, new DaprMQRetryOptions
+{
+    Timeout = TimeSpan.FromSeconds(30),   // default; also sent to the server as the deadline. Zero = off
+    AutoIdempotencyKeys = true,           // optional: makes every enqueue safe to retry
+});
+// or: new DaprMQClientOptions { HttpBaseAddress = ..., GrpcAddress = ..., Retry = new() { ... } }
+```
+
+- **Certainly not performed** (the server reports it couldn't serve the call, or the connection was
+  refused): retried until `Timeout`, then `DaprMQUnavailableException`. Always safe to repeat later.
+- **Outcome unknown** (the connection broke after sending, or no response arrived in time): an
+  `EnqueueAsync` whose items all have an `IdempotencyKey` is retried; anything else throws
+  `DeliveryUnknownException` straight away. It carries the `Operation`, the `QueueId` and, for
+  Enqueue, the items' `IdempotencyKeys`. What to do next:
+  - **Enqueue without keys:** re-send and accept a possible duplicate.
+  - **`DequeueLockedAsync`:** don't re-send. If it ran, the items come back when their locks expire.
+  - **Acknowledge / ExtendLock / DeadLetter:** re-sending is safe in effect. A `LockNotFoundException`
+    then means the first attempt worked.
+- **Cancelling your token** stops retrying and surfaces as `OperationCanceledException`.
+
+`WaitForReadyAsync()` waits until queue operations can be served (gRPC health service
+`daprmq.DaprMQ.operations`), without writing anything. Bound it with your token. Pass
+`"daprmq.DaprMQ"` to wait only for the server instance itself.
 
 ## Basic queue operations
 

@@ -100,7 +100,12 @@ Legend: ✅ implemented and passing · ⬜ not yet · 🚫 permanently out of sc
 | **Client lifecycle** | | | | | |
 | X-01 | Construct from options (HTTP + gRPC addresses) and perform a round trip | ✅ | ⬜ | ⬜ | ⬜ |
 | X-02 | Dispose/close is idempotent and cancels in-flight streams | ✅ | ⬜ | ⬜ | ⬜ |
-| X-03 | Server unreachable surfaces a transport error (not a hang, not a domain error) | ✅ | ⬜ | ⬜ | ⬜ |
+| X-03 | Server unreachable surfaces an error, not a hang and not a domain error (with retries: `DaprMQUnavailableException` once `RetryTimeout` runs out, see R-04) | ✅ | ⬜ | ⬜ | ⬜ |
+| R-01 | `WaitForReady()` (gRPC health `Watch`, service `daprmq.DaprMQ.operations`) returns against a running stack, and an enqueue then succeeds ([RETRIES_AND_READINESS.md](RETRIES_AND_READINESS.md)) | ✅ | ⬜ | ⬜ | ⬜ |
+| R-02 | Split stack, every worker stopped: an enqueue with `RetryTimeout` 45 s succeeds once a worker starts 3 s later, stored once | ✅ | ⬜ | ⬜ | ⬜ |
+| R-03 | Split stack, every worker stopped, `RetryTimeout` 8 s: `DaprMQUnavailableException` in under 8 s | ✅ | ⬜ | ⬜ | ⬜ |
+| R-04 | Server unreachable, short `RetryTimeout`: `DaprMQUnavailableException`, not a hang | ✅ | ⬜ | ⬜ | ⬜ |
+| R-05 | `AutoIdempotencyKeys` fills in a key for each item without one, and keeps keys the caller set | ✅ | ⬜ | ⬜ | ⬜ |
 
 ## Out of scope (not exposed by any SDK today)
 
