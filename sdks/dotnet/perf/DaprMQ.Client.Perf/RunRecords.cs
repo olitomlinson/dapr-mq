@@ -6,7 +6,7 @@ using DaprMQ.PerfReport;
 namespace DaprMQ.Client.Perf;
 
 /// <summary>Everything about a run that isn't its scenario or result.</summary>
-public sealed record RunContext(DateTimeOffset Timestamp, RunEnvironment Environment, string Scale, int ApiReplicas, int? SchedulerReplicas, string? SdkVersion)
+public sealed record RunContext(DateTimeOffset Timestamp, RunEnvironment Environment, string Scale, int ApiReplicas, int? SchedulerReplicas, string? SdkVersion, int Workers = 0)
 {
     public static string? ClientVersion() =>
         typeof(DaprMQClient).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0];
@@ -108,7 +108,7 @@ public static class RunRecords
             ["topology"] = new JsonObject
             {
                 ["apiReplicas"] = context.ApiReplicas, ["schedulerReplicas"] = context.SchedulerReplicas,
-                ["loadBalancer"] = context.ApiReplicas > 1, ["server"] = env.Server,
+                ["loadBalancer"] = context.ApiReplicas > 1, ["workers"] = context.Workers, ["server"] = env.Server,
             },
             ["scale"] = context.Scale,
             ["scenario"] = new JsonObject { ["id"] = id, ["name"] = name, ["profile"] = profile, ["key"] = key, ["params"] = parameters },

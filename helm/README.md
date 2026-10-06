@@ -16,10 +16,12 @@ Before installing this chart, ensure the following requirements are met:
 
 1. **Kubernetes cluster** (v1.24+)
 2. **Helm** (v3.0+)
-3. **Dapr control plane** installed in cluster (v1.18.1+)
+3. **Dapr control plane** installed in cluster (v1.18.1+), with the placement metadata endpoint enabled
+   (gateway readiness reads the actor placement table from it)
    ```bash
-   dapr init -k
+   dapr init -k --set dapr_placement.metadataEnabled=true
    ```
+   If the control plane isn't in `dapr-system`, set `gateway.placementMetadataAddress`.
 4. **A Dapr state store** - see below
 5. **Dapr state store Component CR** deployed to cluster - see below
 
@@ -436,12 +438,12 @@ Test health endpoint directly (always on HTTP port 8080):
 kubectl exec -n <namespace> <pod-name> -c daprmq -- curl http://localhost:8080/health
 ```
 
-Readiness (sidecar up and connected to placement; on workers, also hosting `QueueActor`):
+Readiness (sidecar up and connected to placement; on workers, also hosting `QueueActor`; on gateways, at least one worker registered in placement answers its own readiness):
 ```bash
 kubectl exec -n <namespace> <pod-name> -c daprmq -- curl http://localhost:8080/health/ready
 ```
 
-**Note:** Liveness uses `/health` (the process is up) and readiness uses `/health/ready`, both on the HTTP port (8080). The same readiness check is also served on the gRPC port (8081) as the standard `grpc.health.v1.Health` service. A gateway's readiness doesn't prove any worker is ready; check the worker pods for that.
+**Note:** Liveness uses `/health` (the process is up) and readiness uses `/health/ready`, both on the HTTP port (8080). The same readiness check is also served on the gRPC port (8081) as the standard `grpc.health.v1.Health` service. A gateway reads placement's `/placement/state` for the workers that registered `QueueActor` and probes their `/health/ready` directly on the pod IP until one answers, so it's ready only while at least one worker is.
 
 ## Uninstallation
 

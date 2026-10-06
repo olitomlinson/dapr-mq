@@ -81,9 +81,12 @@ public static class RegressionCheck
         return new RunComparison(Str(current, "scenario", "profile") ?? "", key ?? "", baseline.Count, metrics);
     }
 
-    /// <summary>Runs are only comparable within one SDK, environment and API replica count.</summary>
+    /// <summary>
+    /// Runs are only comparable within one SDK, environment, API replica count and worker count
+    /// (0, or absent on older runs, = combined: the API replicas host the actors).
+    /// </summary>
     public static string SeriesKey(JsonObject run) =>
-        $"{Str(run, "sdk", "name")}|{Str(run, "environment", "label")}|{Num(run["topology"], ["apiReplicas"]) ?? 1}";
+        $"{Str(run, "sdk", "name")}|{Str(run, "environment", "label")}|{Num(run["topology"], ["apiReplicas"]) ?? 1}|{Num(run["topology"], ["workers"]) ?? 0}";
 
     /// <summary>
     /// Judges <paramref name="value"/> against the median of <paramref name="baseline"/>: a change

@@ -1,18 +1,23 @@
 name: Performance (extreme)
 
 # The `extreme` scale of sdks/testing/PERFORMANCE_TESTS.md, run only by hand: concurrency ramps up
-# to 256 workers and the big session drains, against a scaled-out Testcontainers stack (N API
-# replicas behind nginx, 3-node scheduler HA). Each SDK runs in its own job on its own stack, then
-# one job builds the cross-SDK report. Expect ~2h for the full suite on a standard runner.
+# to 256 workers and the big session drains, against a scaled-out Testcontainers stack shaped like
+# production: N gateways behind nginx in front of M actor-hosting workers, 3-node scheduler HA. Each
+# SDK runs in its own job on its own stack, then one job builds the cross-SDK report. Expect ~2h for
+# the full suite on a standard runner.
 #
-# Results go to the perf-results branch (unless `publish` is off) under the runner's env label and
-# API replica count, so they never mix with the pr-scale baselines.
+# Results go to the perf-results branch (unless `publish` is off) under the runner's env label,
+# API replica count and worker count, so they never mix with the pr-scale baselines.
 
 on:
   workflow_dispatch:
     inputs:
       api_replicas:
-        description: 'API server replicas behind the load balancer'
+        description: 'API server replicas (gateways) behind the load balancer'
+        required: false
+        default: '3'
+      workers:
+        description: 'Actor-hosting workers behind the gateways (0 = the API replicas host the actors)'
         required: false
         default: '3'
       profiles:
@@ -84,9 +89,10 @@ jobs:
         env:
           PROFILES: ${{ inputs.profiles }}
           REPLICAS: ${{ inputs.api_replicas }}
+          WORKERS: ${{ inputs.workers }}
           ENV_LABEL: ci-${{ inputs.runner }}
         run: |
-          common=(--env-label "$ENV_LABEL" --out perf-results --api-replicas "$REPLICAS")
+          common=(--env-label "$ENV_LABEL" --out perf-results --api-replicas "$REPLICAS" --workers "$WORKERS")
           if [[ "$PROFILES" == "all" ]]; then
             dotnet run -c Release --project sdks/dotnet/perf/DaprMQ.Client.Perf -- --suite extreme "${common[@]}"
           else

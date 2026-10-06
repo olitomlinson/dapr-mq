@@ -380,7 +380,9 @@ log_success "Helm repos (dapr, bitnami) ready"
 
 log_section "Deploying Dapr Control Plane"
 
-dapr_helm_args=(upgrade --install "$DAPR_RELEASE" dapr/dapr -n "$DAPR_NAMESPACE" --create-namespace --wait --timeout 5m0s)
+# metadataEnabled: gateway readiness reads the placement table (/placement/state)
+dapr_helm_args=(upgrade --install "$DAPR_RELEASE" dapr/dapr -n "$DAPR_NAMESPACE" --create-namespace --wait --timeout 5m0s
+    --set dapr_placement.metadataEnabled=true)
 if [[ -n "$DAPR_VERSION" ]]; then
     log_warning "Forcing Dapr control-plane chart version ${DAPR_VERSION} (--dapr-version) - default is latest, so only do this deliberately (e.g. to reproduce/test against a specific Dapr release)."
     dapr_helm_args+=(--version "$DAPR_VERSION")
@@ -465,6 +467,7 @@ daprmq_helm_args=(upgrade --install "$DAPRMQ_RELEASE" ./helm
     --set dapr.stateStoreName="$STATESTORE_NAME"
     --set image.tag="$IMAGE_TAG"
     --set image.pullPolicy=Never
+    --set gateway.placementMetadataAddress="dapr-placement-server.${DAPR_NAMESPACE}.svc.cluster.local:8080"
     --wait --timeout 5m0s)
 if [[ "$KEDA" == "true" ]]; then
     # The operator hosts the KEDA external scaler the example worker ScaledObjects point at.

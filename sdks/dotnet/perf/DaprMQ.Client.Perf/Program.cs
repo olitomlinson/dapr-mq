@@ -44,8 +44,9 @@ if (options.HttpEndpoint != null)
 else
 {
     var image = Environment.GetEnvironmentVariable("DAPRMQ_API_IMAGE") ?? "daprmq-api:test";
-    var topology = DaprTopology.Perf(options.ApiReplicas);
-    Console.WriteLine($"Starting Testcontainers stack ({image}, {topology.ApiReplicas} API replica(s), {topology.SchedulerReplicas} schedulers)...");
+    var topology = DaprTopology.Perf(options.ApiReplicas, options.Workers);
+    Console.WriteLine($"Starting Testcontainers stack ({image}, {topology.ApiReplicas} API replica(s), " +
+        $"{(topology.IsSplit ? $"as gateways in front of {topology.Workers} worker(s)" : "hosting the actors")}, {topology.SchedulerReplicas} schedulers)...");
 
     // DaprTestEnvironment mounts ../../../dapr-components relative to the working directory
     // (bin/<config>/<tfm> -> this project's copy), as it does under the test runner.
@@ -89,7 +90,7 @@ try
         Console.WriteLine();
         Console.WriteLine($"=== Profile {runOptions.Profile} ===");
         var context = new RunContext(DateTimeOffset.UtcNow, environment, runOptions.Scale, runOptions.ApiReplicas,
-            stack?.Topology.SchedulerReplicas, RunContext.ClientVersion());
+            stack?.Topology.SchedulerReplicas, RunContext.ClientVersion(), runOptions.Workers);
 
         System.Text.Json.Nodes.JsonObject record;
         if (runOptions.Load is { } load)

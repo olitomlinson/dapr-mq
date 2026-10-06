@@ -250,15 +250,41 @@ if (registerActors)
 }
 // No else needed - Dapr Client (from AddDapr) is sufficient for actor invocation
 
-// Readiness: the sidecar is up and its actor runtime is connected to placement (and, on an
-// actor-hosting instance, hosts QueueActor). Served as grpc.health.v1.Health and /health/ready.
+// Readiness: the sidecar is up and its actor runtime is connected to placement, and either this
+// instance hosts QueueActor or (gateway) at least one worker that registered it in placement answers
+// its own readiness. Served as grpc.health.v1.Health and /health/ready.
+WorkerProbeOptions? workerProbe = null;
+if (!registerActors)
+{
+    var workerAppId = builder.Configuration.GetValue<string>("WORKER_APP_ID");
+    var placementMetadataAddress = builder.Configuration.GetValue<string>("DAPR_PLACEMENT_METADATA_ADDRESS");
+    if (string.IsNullOrWhiteSpace(workerAppId) || string.IsNullOrWhiteSpace(placementMetadataAddress))
+    {
+        throw new InvalidOperationException(
+            "WORKER_APP_ID and DAPR_PLACEMENT_METADATA_ADDRESS are required when REGISTER_ACTORS=false: the gateway " +
+            "is only ready once a worker has registered QueueActor in placement (placement needs --metadata-enabled)");
+    }
+
+    workerProbe = new WorkerProbeOptions
+    {
+        AppId = workerAppId,
+        ActorType = actorConfig.QueueActorTypeName,
+        AppPort = builder.Configuration.GetValue("WORKER_APP_PORT", 8080),
+        Namespace = builder.Configuration.GetValue<string>("WORKER_NAMESPACE")
+    };
+    builder.Services.AddSingleton<IPlacementStateClient>(sp => new PlacementStateClient(
+        sp.GetRequiredService<IHttpClientFactory>(), placementMetadataAddress, TimeSpan.FromSeconds(1)));
+}
 builder.Services.AddSingleton(new DaprReadinessOptions
 {
     DaprHttpEndpoint = daprHttpEndpoint,
-    RequiredActorType = registerActors ? actorConfig.QueueActorTypeName : null
+    RequiredActorType = registerActors ? actorConfig.QueueActorTypeName : null,
+    WorkerProbe = workerProbe
 });
+// Singleton: AddCheck<T> otherwise builds a new instance per run, losing the last-ready worker.
+builder.Services.AddSingleton<DaprReadinessHealthCheck>();
 builder.Services.AddHealthChecks()
-    .AddCheck<DaprReadinessHealthCheck>("dapr", tags: ["ready"], timeout: TimeSpan.FromSeconds(3));
+    .AddCheck<DaprReadinessHealthCheck>("dapr", tags: ["ready"], timeout: TimeSpan.FromSeconds(6));
 builder.Services.AddGrpcHealthChecks(o =>
 {
     // "" = whole server; the named service = the DaprMQ API surface

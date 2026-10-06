@@ -5,7 +5,7 @@ namespace DaprMQ.PerfReport;
 /// <summary>
 /// Writes a self-contained report.html comparing every SDK's runs under one results root: graphs
 /// first (one series per SDK), tables underneath. Embeds the history plus the timeline of the latest
-/// run for each (SDK, environment, API replicas, scenario) series.
+/// run for each (SDK, environment, topology (API replicas + workers), scenario) series.
 /// </summary>
 public static class HtmlReport
 {
@@ -100,11 +100,11 @@ details summary { cursor: pointer; color: var(--text-secondary); margin: 4px 0 8
 <body>
 <main>
   <h1>DaprMQ SDK performance</h1>
-  <p class="sub">Every SDK runs the same profiles (<code>sdks/testing/PERFORMANCE_TESTS.md</code>) against the same Testcontainers stack. Each SDK keeps its colour on every chart. Only runs from the same environment and API replica count are comparable.</p>
+  <p class="sub">Every SDK runs the same profiles (<code>sdks/testing/PERFORMANCE_TESTS.md</code>) against the same Testcontainers stack. Each SDK keeps its colour on every chart. Only runs from the same environment and topology (API replicas, and workers behind them) are comparable.</p>
 
   <div class="filters">
     <label>Environment <select id="env"></select></label>
-    <label>API replicas <select id="replicas"></select></label>
+    <label>Topology <select id="replicas"></select></label>
     <label>Profile <select id="profile"></select></label>
   </div>
 
@@ -130,7 +130,8 @@ const SDKS = ['dotnet', 'python', 'typescript', 'java'];
 const SDK_LABEL = { dotnet: '.NET', python: 'Python', typescript: 'TypeScript', java: 'Java' };
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const color = sdk => css(`--series-${SDKS.indexOf(sdk) + 1}`) || css('--reference');
-const replicas = r => r.topology?.apiReplicas ?? 1;
+// API replicas + workers behind them (0 = the API replicas host the actors), e.g. "3|3".
+const replicas = r => `${r.topology?.apiReplicas ?? 1}|${r.topology?.workers ?? 0}`;
 const isDrain = r => r.scenario.name === 'session-drain';
 const isRamp = r => (r.steps?.length ?? 0) > 1;
 const fmt = (v, d = 1) => v == null || Number.isNaN(v) ? '–' : Number(v).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
@@ -173,7 +174,7 @@ function fill(select, values, label, keep) {
 
 function scoped() {
   const env = document.getElementById('env').value;
-  const reps = +document.getElementById('replicas').value;
+  const reps = document.getElementById('replicas').value;
   return DATA.history.filter(r => r.environment.label === env && replicas(r) === reps);
 }
 
@@ -217,8 +218,14 @@ function setup() {
 function fillReplicas(initial) {
   const env = document.getElementById('env').value;
   const sel = document.getElementById('replicas');
-  const values = [...new Set(DATA.history.filter(r => r.environment.label === env).map(r => String(replicas(r))))].sort((a, b) => a - b);
-  fill(sel, values, v => v === '1' ? '1 (no load balancer)' : `${v} behind nginx`, true);
+  const parts = v => v.split('|').map(Number);
+  const values = [...new Set(DATA.history.filter(r => r.environment.label === env).map(replicas))]
+    .sort((x, y) => parts(x)[0] - parts(y)[0] || parts(x)[1] - parts(y)[1]);
+  fill(sel, values, v => {
+    const [api, workers] = parts(v);
+    const front = api === 1 ? '1 API replica (no load balancer)' : `${api} API replicas behind nginx`;
+    return workers ? `${front} → ${workers} worker(s)` : `${front}, combined`;
+  }, true);
   if (initial != null && values.includes(String(initial))) sel.value = String(initial);
   fillProfiles();
 }

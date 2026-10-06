@@ -18,10 +18,10 @@ can put the SDKs side by side.
 
 ## Scales and topology
 
-| Scale | Runs | API replicas | Scheduler | Load balancer | Purpose |
-|---|---|---|---|---|---|
-| `pr` | every PR / push to `main` touching `server/`, that SDK, or `sdks/testing/` (plus nightly) | 1 | 3-node HA | none | Small and quick: catch regressions in SDK and server overhead |
-| `extreme` | only manually ([perf-extreme.yml](../../.github/workflows/perf-extreme.yml)) | 3 (`--api-replicas N`) | 3-node HA | nginx (REST + gRPC) | Find where throughput stops scaling, compare SDKs under saturation |
+| Scale | Runs | API replicas | Workers | Scheduler | Load balancer | Purpose |
+|---|---|---|---|---|---|---|
+| `pr` | every PR / push to `main` touching `server/`, that SDK, or `sdks/testing/` (plus nightly) | 1 | 0 (combined) | 3-node HA | none | Small and quick: catch regressions in SDK and server overhead |
+| `extreme` | only manually ([perf-extreme.yml](../../.github/workflows/perf-extreme.yml)) | 3 (`--api-replicas N`) | 3 (`--workers N`) | 3-node HA | nginx (REST + gRPC) | Find where throughput stops scaling, compare SDKs under saturation, on production's shape |
 
 Each SDK's own Testcontainers fixture builds the perf stack. It's the integration stack
 ([INTEGRATION_TESTS.md](INTEGRATION_TESTS.md)) with these changes:
@@ -34,6 +34,13 @@ Each SDK's own Testcontainers fixture builds the perf stack. It's the integratio
   (`--app-channel-address api-server-<i>`, same `--app-id daprmq-api`). The API server's
   `DAPR_HTTP_ENDPOINT`/`DAPR_GRPC_ENDPOINT` point at its own sidecar. Dapr spreads queue actors across
   the replicas.
+- **Workers** (`--workers N`, default 0, `extreme` 3). With N > 0 the stack is split like Helm: the
+  API replicas run as gateways (`REGISTER_ACTORS=false`, app-id `daprmq-gateway`) and N workers
+  `daprmq-worker-<i>` (`ENABLE_API=false`, app-id `daprmq-api`) host the actors, so every request pays
+  the gateway → worker sidecar hop it pays in production. With 0 ("combined") each API replica hosts
+  actors too, and a request is served locally whenever its actor happens to live on that replica.
+  Results record `topology.workers`; the report and the regression check only compare runs with the
+  same API replica and worker counts (a missing `workers` counts as 0).
 - **Load balancer** (whenever replicas > 1). `nginx:1.27-alpine`, alias `api-lb`. Port 5000 proxies
   REST and port 5001 (`listen 5001 http2`) uses `grpc_pass` to every replica. Read/send timeouts are
   1 h so `ConsumeSession` streams survive. The SDK connects to the LB. Readiness polls every replica's

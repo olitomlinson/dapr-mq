@@ -67,18 +67,26 @@ What that proves for each topology:
 |---|---|---|---|
 | Single process (default, and every SDK fixture) | true / true | sidecar healthy, `hostReady`, hosts `QueueActor` | Yes. The actor type is local. |
 | Worker | false / true | sidecar healthy, `hostReady`, hosts `QueueActor` | Yes, for this worker's share of actors. |
-| Gateway ([docker-compose](../docker-compose.yml#L76), Helm gateway) | true / false | sidecar healthy, `hostReady` | **No.** See below. |
+| Gateway ([docker-compose](../docker-compose.yml#L76), Helm gateway) | true / false | sidecar healthy, `hostReady`, ≥1 worker ready (below) | Yes, as long as one worker is ready. |
 
-**Gateway limitation.** A gateway's metadata doesn't list actor types hosted on other pods, so a ready
-gateway only knows it can reach placement, not that any worker is hosting `QueueActor`. If every
-worker is down or still starting, the gateway reports `SERVING` and enqueues fail. We accept this
-rather than activate an actor to prove readiness:
+**Gateway: workers via placement.** A gateway's own metadata doesn't list actor types hosted on other
+pods, so it reads the placement table instead: `GET /placement/state` on placement's healthz port
+(8080), which placement only serves with `--metadata-enabled` (Helm `dapr_placement.metadataEnabled`)
+and only from the Raft leader, so every address the placement host resolves to is tried. The hosts with
+`id == WORKER_APP_ID` that list `QueueActor` in `entities` are probed **directly** at
+`http://{ip}:{WORKER_APP_PORT}/health/ready` one at a time (the last one that answered first, then the
+rest in random order), and the gateway is ready at the first 200. One ready worker is enough: requiring
+all of them would take every gateway out of rotation whenever one worker is starting or failing.
 
-- Workers have their own readiness probe, so Kubernetes and operators can already see when no worker is
-  ready.
-- Every SDK integration fixture runs the single-process topology, where the check is exact.
-- An actor round trip would make every health check an actor call, with a reserved actor id kept
-  permanently active, for a case that worker readiness already covers.
+- Direct, not service invocation: invocation reaches one load-balanced instance per call, and a worker
+  sidecar's own `/v1.0/metadata` isn't reachable off-pod (the injector binds the Dapr API to localhost).
+  The worker's `/health/ready` checks its sidecar locally, and also catches a hung app whose sidecar
+  is still registered.
+- A placement host's `name` is the *sidecar's* IP and internal gRPC port; only the IP is used. That equals
+  the app's IP only when they share a network namespace: a K8s pod, and in docker-compose and the
+  integration tests the worker sidecars run with `network_mode: service:<worker>`.
+- Config: `WORKER_APP_ID` and `DAPR_PLACEMENT_METADATA_ADDRESS` (required when `REGISTER_ACTORS=false`),
+  `WORKER_APP_PORT` (default 8080), `WORKER_NAMESPACE` (optional filter).
 
 ### 1. `DaprReadinessHealthCheck` (server)
 
@@ -185,7 +193,7 @@ same check.
   (`ActorRuntimeHelper.WaitForActorRuntimeAsync`). It was rejected because it activates and keeps an
   actor alive just for health checks, adds an actor method and a reserved id to the public API, and
   puts an actor call (with its own timeout, since daprd holds actor calls until placement is ready) on
-  every check. See [Gateway limitation](#what-ready-means) for why the cheaper check is enough.
+  every check. The gateway instead reads the placement table and probes workers (see [What "ready" means](#what-ready-means)).
 
 ## Out of scope
 
@@ -234,8 +242,8 @@ Run `dotnet test` in `server/tests/DaprMQ.Tests`, then `./build-and-test.sh` bef
 - **Cold start, docker compose:** each worker's `/health/ready` should return 200 only after its
   sidecar shows `hostReady` and lists `QueueActor`. Once at least one worker is ready, the first
   enqueue through the gateway should succeed.
-- **Worker loss:** stop both workers. Their readiness goes to failing, and the gateway stays `SERVING`,
-  as described in the gateway limitation. Stop placement instead, and the gateway's `Watch` should go to
+- **Worker loss:** stop every worker. Their readiness goes to failing, and so does the gateway's
+  (its probes fail, and placement drops them within its keepalive timeout). Stop placement instead, and the gateway's `Watch` should go to
   `NOT_SERVING` within about one publisher period.
 - **Perf harness:** startup wait is no slower than today. No `perf-probe-*` queues appear in the state
   store afterwards.

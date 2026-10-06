@@ -11,7 +11,8 @@ public class RunRecordsTests
         Scale: "pr",
         ApiReplicas: 2,
         SchedulerReplicas: 3,
-        SdkVersion: "0.1.0");
+        SdkVersion: "0.1.0",
+        Workers: 4);
 
     private static LoadStep Step(int concurrency, double messagesPerSecond, int errors = 0) =>
         new(concurrency, concurrency, 30, 100, (int)(messagesPerSecond * 30), errors, messagesPerSecond, messagesPerSecond, new Distribution(100, 2, 1, 3, 4, 5));
@@ -34,6 +35,7 @@ public class RunRecordsTests
         Assert.Equal(2, run["topology"]!["apiReplicas"]!.GetValue<int>());
         Assert.Equal(3, run["topology"]!["schedulerReplicas"]!.GetValue<int>());
         Assert.True(run["topology"]!["loadBalancer"]!.GetValue<bool>());
+        Assert.Equal(4, run["topology"]!["workers"]!.GetValue<int>());
         Assert.Equal("pr", run["scale"]!.GetValue<string>());
         Assert.Equal("P-01", run["scenario"]!["id"]!.GetValue<string>());
         Assert.Equal("enqueue:c8/q8/b1/256B/3+15s", run["scenario"]!["key"]!.GetValue<string>());

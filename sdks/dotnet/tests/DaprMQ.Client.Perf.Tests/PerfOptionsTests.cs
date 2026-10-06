@@ -239,6 +239,24 @@ public class PerfOptionsTests
     }
 
     [Fact]
+    public void Workers_CombinedForPr_SplitForExtreme_AndOverridable()
+    {
+        Assert.Equal(0, PerfOptions.Parse([]).Workers);
+        Assert.All(PerfOptions.Parse(["--suite", "pr"]).Runs(), r => Assert.Equal(0, r.Workers));
+        Assert.All(PerfOptions.Parse(["--suite", "extreme"]).Runs(), r => Assert.Equal(3, r.Workers));
+        Assert.Equal(2, PerfOptions.Parse(["--profile", "enqueue", "--workers", "2"]).Workers);
+        Assert.Equal(0, PerfOptions.Parse(["--suite", "extreme", "--workers", "0"]).Workers);
+    }
+
+    [Fact]
+    public void Workers_MustBeNonNegative_AndNeedTheTestcontainersStack()
+    {
+        Assert.Throws<ArgumentException>(() => PerfOptions.Parse(["--workers", "-1"]));
+        Assert.Throws<ArgumentException>(() => PerfOptions.Parse(["--workers", "2", "--http", "http://x", "--grpc", "http://y"]));
+        Assert.Throws<ArgumentException>(() => PerfOptions.Parse(["--benchmark", "state-reads", "--workers", "2"]));
+    }
+
+    [Fact]
     public void ApiReplicas_MustBePositive_AndCantCombineWithAnExternalServer()
     {
         Assert.Throws<ArgumentException>(() => PerfOptions.Parse(["--api-replicas", "0"]));

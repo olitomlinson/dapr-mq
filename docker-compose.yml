@@ -53,7 +53,7 @@ services:
   placement:
     container_name: placement
     image: "${DAPR_PLACEMENT_VERSION}"
-    command: ["./placement", "-port", "50015", "-log-level", "info"]
+    command: ["./placement", "-port", "50015", "-log-level", "info", "--metadata-enabled"]
     restart: unless-stopped
     ports:
       - "50015:50015"
@@ -75,6 +75,10 @@ services:
       - DAPR_HTTP_ENDPOINT=http://gateway-1-dapr:3500
       - REGISTER_ACTORS=false
       - ENABLE_API=true
+      # Gateway readiness: >=1 worker registered QueueActor in placement and answers /health/ready
+      - WORKER_APP_ID=daprmq-service
+      - WORKER_APP_PORT=8080
+      - DAPR_PLACEMENT_METADATA_ADDRESS=placement:8080
       - DAPRMQ_BLOB_BINDING_NAME=${DAPRMQ_BLOB_BINDING_NAME:-daprmq-blobstore}
     ports:
       - "8002:8080" # REST HTTP/1.1
@@ -148,14 +152,18 @@ services:
       dockerfile: Dockerfile
     environment:
       - ASPNETCORE_URLS=http://+:8080
-      - DAPR_GRPC_ENDPOINT=http://worker-1-dapr:50001
-      - DAPR_HTTP_ENDPOINT=http://worker-1-dapr:3500
+      - DAPR_GRPC_ENDPOINT=http://localhost:50001
+      - DAPR_HTTP_ENDPOINT=http://localhost:3500
       - REGISTER_ACTORS=true
       - ENABLE_API=false
       - DAPRMQ_BLOB_BINDING_NAME=${DAPRMQ_BLOB_BINDING_NAME:-daprmq-blobstore}
-    depends_on:
-      worker-1-dapr:
-        condition: service_started
+    # Sidecar shares this container's network namespace (like a K8s pod), so placement lists the
+    # worker at this container's IP, which gateway readiness probes directly. Restart the pair
+    # together (docker compose restart worker-N worker-N-dapr): a sidecar left running across a worker
+    # restart stays in the old, dead namespace.
+    ports:
+      - "3502:3500" # Dapr HTTP port for host access
+      - "50003:50001" # Dapr gRPC port for host access
     networks:
       - daprmq-network
   worker-1-dapr:
@@ -167,7 +175,7 @@ services:
         "-app-id",
         "daprmq-service",
         "-app-channel-address",
-        "worker-1",
+        "localhost",
         "-app-port",
         "8080",
         "-dapr-http-port",
@@ -189,10 +197,10 @@ services:
       - "./server/dapr/components:/components"
       - "./server/dapr/blobstore-data:/blobstore"
       - "./server/dapr/config:/dapr-config"
-    ports:
-      - "3502:3500" # Dapr HTTP port for host access
-      - "50003:50001" # Dapr gRPC port for host access
+    network_mode: "service:worker-1"
     depends_on:
+      worker-1:
+        condition: service_started
       postgres-db:
         condition: service_healthy
       placement:
@@ -206,8 +214,6 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
-    networks:
-      - daprmq-network
 
   ############################
   # Host 2 + Dapr Sidecar
@@ -219,14 +225,18 @@ services:
       dockerfile: Dockerfile
     environment:
       - ASPNETCORE_URLS=http://+:8080
-      - DAPR_GRPC_ENDPOINT=http://worker-2-dapr:50001
-      - DAPR_HTTP_ENDPOINT=http://worker-2-dapr:3500
+      - DAPR_GRPC_ENDPOINT=http://localhost:50001
+      - DAPR_HTTP_ENDPOINT=http://localhost:3500
       - REGISTER_ACTORS=true
       - ENABLE_API=false
       - DAPRMQ_BLOB_BINDING_NAME=${DAPRMQ_BLOB_BINDING_NAME:-daprmq-blobstore}
-    depends_on:
-      worker-2-dapr:
-        condition: service_started
+    # Sidecar shares this container's network namespace (like a K8s pod), so placement lists the
+    # worker at this container's IP, which gateway readiness probes directly. Restart the pair
+    # together (docker compose restart worker-N worker-N-dapr): a sidecar left running across a worker
+    # restart stays in the old, dead namespace.
+    ports:
+      - "3503:3500" # Dapr HTTP port for host access
+      - "50004:50001" # Dapr gRPC port for host access
     networks:
       - daprmq-network
   worker-2-dapr:
@@ -238,7 +248,7 @@ services:
         "-app-id",
         "daprmq-service",
         "-app-channel-address",
-        "worker-2",
+        "localhost",
         "-app-port",
         "8080",
         "-dapr-http-port",
@@ -260,10 +270,10 @@ services:
       - "./server/dapr/components:/components"
       - "./server/dapr/blobstore-data:/blobstore"
       - "./server/dapr/config:/dapr-config"
-    ports:
-      - "3503:3500" # Dapr HTTP port for host access
-      - "50004:50001" # Dapr gRPC port for host access
+    network_mode: "service:worker-2"
     depends_on:
+      worker-2:
+        condition: service_started
       postgres-db:
         condition: service_healthy
       placement:
@@ -277,8 +287,6 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
-    networks:
-      - daprmq-network
 
   ############################
   # Host 3 + Dapr Sidecar
@@ -291,14 +299,18 @@ services:
       dockerfile: Dockerfile
     environment:
       - ASPNETCORE_URLS=http://+:8080
-      - DAPR_GRPC_ENDPOINT=http://worker-3-dapr:50001
-      - DAPR_HTTP_ENDPOINT=http://worker-3-dapr:3500
+      - DAPR_GRPC_ENDPOINT=http://localhost:50001
+      - DAPR_HTTP_ENDPOINT=http://localhost:3500
       - REGISTER_ACTORS=true
       - ENABLE_API=false
       - DAPRMQ_BLOB_BINDING_NAME=${DAPRMQ_BLOB_BINDING_NAME:-daprmq-blobstore}
-    depends_on:
-      worker-3-dapr:
-        condition: service_started
+    # Sidecar shares this container's network namespace (like a K8s pod), so placement lists the
+    # worker at this container's IP, which gateway readiness probes directly. Restart the pair
+    # together (docker compose restart worker-N worker-N-dapr): a sidecar left running across a worker
+    # restart stays in the old, dead namespace.
+    ports:
+      - "3505:3500" # Dapr HTTP port for host access
+      - "50008:50001" # Dapr gRPC port for host access
     networks:
       - daprmq-network
 
@@ -311,7 +323,7 @@ services:
         "-app-id",
         "daprmq-service",
         "-app-channel-address",
-        "worker-3",
+        "localhost",
         "-app-port",
         "8080",
         "-dapr-http-port",
@@ -333,10 +345,10 @@ services:
       - "./server/dapr/components:/components"
       - "./server/dapr/blobstore-data:/blobstore"
       - "./server/dapr/config:/dapr-config"
-    ports:
-      - "3505:3500" # Dapr HTTP port for host access
-      - "50008:50001" # Dapr gRPC port for host access
+    network_mode: "service:worker-3"
     depends_on:
+      worker-3:
+        condition: service_started
       postgres-db:
         condition: service_healthy
       placement:
@@ -350,8 +362,6 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
-    networks:
-      - daprmq-network
 
   ############################
   # Dapr Scheduler Service

@@ -46,6 +46,14 @@ public sealed record PerfOptions
 
     public int ApiReplicas => ApiReplicasOverride ?? (Suite == "extreme" ? 3 : 1);
 
+    /// <summary>
+    /// Actor-hosting workers behind the API replicas, which then run as gateways (production's split).
+    /// 0 = every API replica hosts actors. Null = 3 for the extreme suite, else 0.
+    /// </summary>
+    public int? WorkersOverride { get; init; }
+
+    public int Workers => WorkersOverride ?? (Suite == "extreme" ? 3 : 0);
+
     /// <summary>True when a scenario flag changed the profile's parameters, so the run is "adhoc".</summary>
     public bool Overridden { get; init; }
 
@@ -151,6 +159,9 @@ public sealed record PerfOptions
                                  full: 1000 sessions x 100 msgs (default); quick: 100 x 20
           --suite pr|extreme     run every profile of that scale against one stack
           --api-replicas N       API server replicas behind nginx (default 1; extreme 3)
+          --workers N            actor-hosting workers behind the API replicas, which then
+                                 run as gateways like production; 0 = API replicas host
+                                 the actors (default 0; extreme 3)
           --sessions N           sessions to publish
           --messages N           messages per session
           --settle-ms N          handler time per message (default 1000)
@@ -200,7 +211,7 @@ public sealed record PerfOptions
             }
 
             if (benchmark == Benchmarks.StateReads
-                && flags.Keys.FirstOrDefault(f => f is "--suite" or "--http" or "--grpc" or "--api-replicas" || ScenarioFlags.Contains(f)) is { } conflict)
+                && flags.Keys.FirstOrDefault(f => f is "--suite" or "--http" or "--grpc" or "--api-replicas" or "--workers" || ScenarioFlags.Contains(f)) is { } conflict)
             {
                 throw new ArgumentException($"{conflict} can't be combined with --benchmark state-reads: it runs fixed steps against its own instrumented stack.");
             }
@@ -254,6 +265,9 @@ public sealed record PerfOptions
                 "--api-replicas" => int.Parse(value!) is var n and >= 1
                     ? options with { ApiReplicasOverride = n }
                     : throw new ArgumentException("--api-replicas must be >= 1."),
+                "--workers" => int.Parse(value!) is var w and >= 0
+                    ? options with { WorkersOverride = w }
+                    : throw new ArgumentException("--workers must be >= 0."),
                 _ => throw new ArgumentException($"Unknown option '{name}'.\n\n{Usage}")
             };
         }
@@ -266,6 +280,11 @@ public sealed record PerfOptions
         if (options.HttpEndpoint != null && options.ApiReplicasOverride != null)
         {
             throw new ArgumentException("--api-replicas configures the Testcontainers stack, so it can't be combined with --http/--grpc.");
+        }
+
+        if (options.HttpEndpoint != null && options.WorkersOverride != null)
+        {
+            throw new ArgumentException("--workers configures the Testcontainers stack, so it can't be combined with --http/--grpc.");
         }
 
         // --profile alone keeps the profile's parameters; any other scenario flag makes it adhoc.
