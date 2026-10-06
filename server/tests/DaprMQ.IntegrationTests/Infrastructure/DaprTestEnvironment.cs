@@ -275,6 +275,8 @@ public class DaprTestEnvironment : IAsyncLifetime
             .WithEnvironment("ASPNETCORE_URLS", "http://+:5000")
             .WithEnvironment("REGISTER_ACTORS", role == ReplicaRole.Gateway ? "false" : "true")
             .WithEnvironment("ENABLE_API", role == ReplicaRole.Worker ? "false" : "true")
+            // Gateways find the workers for the daprmq.DaprMQ.operations signal by app-id.
+            .WithEnvironment("WORKER_APP_ID", WorkerAppId)
             // Tell the API server where to find its own Dapr sidecar on the Docker network using FULL endpoint URLs
             .WithEnvironment("DAPR_HTTP_ENDPOINT", $"http://{sidecarHost}:3500")
             .WithEnvironment("DAPR_GRPC_ENDPOINT", $"http://{sidecarHost}:50001")

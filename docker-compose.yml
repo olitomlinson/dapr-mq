@@ -75,6 +75,8 @@ services:
       - DAPR_HTTP_ENDPOINT=http://gateway-1-dapr:3500
       - REGISTER_ACTORS=false
       - ENABLE_API=true
+      # The workers' app-id, for the daprmq.DaprMQ.operations health signal
+      - WORKER_APP_ID=daprmq-service
       - DAPRMQ_BLOB_BINDING_NAME=${DAPRMQ_BLOB_BINDING_NAME:-daprmq-blobstore}
     ports:
       - "8002:8080" # REST HTTP/1.1
@@ -92,7 +94,8 @@ services:
       [
         "./daprd",
         "-app-id",
-        "daprmq-service",
+        # Its own app-id, so invoking the workers (daprmq-service) never reaches the gateway itself
+        "daprmq-gateway",
         "-app-channel-address",
         "gateway-1",
         "-app-port",

@@ -266,13 +266,33 @@ builder.Services.AddSingleton(new DaprReadinessOptions
     DaprHttpEndpoint = daprHttpEndpoint,
     RequiredActorType = registerActors ? actorConfig.QueueActorTypeName : null
 });
-builder.Services.AddHealthChecks()
+var healthChecks = builder.Services.AddHealthChecks()
     .AddCheck<DaprReadinessHealthCheck>("dapr", tags: ["ready"], timeout: TimeSpan.FromSeconds(3));
+
+// "Can queue operations be served?" (daprmq.DaprMQ.operations, /health/operations), for monitoring
+// and clients that choose to wait. An instance hosting the queues answers from its own readiness; a
+// gateway asks its workers, under a tag readiness never includes, so a worker outage doesn't take
+// gateways out of rotation (proposals/readiness-and-retries.md, section 5).
+var operationsTag = registerActors ? "ready" : "operations";
+if (!registerActors)
+{
+    var workerAppId = builder.Configuration.GetValue<string>("WORKER_APP_ID");
+    if (string.IsNullOrWhiteSpace(workerAppId))
+    {
+        throw new InvalidOperationException(
+            "WORKER_APP_ID is required when REGISTER_ACTORS=false: the Dapr app-id of the workers, for the daprmq.DaprMQ.operations health signal");
+    }
+
+    builder.Services.AddSingleton(new OperationsHealthCheckOptions { DaprHttpEndpoint = daprHttpEndpoint, WorkerAppId = workerAppId });
+    healthChecks.AddCheck<OperationsHealthCheck>("operations", tags: ["operations"], timeout: TimeSpan.FromSeconds(8));
+}
+
 builder.Services.AddGrpcHealthChecks(o =>
 {
     // "" = whole server; the named service = the DaprMQ API surface
     o.Services.Map("", r => r.Tags.Contains("ready"));
     o.Services.Map("daprmq.DaprMQ", r => r.Tags.Contains("ready"));
+    o.Services.Map("daprmq.DaprMQ.operations", r => r.Tags.Contains(operationsTag));
 });
 // Health.Watch is driven by the health-check publisher; its defaults (5 s delay / 30 s period)
 // would make Watch slower than polling.
@@ -313,6 +333,13 @@ if (registerActors)
 // Readiness is mapped on every instance (workers included), not just API-serving ones
 app.MapGrpcHealthChecksService();
 app.MapHealthChecks("/health/ready", new() { Predicate = r => r.Tags.Contains("ready") });
+app.MapHealthChecks("/health/operations", new() { Predicate = r => r.Tags.Contains(operationsTag) });
+if (registerActors)
+{
+    // What gateways invoke (via Dapr) for the operations signal; only where queues are hosted, so a
+    // gateway can never answer it for itself.
+    app.MapHealthChecks("/" + OperationsHealthCheck.WorkerRoute, new() { Predicate = r => r.Tags.Contains("ready") });
+}
 
 // Liveness: the process is up. Deliberately independent of Dapr so a placement outage doesn't
 // make Kubernetes restart every pod.
