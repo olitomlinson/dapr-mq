@@ -214,8 +214,8 @@ public class DaprTestEnvironment : IAsyncLifetime
         DaprHttpEndpoint = $"http://localhost:{sidecar.GetMappedPublicPort(3500)}";
         DaprGrpcEndpoint = $"http://localhost:{sidecar.GetMappedPublicPort(50001)}";
 
-        // Wait for everything to stabilize - give Dapr time to connect to placement and register actors
-        await Task.Delay(TimeSpan.FromSeconds(5));
+        // Wait until every replica (gateways and workers) reports its own readiness
+        await WaitForReadyAsync(TimeSpan.FromMinutes(2));
 
         // 7. Load balancer in front of the replicas. nginx resolves its upstreams at startup, so it
         // goes last, once every replica's alias exists.
@@ -356,6 +356,40 @@ public class DaprTestEnvironment : IAsyncLifetime
 
         await sidecar.StartAsync();
         return (apiServer, sidecar);
+    }
+
+    /// <summary>
+    /// Polls every replica's own /health/ready (not the load balancer, which would answer as soon
+    /// as any one replica is up). Actor hosts are ready once they host QueueActor, gateways once
+    /// their sidecar is connected to placement.
+    /// </summary>
+    private async Task WaitForReadyAsync(TimeSpan timeout)
+    {
+        using var probe = new HttpClient();
+        var deadline = DateTime.UtcNow + timeout;
+        foreach (var app in _apiServerContainers)
+        {
+            var readyUrl = $"http://localhost:{app.GetMappedPublicPort(5000)}/health/ready";
+            while (true)
+            {
+                try
+                {
+                    using var response = await probe.GetAsync(readyUrl);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        break;
+                    }
+                }
+                catch (HttpRequestException) { }
+
+                if (DateTime.UtcNow >= deadline)
+                {
+                    throw new TimeoutException($"Replica did not report ready at {readyUrl} within {timeout}.");
+                }
+
+                await Task.Delay(250);
+            }
+        }
     }
 
     /// <summary>
