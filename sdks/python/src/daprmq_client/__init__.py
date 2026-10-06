@@ -1,7 +1,9 @@
-from .client import DaprMQClient
+from .client import OPERATIONS_HEALTH_SERVICE, DaprMQClient
 from .errors import (
     ActorNotFoundError,
     DaprMQError,
+    DaprMQUnavailableError,
+    DeliveryUnknownError,
     InvalidLeaseIdError,
     LockExpiredError,
     LockNotFoundError,
@@ -20,11 +22,15 @@ from .session_queue_consumer import (
     SessionQueueConsumer,
     SessionQueueConsumerOptions,
 )
-from .types import DequeueLockedItem, DequeueLockedResult, EnqueueItem, EnqueueResult, SessionDelivery, SessionLease
+from .types import DequeueLockedItem, DequeueLockedResult, EnqueueItem, EnqueueResult, RetryOptions, SessionDelivery, SessionLease
 
 __all__ = [
     "DaprMQClient",
+    "OPERATIONS_HEALTH_SERVICE",
+    "RetryOptions",
     "DaprMQError",
+    "DaprMQUnavailableError",
+    "DeliveryUnknownError",
     "LockNotFoundError",
     "LockExpiredError",
     "ActorNotFoundError",

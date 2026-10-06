@@ -138,15 +138,15 @@ def daprmq_server() -> Iterator[DaprMQServer]:
             http_url = f"http://localhost:{api.get_exposed_port(5000)}"
             grpc_address = f"localhost:{api.get_exposed_port(5001)}"
 
-            def enqueue_probe() -> bool:
-                response = httpx.post(
-                    f"{http_url}/queue/readiness-{uuid.uuid4().hex}/enqueue",
-                    json={"items": [{"item": {"probe": True}, "priority": 1}]},
-                    timeout=5,
-                )
-                return response.status_code == 200
+            def operations_ready() -> bool:
+                # The daprmq.DaprMQ.operations signal over HTTP: queue operations can be served.
+                # Doesn't write anything, unlike the probe enqueue it replaces.
+                try:
+                    return httpx.get(f"{http_url}/health/operations", timeout=5).status_code == 200
+                except httpx.HTTPError:
+                    return False
 
-            _wait_for("DaprMQ API + sidecar (actors registered)", enqueue_probe)
+            _wait_for("DaprMQ API + sidecar (queue operations servable)", operations_ready)
 
             yield DaprMQServer(http_url=http_url, grpc_address=grpc_address)
         finally:

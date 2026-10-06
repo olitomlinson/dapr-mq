@@ -59,3 +59,20 @@ class SessionDelivery:
     lock_expires_at: float
     ack: Callable[[], Awaitable[None]]
     dead_letter: Callable[[], Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class RetryOptions:
+    """How calls ride out a DaprMQ that can't serve them yet (sdks/testing/RETRIES_AND_READINESS.md)."""
+
+    #: Seconds one call may keep retrying; also the deadline sent to the server. 0 turns client
+    #: retries off and sends no deadline.
+    timeout: float = 30.0
+    #: Give each enqueued item without an idempotency key a fresh one, so an enqueue whose outcome
+    #: is unknown is retried safely. Costs the server one extra state write per item.
+    auto_idempotency_keys: bool = False
+    #: Tuning (normally left alone): no attempt starts with less than this many seconds left, since
+    #: the server takes ~5 s to report it can't serve; and the backoff bounds.
+    min_attempt_window: float = 6.0
+    initial_backoff: float = 0.1
+    max_backoff: float = 2.0
