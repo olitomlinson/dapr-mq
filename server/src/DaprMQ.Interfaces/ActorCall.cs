@@ -45,22 +45,125 @@ public static class ActorCallClassifier
     };
 }
 
-/// <summary>Runs an actor call, turning delivery failures into <see cref="ActorCallException"/>.</summary>
+/// <summary>
+/// The time an API request allows for its actor calls: until the caller's deadline (capped by the
+/// server), or until the caller goes away. Set per API request (never inside an actor turn), and
+/// only then does <see cref="ActorCall"/> retry. See proposals/readiness-and-retries.md, section 3.
+/// </summary>
+public sealed class DeliveryBudget(DateTimeOffset deadline, CancellationToken callerCancelled)
+{
+    private static readonly AsyncLocal<DeliveryBudget?> CurrentBudget = new();
+
+    public static DeliveryBudget? Current => CurrentBudget.Value;
+
+    public DateTimeOffset Deadline { get; } = deadline;
+
+    public CancellationToken CallerCancelled { get; } = callerCancelled;
+
+    /// <summary>
+    /// No new attempt starts with less than this left: daprd takes ~5 s to report "no host", so a
+    /// shorter attempt would be cut off by the deadline and reported as unknown instead of not delivered.
+    /// </summary>
+    public TimeSpan MinAttemptWindow { get; init; } = TimeSpan.FromSeconds(6);
+
+    public TimeSpan InitialBackoff { get; init; } = TimeSpan.FromMilliseconds(100);
+
+    public TimeSpan MaxBackoff { get; init; } = TimeSpan.FromSeconds(2);
+
+    public TimeSpan Remaining => Deadline - DateTimeOffset.UtcNow;
+
+    /// <summary>Makes <paramref name="budget"/> current for this async flow until disposed.</summary>
+    public static IDisposable Begin(DeliveryBudget budget)
+    {
+        var previous = CurrentBudget.Value;
+        CurrentBudget.Value = budget;
+        return new Scope(() => CurrentBudget.Value = previous);
+    }
+
+    private sealed class Scope(Action end) : IDisposable
+    {
+        public void Dispose() => end();
+    }
+}
+
+/// <summary>
+/// Runs an actor call, turning delivery failures into <see cref="ActorCallException"/>. Inside a
+/// <see cref="DeliveryBudget"/>, not-delivered failures are retried (capped, jittered backoff) and
+/// every attempt is bounded by the remaining budget; outside one, it makes a single attempt.
+/// </summary>
 public static class ActorCall
 {
-    public static async Task<T> RunAsync<T>(Func<Task<T>> call, CancellationToken cancellationToken)
+    private static readonly System.Diagnostics.Metrics.Meter Meter = new("DaprMQ.Delivery");
+    private static readonly System.Diagnostics.Metrics.Counter<long> Retries =
+        Meter.CreateCounter<long>("daprmq.delivery.retries", description: "Actor calls retried after a not-delivered failure");
+    private static readonly System.Diagnostics.Metrics.Counter<long> Failures =
+        Meter.CreateCounter<long>("daprmq.delivery.failures", description: "Actor calls that failed delivery, by outcome");
+
+    public static async Task<T> RunAsync<T>(Func<CancellationToken, Task<T>> call, CancellationToken cancellationToken)
+    {
+        if (DeliveryBudget.Current is not { } budget)
+        {
+            return await AttemptAsync(call, cancellationToken);
+        }
+
+        if (budget.Remaining <= TimeSpan.Zero)
+        {
+            throw Failed(DeliveryOutcome.NotDelivered, new TimeoutException("The request's deadline passed before the call was attempted."));
+        }
+
+        var backoff = budget.InitialBackoff;
+        while (true)
+        {
+            using var attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, budget.CallerCancelled);
+            attempt.CancelAfter(budget.Remaining);
+            try
+            {
+                return await AttemptAsync(call, attempt.Token);
+            }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && !budget.CallerCancelled.IsCancellationRequested)
+            {
+                // Our deadline cut the attempt off mid-flight: it may have reached the actor.
+                throw Failed(DeliveryOutcome.Unknown, ex);
+            }
+            catch (ActorCallException ex) when (ex.Outcome == DeliveryOutcome.NotDelivered)
+            {
+                var delay = TimeSpan.FromTicks((long)(Random.Shared.NextDouble() * backoff.Ticks));
+                if (budget.Remaining - delay < budget.MinAttemptWindow)
+                {
+                    Failures.Add(1, new KeyValuePair<string, object?>("outcome", "not-delivered"));
+                    throw;
+                }
+
+                Retries.Add(1);
+                await Task.Delay(delay, budget.CallerCancelled);
+                backoff = TimeSpan.FromTicks(Math.Min(backoff.Ticks * 2, budget.MaxBackoff.Ticks));
+            }
+        }
+    }
+
+    public static Task RunAsync(Func<CancellationToken, Task> call, CancellationToken cancellationToken) =>
+        RunAsync(async ct => { await call(ct); return true; }, cancellationToken);
+
+    private static async Task<T> AttemptAsync<T>(Func<CancellationToken, Task<T>> call, CancellationToken cancellationToken)
     {
         try
         {
-            return await call();
+            return await call(cancellationToken);
         }
         catch (Exception ex) when (!(ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
                                    && ActorCallClassifier.Classify(ex) is { } outcome)
         {
-            throw new ActorCallException(outcome, ex);
+            throw Failed(outcome, ex);
         }
     }
 
-    public static Task RunAsync(Func<Task> call, CancellationToken cancellationToken) =>
-        RunAsync(async () => { await call(); return true; }, cancellationToken);
+    private static ActorCallException Failed(DeliveryOutcome outcome, Exception inner)
+    {
+        if (outcome == DeliveryOutcome.Unknown)
+        {
+            Failures.Add(1, new KeyValuePair<string, object?>("outcome", "unknown"));
+        }
+
+        return new ActorCallException(outcome, inner);
+    }
 }

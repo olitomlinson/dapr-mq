@@ -21,7 +21,7 @@ public class HttpSinkActorInvoker : IHttpSinkActorInvoker
         CancellationToken cancellationToken = default)
     {
         var proxy = _actorProxyFactory.Create(actorId, _actorType);
-        return await ActorCall.RunAsync(() => proxy.InvokeMethodAsync<TResponse>(methodName, cancellationToken), cancellationToken);
+        return await ActorCall.RunAsync(ct => proxy.InvokeMethodAsync<TResponse>(methodName, ct), cancellationToken);
     }
 
     /// <inheritdoc />
@@ -32,7 +32,7 @@ public class HttpSinkActorInvoker : IHttpSinkActorInvoker
         CancellationToken cancellationToken = default)
     {
         var proxy = _actorProxyFactory.Create(actorId, _actorType);
-        return await ActorCall.RunAsync(() => proxy.InvokeMethodAsync<TRequest, TResponse>(methodName, request, cancellationToken), cancellationToken);
+        return await ActorCall.RunAsync(ct => proxy.InvokeMethodAsync<TRequest, TResponse>(methodName, request, ct), cancellationToken);
     }
 
     /// <inheritdoc />
@@ -43,7 +43,7 @@ public class HttpSinkActorInvoker : IHttpSinkActorInvoker
         CancellationToken cancellationToken = default)
     {
         var proxy = _actorProxyFactory.Create(actorId, _actorType);
-        await ActorCall.RunAsync(() => proxy.InvokeMethodAsync(methodName, request, cancellationToken), cancellationToken);
+        await ActorCall.RunAsync(ct => proxy.InvokeMethodAsync(methodName, request, ct), cancellationToken);
     }
 
     /// <inheritdoc />
@@ -53,6 +53,6 @@ public class HttpSinkActorInvoker : IHttpSinkActorInvoker
         CancellationToken cancellationToken = default)
     {
         var proxy = _actorProxyFactory.Create(actorId, _actorType);
-        await ActorCall.RunAsync(() => proxy.InvokeMethodAsync(methodName, cancellationToken), cancellationToken);
+        await ActorCall.RunAsync(ct => proxy.InvokeMethodAsync(methodName, ct), cancellationToken);
     }
 }

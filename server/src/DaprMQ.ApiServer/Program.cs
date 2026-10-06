@@ -56,8 +56,16 @@ builder.Services.AddCors(options =>
     });
 });
 
+// Server retries of undelivered actor calls run inside each API request's delivery budget: its
+// deadline (REST daprmq-timeout header / gRPC deadline) capped by DELIVERY_RETRY_MAX_SECONDS.
+// Never inside an actor turn. See proposals/readiness-and-retries.md, section 3.
+builder.Services.AddSingleton(new DeliveryBudgetOptions
+{
+    MaxDuration = TimeSpan.FromSeconds(builder.Configuration.GetValue("DELIVERY_RETRY_MAX_SECONDS", 30))
+});
+
 // Add services to the container
-builder.Services.AddControllers().AddDapr(builder => builder.UseGrpcChannelOptions(new GrpcChannelOptions()
+builder.Services.AddControllers(o => o.Filters.Add<DeliveryBudgetFilter>()).AddDapr(builder => builder.UseGrpcChannelOptions(new GrpcChannelOptions()
 {
     MaxReceiveMessageSize = 16 * 1024 * 1024,
     MaxSendMessageSize = 16 * 1024 * 1024
@@ -80,7 +88,7 @@ builder.Services.AddSingleton<Dapr.Actors.Client.IActorProxyFactory, Dapr.Actors
 builder.Services.AddHttpClient();
 
 // Add gRPC services
-builder.Services.AddGrpc();
+builder.Services.AddGrpc(o => o.Interceptors.Add<DeliveryBudgetInterceptor>());
 
 // Add gRPC reflection (allows introspection of services)
 builder.Services.AddGrpcReflection();

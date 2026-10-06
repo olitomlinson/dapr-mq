@@ -10,8 +10,9 @@ using GrpcService = DaprMQ.ApiServer.Grpc.DaprMQ;
 namespace DaprMQ.IntegrationTests.Tests;
 
 /// <summary>
-/// With no worker reachable, a gateway's actor call is certainly not delivered, and says so
-/// (proposals/readiness-and-retries.md, section 2), instead of a 500 that looks like a bug.
+/// With no worker reachable, a gateway's actor call is certainly not delivered: the gateway retries
+/// it within the caller's deadline (section 3), and if no worker returns in time, says so (section 2)
+/// instead of a 500 that looks like a bug. See proposals/readiness-and-retries.md.
 /// </summary>
 [Collection("Dapr Split Topology Collection")]
 public class WorkerOutageTests(SplitTopologyFixture fixture)
@@ -30,11 +31,69 @@ public class WorkerOutageTests(SplitTopologyFixture fixture)
         }
     }
 
+    private static HttpRequestMessage Enqueue(string queueId, int timeoutMs) => new(HttpMethod.Post, $"/queue/{queueId}/enqueue")
+    {
+        Content = JsonContent.Create(new { items = new[] { new { item = new { n = 1 } } } }),
+        Headers = { { "daprmq-timeout", timeoutMs.ToString() } },
+    };
+
+    private async Task<int> CountAndDrainAsync(string queueId)
+    {
+        var total = 0;
+        while (true)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/dequeue") { Headers = { { "count", "1000" } } };
+            using var response = await fixture.GatewayClient.SendAsync(request);
+            if (response.StatusCode == HttpStatusCode.NoContent)
+            {
+                return total;
+            }
+
+            response.EnsureSuccessStatusCode();
+            total += (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("items").GetArrayLength();
+        }
+    }
+
+    [Fact]
+    public async Task Rest_Enqueue_WorkerReturnsWithinTheDeadline_Succeeds_AndStoresTheItemOnce()
+    {
+        var queueId = $"recovery-{Guid.NewGuid():N}";
+        await fixture.Environment.StopWorkersAsync();
+        try
+        {
+            var enqueue = fixture.GatewayClient.SendAsync(Enqueue(queueId, 45_000));
+            await Task.Delay(TimeSpan.FromSeconds(3));
+            await fixture.Environment.StartWorkersAsync();
+
+            var response = await enqueue;
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        }
+        finally
+        {
+            await fixture.Environment.StartWorkersAsync();
+            await fixture.Environment.WaitForReadyAsync(TimeSpan.FromMinutes(2));
+        }
+
+        Assert.Equal(1, await CountAndDrainAsync(queueId));
+    }
+
+    [Fact]
+    public Task Rest_Enqueue_OutageOutlastsTheDeadline_Returns503Promptly() => WithWorkersDownAsync(fixture, async () =>
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        var response = await fixture.GatewayClient.SendAsync(Enqueue($"outage-{Guid.NewGuid():N}", 15_000));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        // Retried (daprd takes ~5 s per "no host" answer), stopped before the deadline cut an attempt off.
+        Assert.InRange(sw.Elapsed, TimeSpan.FromSeconds(9), TimeSpan.FromSeconds(15));
+    });
+
     [Fact]
     public Task Rest_Enqueue_NoWorker_Returns503NotDelivered() => WithWorkersDownAsync(fixture, async () =>
     {
-        var response = await fixture.GatewayClient.PostAsJsonAsync(
-            $"/queue/outage-{Guid.NewGuid():N}/enqueue", new { items = new[] { new { item = new { n = 1 } } } });
+        var response = await fixture.GatewayClient.SendAsync(Enqueue($"outage-{Guid.NewGuid():N}", 7_000));
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
         Assert.Equal("not-delivered", Assert.Single(response.Headers.GetValues("daprmq-delivery")));
@@ -52,7 +111,8 @@ public class WorkerOutageTests(SplitTopologyFixture fixture)
         var request = new EnqueueRequest { QueueId = $"outage-{Guid.NewGuid():N}" };
         request.Items.Add(new EnqueueItem { ItemJson = "{\"n\":1}", Priority = 1 });
 
-        var ex = await Assert.ThrowsAsync<RpcException>(() => client.EnqueueAsync(request).ResponseAsync);
+        var ex = await Assert.ThrowsAsync<RpcException>(() =>
+            client.EnqueueAsync(request, deadline: DateTime.UtcNow.AddSeconds(8)).ResponseAsync);
 
         Assert.Equal(StatusCode.Unavailable, ex.StatusCode);
         Assert.Equal("not-delivered", ex.Trailers.GetValue("daprmq-delivery"));

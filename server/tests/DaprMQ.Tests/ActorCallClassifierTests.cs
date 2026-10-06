@@ -62,7 +62,7 @@ public class ActorCallClassifierTests
     {
         var lookup = new DaprApiException("failed to lookup actor: did not find address for actor 'QueueActor/q1'");
 
-        var ex = await Assert.ThrowsAsync<ActorCallException>(() => ActorCall.RunAsync<int>(() => throw lookup, CancellationToken.None));
+        var ex = await Assert.ThrowsAsync<ActorCallException>(() => ActorCall.RunAsync<int>(_ => throw lookup, CancellationToken.None));
 
         Assert.Equal(DeliveryOutcome.NotDelivered, ex.Outcome);
         Assert.Same(lookup, ex.InnerException);
@@ -72,7 +72,7 @@ public class ActorCallClassifierTests
     public async Task RunAsync_LeavesActorMethodFailuresAlone()
     {
         await Assert.ThrowsAsync<ActorMethodInvocationException>(() =>
-            ActorCall.RunAsync<int>(() => throw new ActorMethodInvocationException("boom", false), CancellationToken.None));
+            ActorCall.RunAsync<int>(_ => throw new ActorMethodInvocationException("boom", false), CancellationToken.None));
     }
 
     [Fact]
@@ -82,12 +82,12 @@ public class ActorCallClassifierTests
         cts.Cancel();
 
         await Assert.ThrowsAsync<TaskCanceledException>(() =>
-            ActorCall.RunAsync<int>(() => throw new TaskCanceledException(), cts.Token));
+            ActorCall.RunAsync<int>(_ => throw new TaskCanceledException(), cts.Token));
     }
 
     [Fact]
     public async Task RunAsync_ReturnsTheResult()
     {
-        Assert.Equal(42, await ActorCall.RunAsync(() => Task.FromResult(42), CancellationToken.None));
+        Assert.Equal(42, await ActorCall.RunAsync(_ => Task.FromResult(42), CancellationToken.None));
     }
 }
