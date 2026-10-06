@@ -54,7 +54,7 @@ any worker is available.
 |---|---|---|
 | Is this process up? | `/health` (unchanged: liveness, independent of Dapr) | K8s liveness probe |
 | Can this instance do its own job? | **Instance readiness**: `/health/ready` plus `grpc.health.v1`, service `daprmq.DaprMQ` | K8s readiness probes, load balancers |
-| Is at least one worker available? | **Actor-host signal**: `grpc.health.v1`, service `daprmq.DaprMQ.actors`, plus metrics | Monitoring, clients that choose to wait (fixtures, tooling). **Never** K8s readiness |
+| Can queue operations be served? | **Operations signal**: `grpc.health.v1` service `daprmq.DaprMQ.operations`, `/health/operations` | Monitoring, clients that choose to wait (fixtures, tooling). **Never** K8s readiness |
 | Get a request through a worker gap | **Failure classification** plus **deadline-bounded retries** (server and SDK) | Every request |
 | Stop scheduling actors onto a hung worker | **Dapr app health checks** on workers (to verify, below) | Dapr placement |
 
@@ -102,19 +102,23 @@ unknown but gets treated as not delivered becomes a duplicate or a lost message.
 classification is built from observed daprd behaviour (phase 0), and **when in doubt, the answer is
 unknown**.
 
-`QueueActorInvoker` ([DaprActorInvoker.cs](../server/src/DaprMQ.Interfaces/DaprActorInvoker.cs))
-catches invocation failures, classifies them, and returns a failed result carrying one of two new
-`ErrorCode` strings, instead of letting the exception reach the controllers' catch-all. The result
-models in [Models.cs](../server/src/DaprMQ.Interfaces/Models.cs) carry `ErrorCode` as a string, as
-with `LOCK_EXPIRED` today.
+Every actor invoker (Queue, Topic, HttpSink, SessionCoordinator, BlobReaper) runs its call through
+`ActorCall.RunAsync` ([ActorCall.cs](../server/src/DaprMQ.Interfaces/ActorCall.cs)). That classifies
+transport and runtime failures with `ActorCallClassifier`, using the phase-0 table, and throws them
+as `ActorCallException` carrying the outcome. Failures inside the actor method itself
+(`ActorMethodInvocationException`, `ActorInvokeException`) and caller cancellation pass through
+unchanged. Each endpoint's catch-all gains one clause in front, which maps the exception with the
+shared helpers in
+[DeliveryFailures.cs](../server/src/DaprMQ.ApiServer/Services/DeliveryFailures.cs):
+`DeliveryFailureResult` for REST, `DeliveryFailures.ToRpcException` for gRPC. Error bodies gain an
+optional `errorCode`, omitted when null.
 
 | ErrorCode | HTTP | gRPC | Marker (REST header / gRPC trailer) |
 |---|---|---|---|
-| `ACTOR_UNAVAILABLE` | `503` + `Retry-After: 1` | `UNAVAILABLE` | `daprmq-delivery: not-delivered` |
+| `UNAVAILABLE` | `503` + `Retry-After: 1` | `UNAVAILABLE` | `daprmq-delivery: not-delivered` |
 | `DELIVERY_UNKNOWN` | `504` | `UNKNOWN` | `daprmq-delivery: unknown` |
 
-The controllers and `DaprMQGrpcService` already switch on `result.ErrorCode`; these are two more
-entries in those mappings. A `500` goes back to meaning a bug.
+A `500` goes back to meaning a bug. Messages never mention actors.
 
 **Actor-to-actor calls need the same treatment.** `SessionCoordinatorActor` already returns
 `SESSION_ACTOR_UNAVAILABLE` (REST `502`, gRPC `UNAVAILABLE`) when its call to a session's queue actor
@@ -128,14 +132,34 @@ these comes first:
 
 - **the caller's deadline:** gRPC `context.Deadline`, or for REST a `daprmq-timeout` request header
   (milliseconds), since HTTP has no standard deadline. The SDKs always send one.
-- **the server cap** `ACTOR_RETRY_MAX_SECONDS` (default 30, kept below typical ingress timeouts).
-  Without a caller deadline, the cap alone applies.
+- **the server cap** `DELIVERY_RETRY_MAX_SECONDS` (default 30, kept below typical ingress
+  timeouts). Without a caller deadline, the cap alone applies.
 - **the caller going away** (`RequestAborted` / `context.CancellationToken`).
 
 Backoff starts at 100 ms, doubles, is capped at 2 s, and uses full jitter, so requests queued during
-an outage don't all reach the returning workers at the same moment. If the deadline runs out, the
-caller gets `ACTOR_UNAVAILABLE`. **Unknown** failures are never retried on the server: only the caller
-knows whether its operation is idempotent.
+an outage don't all reach the returning workers at the same moment. **Unknown** failures are never
+retried on the server: only the caller knows whether its operation is idempotent.
+
+How it's built:
+
+- **Retries happen only in API requests, never inside an actor turn.** The invokers are shared with
+  actor code, and retrying there would hold an actor's turn. A `DeliveryBudget` (deadline plus the
+  caller's cancellation) is set for each API request in an async-local: by `DeliveryBudgetFilter`
+  (REST, every controller action) and `DeliveryBudgetInterceptor` (gRPC unary calls). `ActorCall`
+  retries only when a budget is present. Actor callbacks arrive as separate requests, so they never
+  inherit one. ([ActorCall.cs](../server/src/DaprMQ.Interfaces/ActorCall.cs),
+  [DeliveryBudgetSources.cs](../server/src/DaprMQ.ApiServer/Services/DeliveryBudgetSources.cs))
+- **Each attempt is bounded by the remaining budget** (phase-0 finding 4), not by the actor
+  client's 100 s timeout. An attempt that our own deadline cuts off is reported as
+  `DELIVERY_UNKNOWN`, because it may have reached the actor.
+- **No new attempt starts with less than 6 s left.** daprd takes about 5 s to report "no host"
+  (finding 3), so a shorter attempt would only be cut off and reported as unknown. The caller gets
+  the last `UNAVAILABLE` instead. An outage that outlasts the deadline therefore returns `503` a
+  little *before* the deadline, never a misleading `504`.
+- **A deadline that has already passed** gets `UNAVAILABLE` without an attempt.
+- **Metrics** (meter `DaprMQ.Delivery`): `daprmq.delivery.retries`, and
+  `daprmq.delivery.failures{outcome=not-delivered|unknown}`.
+- **An invalid `daprmq-timeout`** (not a positive integer) gets a `400`.
 
 This is the piece that changes behaviour during a full worker outage. Gateways stay ready (section
 1), accept requests, and hold each one until a worker returns or its deadline passes. Callers wait
@@ -153,7 +177,7 @@ TypeScript and Java:
 
 | Failure | Retry? |
 |---|---|
-| `ACTOR_UNAVAILABLE` / `daprmq-delivery: not-delivered` | yes, any operation |
+| `UNAVAILABLE` / `daprmq-delivery: not-delivered` | yes, any operation |
 | connection refused, or a DNS failure before anything was sent | yes, any operation |
 | `DELIVERY_UNKNOWN` or a connection lost after sending, for **Enqueue where every item has an `IdempotencyKey`** | yes. The actor de-duplicates on the key, and the markers live 24 h (`IDEMPOTENCY_KEY_TTL_SECONDS`) |
 | `DELIVERY_UNKNOWN` for anything else | **no**. Throw a typed `DeliveryUnknownException` (or each language's equivalent) |
@@ -167,41 +191,70 @@ Options (names illustrative):
   are always safe. Off by default, because each key is an extra state write (`idem_{key}`) per item.
   Recommended for producers that can't tolerate duplicates.
 
+**What user code sees.** Failures that aren't retried, or whose retries run out, reach the caller
+as typed exceptions derived from the existing `DaprMQException`, so existing `catch` blocks keep
+working. Public names never mention actors, which are an implementation detail: the same applies to
+the wire codes above.
+
+| Server sends | .NET SDK throws | Meaning |
+|---|---|---|
+| `UNAVAILABLE` (`503` / gRPC `UNAVAILABLE`), after the SDK's own retries run out at `RetryTimeout` | `DaprMQUnavailableException` | Definitely didn't happen. Always safe to repeat later |
+| `DELIVERY_UNKNOWN` (`504` / gRPC `UNKNOWN`) | `DeliveryUnknownException` (with the operation, the queue id and, for enqueue, the items' idempotency keys) | May or may not have happened |
+
+Python, TypeScript and Java use the equivalent in each language's error style, defined once in
+`sdks/testing`. What a caller can do with `DeliveryUnknownException` depends on the operation, and
+each SDK's docs say so:
+
+- **Enqueue without keys:** re-send and accept a possible duplicate, or check downstream. With keys,
+  the SDK retries itself, so this never reaches user code.
+- **Dequeue with a lock:** don't re-send. If the first call ran, the items are locked to a lock id
+  the caller never received. They return to the queue when the lock expires, with their delivery
+  count raised.
+- **Plain dequeue (no lock):** the item may be gone. This is why unknown outcomes are never retried
+  automatically. Callers that can't lose items this way should use locked dequeues.
+- **Acknowledge / ExtendLock / DeadLetter:** re-sending is effectively safe. If the first call
+  worked, the re-send gets `LockNotFound`, which here means success (open question 4).
+
 **Waiting for the system.** Retries already cover the first call after startup: before the gateway
-listens it's "connection refused", and before a worker registers it's `ACTOR_UNAVAILABLE`. Both are retried.
+listens it's "connection refused", and before a worker registers it's `UNAVAILABLE`. Both are retried.
 For callers that want to wait *without* sending a real operation (test fixtures, tooling, smoke
 checks), each SDK offers `WaitForReady(service)`: it opens `grpc.health.v1.Health/Watch` and returns
 on the first `SERVING`. The SDK reconnects while the server isn't listening, and the call is bounded
-only by the caller's cancellation. Fixtures wait on `daprmq.DaprMQ.actors` (section 5). That
+only by the caller's cancellation. Fixtures wait on `daprmq.DaprMQ.operations` (section 5). That
 replaces every probe enqueue, so fixtures stop writing data just to start up.
 
-## 5. Actor-host signal
+## 5. Operations signal
 
-This answers "is at least one worker available?" for monitoring and for clients that choose to wait.
-It **never** feeds K8s readiness.
+`daprmq.DaprMQ.operations` (gRPC health) and `GET /health/operations` (HTTP) answer "can queue
+operations be served?" for monitoring and for clients that choose to wait. The name says what
+callers care about rather than how it's built: actors and workers are implementation details. It
+**never** feeds K8s readiness.
 
-**Mechanism: Dapr service invocation, not placement.** On a gateway, call a worker-only endpoint
-(`GET /internal/actors-ready`, mapped only when `REGISTER_ACTORS=true`, which runs the worker's
-instance-readiness check) through the gateway's own sidecar:
-`{DAPR_HTTP_ENDPOINT}/v1.0/invoke/{WORKER_APP_ID}/method/internal/actors-ready`.
-
-- **Any 200 proves a worker is up and hosting `QueueActor`.** Invocation reaches one load-balanced
-  instance per call, so a failure only rules out that one. Try up to 3 times per check, any success
-  wins, and the result is `SERVING` or `NOT_SERVING` on the `daprmq.DaprMQ.actors` health service.
-- **It stays inside the Dapr API the gateway already uses:** mTLS and access-control policies apply,
-  no control-plane flag is needed, and it works in Docker without shared network namespaces.
+- **An instance hosting the queues** (combined, or a worker) reports its own instance readiness:
+  it serves the operations itself.
+- **A gateway asks its workers**, through Dapr service invocation rather than placement
+  ([OperationsHealthCheck.cs](../server/src/DaprMQ.ApiServer/Services/OperationsHealthCheck.cs)).
+  It calls `GET /internal/operations-ready` through its own sidecar
+  (`{DAPR_HTTP_ENDPOINT}/v1.0/invoke/{WORKER_APP_ID}/method/internal/operations-ready`). That route
+  runs the worker's instance readiness and is mapped only where queues are hosted, so a gateway can
+  never answer it for itself.
+  - **Any 200 proves a worker can serve.** Invocation reaches one load-balanced instance per call,
+    so a failure only rules out that one. Up to 3 attempts (2 s each); any success wins.
+  - The check is registered under its own `operations` tag, which readiness never includes.
+  - **It stays inside the Dapr API the gateway already uses:** mTLS and access-control policies
+    apply, no control-plane flag is needed, and it works in Docker without shared network
+    namespaces.
 - **Placement's `/placement/state` was rejected** for this job, for the costs listed in the context
   section. The one thing it adds is a count of every registered worker. If we need that, publish it
   as a metric from the workers themselves rather than reading the control plane.
 
-Gateways also export metrics: actor-host checks passed and failed, and the retry counts and outcomes
-from section 3. That makes "the gateways are holding requests because no worker is available"
-visible on a dashboard, rather than discovered through timeouts.
+Together with the section 3 retry metrics, this makes "the gateways are holding requests because no
+worker is available" visible on a dashboard, rather than discovered through timeouts.
 
-Configuration: `WORKER_APP_ID` (required on gateways; Helm sets `{release}-daprmq-worker`).
-docker-compose currently gives gateways and workers the same app-id (`daprmq-service`), so
-invocation could land on the gateway itself, where the worker-only route doesn't exist. Compose
-should give gateways their own app-id and add it to the components' `scopes` (open question 6).
+Configuration: `WORKER_APP_ID` is required on gateways, which refuse to start without it. Helm sets
+it to `{release}-daprmq-worker`. docker-compose now gives the gateway its own app-id
+(`daprmq-gateway`, added to the object store's `scopes`), so invoking the workers (`daprmq-service`)
+never reaches the gateway.
 
 ## 6. Hung workers: Dapr app health checks
 
@@ -213,6 +266,40 @@ must confirm** what daprd 1.18 then does for actors: whether it withdraws the ac
 placement, so their actors are rebalanced onto healthy workers. If it does, enable it in the worker
 chart. The probe path must be liveness (`/health`), not `/health/ready`, which depends on the
 sidecar and would be circular.
+
+## Phase 0 findings: what daprd 1.18.4 actually does
+
+Recorded on the split test stack by the opt-in diagnostic
+[ActorFailureCatalogue.cs](../server/tests/DaprMQ.IntegrationTests/Diagnostics/ActorFailureCatalogue.cs)
+(`DAPRMQ_FAILURE_CATALOGUE=<out.md> dotnet test --filter ActorFailureCatalogue`). Each row is what
+the gateway's actor proxy threw (`QueueController`'s catch-all logs it); the caller saw a `500` with
+the message in every failure case.
+
+| Mode | Gateway exception | After | Stored? | Class |
+|---|---|---|---|---|
+| Workers stopped, called immediately or after placement dropped them | `Dapr.DaprApiException`: *error invoke actor method: failed to lookup actor: api error: code = FailedPrecondition desc = did not find address for actor 'QueueActor/<id>'* | 5.0 s (daprd's own lookup wait) | no | **not delivered** |
+| Worker app **or** worker sidecar SIGKILLed while the gateway was still sending a 10 000-item enqueue | `HttpRequestException`: *Error while copying content to a stream* → `IOException`: *Unable to write data to the transport connection: Broken pipe* | ~1 s | 0 of 10 000 | not delivered in practice (the request body never finished sending); see below |
+| Worker app hung (paused), its sidecar up | `TaskCanceledException`: *HttpClient.Timeout of 100 seconds elapsing* → `HttpIOException`: *The response ended prematurely* | 100 s | — | **unknown** (the call reached the worker) |
+| Placement stopped (actor active, or new) | `TaskCanceledException`: *HttpClient.Timeout of 100 seconds* → `SocketException (125)` | 100 s | — | **unknown** (indistinguishable from a hang). Instance readiness does go unhealthy |
+
+What this changes in the design:
+
+1. **The not-delivered signature is precise.** `DaprApiException` whose message contains
+   `failed to lookup actor` / `did not find address for actor`. Everything else defaults to unknown.
+2. **Request-body write failures** (`HttpRequestException` wrapping a *write* `IOException`) mean
+   the body never fully reached the gateway's own sidecar, so the actor can't have run it, and the
+   catalogue shows nothing stored. Treating them as not delivered is reasonable but is a judgement
+   call, because it relies on daprd and the actor runtime reading the whole body before invoking.
+   Start with **unknown**, and revisit with more evidence (open question 7).
+3. **daprd already waits 5 s** before reporting "no address". A server retry loop adds to that, so
+   the first retry happens about 5 s in, and a 30 s cap means roughly 5 attempts.
+4. **The gateway's actor calls time out after 100 s** (the `Dapr.Actors` HttpClient default), well
+   past the proposed 30 s server cap and most ingress timeouts. Phase 3 must bound each actor call by
+   the caller's remaining deadline (pass a `CancellationToken`, or lower the actor client's timeout).
+   Otherwise a hung worker or a lost placement holds requests for 100 s, whatever the deadline.
+5. **A placement outage looks like a hang, not "no address".** Retries can't help there. Readiness
+   (section 1) takes the gateway out of rotation instead, which is the division of work this
+   proposal intends.
 
 ## Phases
 
@@ -240,7 +327,7 @@ mappings. Callers can now tell an outage from a bug.
 
 **Phase 3: server retries.** Section 3, with retry metrics.
 
-**Phase 4: actor-host signal.** Section 5, plus compose app-ids.
+**Phase 4: operations signal.** Section 5, plus compose app-ids.
 
 **Phase 5: SDKs.** The retry policy and `WaitForReady` in all four SDKs, tracked as rows in the SDK
 integration matrix. Fixtures and the perf harness stop sending probe enqueues.
@@ -270,11 +357,21 @@ every caller.
    succeeded, or that the lock expired and the item was redelivered. Could the actor tell these apart
    (for example, with a short-lived tombstone of recently acknowledged locks), making ack safely
    retryable?
-5. **Health service name.** `daprmq.DaprMQ.actors` is a name we invent, not a real gRPC service.
-   Clients only use it as a key, but it should be documented as such.
-6. **Compose app-ids.** A separate gateway app-id means adding it to every component's `scopes`. Is
+5. **Health service name.** *Decided:* `daprmq.DaprMQ.operations`. It's a name we invent, not a
+   real gRPC service; clients only use it as a key, and it's documented as such.
+6. **Compose app-ids.** *Decided:* the compose gateway has its own app-id, added to the object store's
+   `scopes` (the state store has none). Original question: a separate gateway app-id means adding it to every component's `scopes`. Is
    that acceptable, or should the worker-only route instead return a status that invocation can
    retry past?
+
+7. **Request-body write failures.** Classify `HttpRequestException` from a failed request-body
+   write as not delivered (phase 0 finding 2)? That needs confidence that no part of a partially sent
+   request is ever acted on.
+
+8. **Existing names that mention actors.** `ActorNotFoundException` (404) and
+   `SessionActorUnavailableException` / `SESSION_ACTOR_UNAVAILABLE` (502) already expose actors in the
+   public API. Renaming them breaks callers, so it's a separate change; it could keep the old names as
+   aliases for one release.
 
 ## Verification
 
@@ -292,9 +389,9 @@ All of the following run on the split test topology unless noted.
 - **Unknown outcome of a dequeue:** kill a worker partway through a bulk dequeue. The caller gets
   `DELIVERY_UNKNOWN`, there is no retry, and the item count afterwards shows exactly one attempt.
 - **Unknown outcome of a keyed enqueue:** the SDK retries, and each item is stored exactly once.
-- **Actor-host signal:** `daprmq.DaprMQ.actors` goes to `NOT_SERVING` when every worker stops and
+- **Operations signal:** `daprmq.DaprMQ.operations` goes to `NOT_SERVING` when every worker stops and
   back to `SERVING` when one returns. K8s readiness of the gateways does not change.
-- **Fixtures:** every SDK fixture starts with `WaitForReady("daprmq.DaprMQ.actors")`, and no
+- **Fixtures:** every SDK fixture starts with `WaitForReady("daprmq.DaprMQ.operations")`, and no
   `probe`/`readiness-*` queues appear in the state store afterwards.
 - **Unit tests:**
   - the invoker's classification table, one row per phase-0 failure mode;
