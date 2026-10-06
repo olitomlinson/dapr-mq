@@ -5,7 +5,7 @@ using Grpc.Core;
 namespace DaprMQ.Client.IntegrationTests;
 
 /// <summary>
-/// X-01..X-04 from sdks/testing/INTEGRATION_TESTS.md - constructing, disposing, and failing to
+/// X-01..X-03 from sdks/testing/INTEGRATION_TESTS.md - constructing, disposing, and failing to
 /// reach a DaprMQClient. Unlike the rest of the suite these build their own clients (and own
 /// their transports), since ownership is exactly what's under test.
 /// </summary>
@@ -127,17 +127,5 @@ public class ClientLifecycleTests(DaprTestFixture fixture) : IntegrationTestBase
         Assert.NotNull(grpcFailure);
         Assert.IsType<RpcException>(grpcFailure);
         Assert.Equal(StatusCode.Unavailable, ((RpcException)grpcFailure).StatusCode);
-    }
-
-    [Fact]
-    public async Task X04_WaitForReady_RunningStack_ReturnsAndEnqueueSucceeds()
-    {
-        var client = CreateClient();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-
-        await client.WaitForReadyAsync(cts.Token);
-
-        var result = await client.EnqueueAsync(NewQueueId(), [new EnqueueItemDto(new { seq = 1 })]);
-        Assert.Equal(1, result.ItemsEnqueued);
     }
 }

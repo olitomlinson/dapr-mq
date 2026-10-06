@@ -13,9 +13,10 @@ That is the same response a bug gets. A caller can't tell "try again in a second
 never work", so SDK users either fail on every worker blip or write their own retry loops. Those
 loops are unsafe, because they can't tell which failures are safe to repeat.
 
-Readiness ([grpc-health-readiness.md](grpc-health-readiness.md)) doesn't cover this. It decides
-whether a gateway gets traffic. It doesn't help a request that is already in flight when a worker
-goes away, or one arriving during the few seconds before a probe notices.
+Readiness probes don't cover this. Today the gateway's probe (`/health`) only shows that the
+process is up. Even a probe that understood Dapr would only decide whether a gateway gets traffic.
+It wouldn't help a request that is already in flight when a worker goes away, or one arriving during
+the few seconds before a probe notices.
 
 The tempting fix is for the gateway to retry every actor call until it succeeds, so callers just
 wait. That breaks in two ways:
@@ -52,7 +53,8 @@ the answer is **unknown**.
 
 ### Phase 0: catalogue daprd's actual errors
 
-Use the split Testcontainers topology (`DAPRMQ_TEST_TOPOLOGY=split`) to cause each failure mode, and
+Use a Testcontainers stack shaped like production, with a gateway (`REGISTER_ACTORS=false`) in front of a separate
+worker, to cause each failure mode, and
 record exactly what the gateway's `DaprClient` / actor proxy throws. That means the exception type,
 the gRPC status code and the daprd error code:
 
@@ -138,12 +140,13 @@ The user experience is that calls wait through a worker restart, up to `RetryTim
 with a clear, typed error if it takes longer, and they never repeat an operation that might have
 already happened.
 
-### Readiness stays
+### Relationship to readiness
 
-Readiness and retries do different jobs. Readiness moves traffic off a broken gateway and holds new
-pods back until they can serve. Retries carry in-flight requests across a short worker gap. The
-SDK's `WaitForReadyAsync` remains for test fixtures and tooling. Applications that use phase 3
-retries won't usually need it.
+Readiness and retries do different jobs, and readiness is left to its own proposal. Readiness moves
+traffic off a broken gateway and holds new pods back until they can serve. Retries carry in-flight
+requests across a short worker gap. One constraint for that proposal: if gateway readiness required a
+live worker, then during a full worker outage every gateway would leave the Service. Callers would get
+an immediate connection refused instead of waiting through the outage within their deadline.
 
 ## Out of scope
 
@@ -169,7 +172,7 @@ retries won't usually need it.
 
 ## Verification
 
-Integration tests on the split topology:
+Integration tests on a gateway + worker stack (as in phase 0):
 
 - **Recovery within the deadline:** stop the workers, enqueue with a 20 s deadline, start the
   workers 5 s later. The enqueue succeeds and the queue holds exactly one item.

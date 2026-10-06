@@ -1,7 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
-using Microsoft.Extensions.Diagnostics.HealthChecks;
 using DaprMQ.ApiServer.Endpoints;
 using DaprMQ.ApiServer.Services;
 using DaprMQ.Interfaces;
@@ -250,55 +249,6 @@ if (registerActors)
 }
 // No else needed - Dapr Client (from AddDapr) is sufficient for actor invocation
 
-// Readiness: the sidecar is up and its actor runtime is connected to placement, and either this
-// instance hosts QueueActor or (gateway) at least one worker that registered it in placement answers
-// its own readiness. Served as grpc.health.v1.Health and /health/ready.
-WorkerProbeOptions? workerProbe = null;
-if (!registerActors)
-{
-    var workerAppId = builder.Configuration.GetValue<string>("WORKER_APP_ID");
-    var placementMetadataAddress = builder.Configuration.GetValue<string>("DAPR_PLACEMENT_METADATA_ADDRESS");
-    if (string.IsNullOrWhiteSpace(workerAppId) || string.IsNullOrWhiteSpace(placementMetadataAddress))
-    {
-        throw new InvalidOperationException(
-            "WORKER_APP_ID and DAPR_PLACEMENT_METADATA_ADDRESS are required when REGISTER_ACTORS=false: the gateway " +
-            "is only ready once a worker has registered QueueActor in placement (placement needs --metadata-enabled)");
-    }
-
-    workerProbe = new WorkerProbeOptions
-    {
-        AppId = workerAppId,
-        ActorType = actorConfig.QueueActorTypeName,
-        AppPort = builder.Configuration.GetValue("WORKER_APP_PORT", 8080),
-        Namespace = builder.Configuration.GetValue<string>("WORKER_NAMESPACE")
-    };
-    builder.Services.AddSingleton<IPlacementStateClient>(sp => new PlacementStateClient(
-        sp.GetRequiredService<IHttpClientFactory>(), placementMetadataAddress, TimeSpan.FromSeconds(1)));
-}
-builder.Services.AddSingleton(new DaprReadinessOptions
-{
-    DaprHttpEndpoint = daprHttpEndpoint,
-    RequiredActorType = registerActors ? actorConfig.QueueActorTypeName : null,
-    WorkerProbe = workerProbe
-});
-// Singleton: AddCheck<T> otherwise builds a new instance per run, losing the last-ready worker.
-builder.Services.AddSingleton<DaprReadinessHealthCheck>();
-builder.Services.AddHealthChecks()
-    .AddCheck<DaprReadinessHealthCheck>("dapr", tags: ["ready"], timeout: TimeSpan.FromSeconds(6));
-builder.Services.AddGrpcHealthChecks(o =>
-{
-    // "" = whole server; the named service = the DaprMQ API surface
-    o.Services.Map("", r => r.Tags.Contains("ready"));
-    o.Services.Map("daprmq.DaprMQ", r => r.Tags.Contains("ready"));
-});
-// Health.Watch is driven by the health-check publisher; its defaults (5 s delay / 30 s period)
-// would make Watch slower than polling.
-builder.Services.Configure<HealthCheckPublisherOptions>(o =>
-{
-    o.Delay = TimeSpan.Zero;
-    o.Period = TimeSpan.FromSeconds(2);
-});
-
 var app = builder.Build();
 
 // Configure the HTTP request pipeline
@@ -327,12 +277,7 @@ if (registerActors)
     app.MapQueueDepthEndpoint();
 }
 
-// Readiness is mapped on every instance (workers included), not just API-serving ones
-app.MapGrpcHealthChecksService();
-app.MapHealthChecks("/health/ready", new() { Predicate = r => r.Tags.Contains("ready") });
-
-// Liveness: the process is up. Deliberately independent of Dapr so a placement outage doesn't
-// make Kubernetes restart every pod.
+// Health check endpoint
 app.MapGet("/health", () => new { status = "healthy", service = "daprmq-api-dotnet" });
 
 app.Run();

@@ -61,7 +61,7 @@ worker:
   # Readiness probe configuration
   readinessProbe:
     httpGet:
-      path: /health/ready
+      path: /health
       port: 8080
     initialDelaySeconds: 5
     periodSeconds: 5
@@ -99,11 +99,6 @@ gateway:
   enabled: true
   replicaCount: 3
 
-  # Placement healthz address (host:port) the gateway reads the actor placement table from: it is only
-  # ready once a worker has registered QueueActor there. Requires the Dapr control plane installed with
-  # dapr_placement.metadataEnabled=true.
-  placementMetadataAddress: "dapr-placement-server.dapr-system.svc.cluster.local:8080"
-
   # Container port (8080 for HTTP, 8081 for gRPC)
   # This is automatically set based on dapr.protocol
   httpPort: 8080
@@ -132,7 +127,7 @@ gateway:
   # Readiness probe configuration
   readinessProbe:
     httpGet:
-      path: /health/ready
+      path: /health
       port: 8080
     initialDelaySeconds: 5
     periodSeconds: 5

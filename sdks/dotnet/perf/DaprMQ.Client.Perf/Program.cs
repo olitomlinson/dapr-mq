@@ -44,9 +44,8 @@ if (options.HttpEndpoint != null)
 else
 {
     var image = Environment.GetEnvironmentVariable("DAPRMQ_API_IMAGE") ?? "daprmq-api:test";
-    var topology = DaprTopology.Perf(options.ApiReplicas, options.Workers);
-    Console.WriteLine($"Starting Testcontainers stack ({image}, {topology.ApiReplicas} API replica(s), " +
-        $"{(topology.IsSplit ? $"as gateways in front of {topology.Workers} worker(s)" : "hosting the actors")}, {topology.SchedulerReplicas} schedulers)...");
+    var topology = DaprTopology.Perf(options.ApiReplicas);
+    Console.WriteLine($"Starting Testcontainers stack ({image}, {topology.ApiReplicas} API replica(s), {topology.SchedulerReplicas} schedulers)...");
 
     // DaprTestEnvironment mounts ../../../dapr-components relative to the working directory
     // (bin/<config>/<tfm> -> this project's copy), as it does under the test runner.
@@ -90,7 +89,7 @@ try
         Console.WriteLine();
         Console.WriteLine($"=== Profile {runOptions.Profile} ===");
         var context = new RunContext(DateTimeOffset.UtcNow, environment, runOptions.Scale, runOptions.ApiReplicas,
-            stack?.Topology.SchedulerReplicas, RunContext.ClientVersion(), runOptions.Workers);
+            stack?.Topology.SchedulerReplicas, RunContext.ClientVersion());
 
         System.Text.Json.Nodes.JsonObject record;
         if (runOptions.Load is { } load)
@@ -166,18 +165,28 @@ static async Task<int> RunStateReadsAsync(DaprTestEnvironment stack, DaprMQClien
     return options.Gate && comparisons.Any(c => c.Regressed) ? 3 : 0;
 }
 
-// Actors take a moment to register after the sidecar starts; wait on the gRPC health service.
+// Actors take a moment to register after the sidecar starts; poll a probe enqueue until it lands.
 static async Task WaitForServerAsync(DaprMQClient client, CancellationToken ct)
 {
-    using var readyCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-    readyCts.CancelAfter(TimeSpan.FromMinutes(2));
-    try
+    var deadline = DateTime.UtcNow.AddMinutes(2);
+    while (true)
     {
-        await client.WaitForReadyAsync(readyCts.Token);
-    }
-    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-    {
-        throw new TimeoutException("Server did not report ready within 2 minutes.");
+        try
+        {
+            var probe = await client.EnqueueAsync($"perf-probe-{Guid.NewGuid():N}", [new EnqueueItemDto(new { probe = true })], ct);
+            if (probe.Success)
+            {
+                return;
+            }
+        }
+        catch (Exception) when (DateTime.UtcNow < deadline && !ct.IsCancellationRequested) { }
+
+        if (DateTime.UtcNow >= deadline)
+        {
+            throw new TimeoutException("Server did not accept a probe enqueue within 2 minutes.");
+        }
+
+        await Task.Delay(1000, ct);
     }
 }
 

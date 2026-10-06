@@ -5,13 +5,13 @@ namespace DaprMQ.PerfReport.Tests;
 public class RegressionCheckTests
 {
     private static JsonObject Run(string runId, string branch, double wall, double efficiency = 0.9, double claimP95 = 100,
-        string key = "10x10@100ms/4slots", string env = "ci", string sdk = "dotnet", int apiReplicas = 1, bool passed = true, int workers = 0) =>
+        string key = "10x10@100ms/4slots", string env = "ci", string sdk = "dotnet", int apiReplicas = 1, bool passed = true) =>
         JsonNode.Parse($$"""
         {
           "schemaVersion": 2, "runId": "{{runId}}",
           "sdk": { "name": "{{sdk}}" },
           "environment": { "label": "{{env}}", "gitBranch": "{{branch}}" },
-          "topology": { "apiReplicas": {{apiReplicas}}, "workers": {{workers}} },
+          "topology": { "apiReplicas": {{apiReplicas}} },
           "scenario": { "id": "P-04", "name": "session-drain", "profile": "steady-drain", "key": "{{key}}" },
           "metrics": {
             "wallClockSeconds": {{wall}}, "efficiency": {{efficiency}},
@@ -98,7 +98,6 @@ public class RegressionCheckTests
             Run("other-key", "main", 1000, key: "1x1@1ms/1slots"),
             Run("other-sdk", "main", 1000, sdk: "java"),
             Run("other-topology", "main", 1000, apiReplicas: 3),
-            Run("split-topology", "main", 1000, workers: 2),
             Run("failed", "main", 1000, passed: false),
         };
         history.AddRange(Enumerable.Range(0, 3).Select(i => Run($"old{i}", "main", 1000)));
@@ -110,16 +109,6 @@ public class RegressionCheckTests
 
         Assert.Equal(10, comparison.BaselineRuns);
         Assert.Equal(100, Metric(comparison, "Wall clock (s)").Baseline!.Value, 3);
-    }
-
-    [Fact]
-    public void SeriesKey_SplitsCombinedFromSplit_AndTreatsMissingWorkersAsCombined()
-    {
-        var legacy = Run("legacy", "main", 100);
-        legacy["topology"]!.AsObject().Remove("workers");
-
-        Assert.Equal(RegressionCheck.SeriesKey(Run("combined", "main", 100)), RegressionCheck.SeriesKey(legacy));
-        Assert.NotEqual(RegressionCheck.SeriesKey(Run("combined", "main", 100)), RegressionCheck.SeriesKey(Run("split", "main", 100, workers: 3)));
     }
 
     [Fact]
