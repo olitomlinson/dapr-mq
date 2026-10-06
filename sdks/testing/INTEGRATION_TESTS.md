@@ -21,7 +21,7 @@ Source of truth for the integration scenarios every DaprMQ client SDK must imple
 
 **Topology.** The table is the *combined* stack: one API server serves the API and hosts the actors. Production (Helm) is *split*: gateways (`REGISTER_ACTORS=false`) in front of workers (`ENABLE_API=false`). The .NET fixture ([DaprTestEnvironment.cs](../../server/tests/DaprMQ.IntegrationTests/Infrastructure/DaprTestEnvironment.cs)) runs either way: `DAPRMQ_TEST_TOPOLOGY=split` puts a gateway (app-id `daprmq-gateway`) in front of a worker (app-id `daprmq-api`), and CI runs the server suite both ways. The other SDK fixtures stay combined: they test the client surface, which doesn't depend on the server layout.
 
-Readiness: wait for `GET /health/operations` to return 200 (queue operations can be served), or call the SDK's `WaitForReady()` (gRPC health service `daprmq.DaprMQ.operations`), rather than fixed sleeps. Don't send a probe enqueue: it writes a queue to the state store on every run. (The .NET fixture polls each replica's own `/health/ready`; the TypeScript and Java fixtures still send a probe enqueue until they move over.) Start the stack once per test session and use a unique queue ID per test. The API image is a prerequisite, built by `./build-and-test.sh --skip-tests` from the repo root (CI must run that step first). Skip (don't fail) when the Docker daemon is unavailable; fail when the image is missing.
+Readiness: wait for `GET /health/operations` to return 200 (queue operations can be served), or call the SDK's `WaitForReady()` (gRPC health service `daprmq.DaprMQ.operations`), rather than fixed sleeps. Don't send a probe enqueue: it writes a queue to the state store on every run. (The .NET fixture polls each replica's own `/health/ready`; the Java fixture still sends a probe enqueue until it moves over.) Start the stack once per test session and use a unique queue ID per test. The API image is a prerequisite, built by `./build-and-test.sh --skip-tests` from the repo root (CI must run that step first). Skip (don't fail) when the Docker daemon is unavailable; fail when the image is missing.
 
 **CI:** [.github/workflows/sdk-integration-tests.yml](../../.github/workflows/sdk-integration-tests.yml) builds the API image once and each SDK job loads it via the shared composite action [actions/load-api-image](actions/load-api-image/action.yml). Add a job there when an SDK gains integration tests.
 
@@ -101,11 +101,11 @@ Legend: ✅ implemented and passing · ⬜ not yet · 🚫 permanently out of sc
 | X-01 | Construct from options (HTTP + gRPC addresses) and perform a round trip | ✅ | ⬜ | ⬜ | ⬜ |
 | X-02 | Dispose/close is idempotent and cancels in-flight streams | ✅ | ⬜ | ⬜ | ⬜ |
 | X-03 | Server unreachable surfaces an error, not a hang and not a domain error (with retries: `DaprMQUnavailableException` once `RetryTimeout` runs out, see R-04) | ✅ | ⬜ | ⬜ | ⬜ |
-| R-01 | `WaitForReady()` (gRPC health `Watch`, service `daprmq.DaprMQ.operations`) returns against a running stack, and an enqueue then succeeds ([RETRIES_AND_READINESS.md](RETRIES_AND_READINESS.md)) | ✅ | ✅ | ⬜ | ⬜ |
+| R-01 | `WaitForReady()` (gRPC health `Watch`, service `daprmq.DaprMQ.operations`) returns against a running stack, and an enqueue then succeeds ([RETRIES_AND_READINESS.md](RETRIES_AND_READINESS.md)) | ✅ | ✅ | ✅ | ⬜ |
 | R-02 | Split stack, every worker stopped: an enqueue with `RetryTimeout` 45 s succeeds once a worker starts 3 s later, stored once | ✅ | ⬜ | ⬜ | ⬜ |
 | R-03 | Split stack, every worker stopped, `RetryTimeout` 8 s: `DaprMQUnavailableException` in under 8 s | ✅ | ⬜ | ⬜ | ⬜ |
-| R-04 | Server unreachable, short `RetryTimeout`: `DaprMQUnavailableException`, not a hang | ✅ | ✅ | ⬜ | ⬜ |
-| R-05 | `AutoIdempotencyKeys` fills in a key for each item without one, and keeps keys the caller set | ✅ | ✅ | ⬜ | ⬜ |
+| R-04 | Server unreachable, short `RetryTimeout`: `DaprMQUnavailableException`, not a hang | ✅ | ✅ | ✅ | ⬜ |
+| R-05 | `AutoIdempotencyKeys` fills in a key for each item without one, and keeps keys the caller set | ✅ | ✅ | ✅ | ⬜ |
 
 ## Out of scope (not exposed by any SDK today)
 

@@ -36,7 +36,38 @@ client.close();
 
 `grpcAddress` is required unless you pass a pre-built `grpcClient` (e.g. in tests - see `fetch`/`grpcClient` in `DaprMQClientOptions`, both DI/test seams). `client.close()` only tears down the gRPC client if this instance built it; a `grpcClient` you supplied yourself is left alone.
 
-Errors map to typed exceptions exported alongside the client (`LockNotFoundError`, `LockExpiredError`, `SessionNotFoundError`, `SessionLockedError`, `SessionLeaseExpiredError`, `InvalidLeaseIdError`, `SessionActorUnavailableError`, `NoSessionsAvailableError`, `SessionLostError`, `ValidationError`, `ActorNotFoundError`), all deriving from `DaprMQError`. A `204 No Content` (queue empty / no session available) is not an error - `dequeueLocked`/`acceptSession` resolve to `null` instead of throwing.
+Errors map to typed exceptions exported alongside the client (`LockNotFoundError`, `LockExpiredError`, `SessionNotFoundError`, `SessionLockedError`, `SessionLeaseExpiredError`, `InvalidLeaseIdError`, `SessionActorUnavailableError`, `NoSessionsAvailableError`, `SessionLostError`, `ValidationError`, `ActorNotFoundError`, `DaprMQUnavailableError`, `DeliveryUnknownError`), all deriving from `DaprMQError`. A `204 No Content` (queue empty / no session available) is not an error - `dequeueLocked`/`acceptSession` resolve to `null` instead of throwing.
+
+## Retries, failures and waiting for a server
+
+Calls ride out a DaprMQ that briefly can't serve them, such as a worker restarting, under the shared
+contract in [RETRIES_AND_READINESS.md](../../testing/RETRIES_AND_READINESS.md):
+
+```ts
+const client = new DaprMQClient({
+  httpBaseUrl, grpcAddress,
+  retry: {
+    timeoutMs: 30_000,         // default; also sent to the server as the deadline. 0 = off
+    autoIdempotencyKeys: true, // optional: makes every enqueue safe to retry
+  },
+});
+```
+
+- **Certainly not performed** (the server reports it couldn't serve the call, or the connection was
+  refused): retried until `timeoutMs`, then `DaprMQUnavailableError`. Always safe to repeat later.
+- **Outcome unknown** (the connection broke after sending, or no response arrived in time): an
+  `enqueue` whose items all have an `idempotencyKey` is retried; anything else throws
+  `DeliveryUnknownError` straight away. It carries the `operation`, the `queueId` and, for enqueue,
+  the items' `idempotencyKeys`. What to do next:
+  - **Enqueue without keys:** re-send and accept a possible duplicate.
+  - **`dequeueLocked`:** don't re-send. If it ran, the items come back when their locks expire.
+  - **acknowledge / extendLock / deadLetter:** re-sending is safe in effect. A `LockNotFoundError`
+    then means the first attempt worked.
+- **Aborting your `signal`** stops retrying and rejects with the abort reason.
+
+`await client.waitForReady({ signal })` waits until queue operations can be served (gRPC health
+service `daprmq.DaprMQ.operations`), without writing anything. Pass `service: "daprmq.DaprMQ"` to wait
+only for the server instance itself.
 
 ## Basic queue operations
 
