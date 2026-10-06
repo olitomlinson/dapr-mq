@@ -118,6 +118,11 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         {
             throw;
         }
+        catch (ActorModels.ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error enqueuing items to queue {request.QueueId}");
+            throw DeliveryFailures.ToRpcException(ex);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, $"Error enqueuing items to queue {request.QueueId}");
@@ -204,6 +209,11 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         catch (RpcException)
         {
             throw;
+        }
+        catch (ActorModels.ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error dequeuing item from queue {request.QueueId}");
+            throw DeliveryFailures.ToRpcException(ex);
         }
         catch (Exception ex)
         {
@@ -301,6 +311,11 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         {
             throw;
         }
+        catch (ActorModels.ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error dequeuing with ack from queue {request.QueueId}");
+            throw DeliveryFailures.ToRpcException(ex);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, $"Error dequeuing with ack from queue {request.QueueId}");
@@ -350,6 +365,11 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         catch (RpcException)
         {
             throw;
+        }
+        catch (ActorModels.ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error acknowledging item in queue {request.QueueId}");
+            throw DeliveryFailures.ToRpcException(ex);
         }
         catch (Exception ex)
         {
@@ -402,6 +422,11 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         {
             throw;
         }
+        catch (ActorModels.ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error extending lock in queue {request.QueueId}");
+            throw DeliveryFailures.ToRpcException(ex);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, $"Error extending lock in queue {request.QueueId}");
@@ -452,6 +477,11 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         {
             throw;
         }
+        catch (ActorModels.ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error moving item to dead letter queue in {request.QueueId}");
+            throw DeliveryFailures.ToRpcException(ex);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, $"Error moving item to dead letter queue in {request.QueueId}");
@@ -497,6 +527,11 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         catch (RpcException)
         {
             throw;
+        }
+        catch (ActorModels.ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error accepting session for queue {request.QueueId}");
+            throw DeliveryFailures.ToRpcException(ex);
         }
         catch (Exception ex)
         {
@@ -544,6 +579,11 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         {
             throw;
         }
+        catch (ActorModels.ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error renewing session lease for queue {request.QueueId}, session {request.SessionId}");
+            throw DeliveryFailures.ToRpcException(ex);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, $"Error renewing session lease for queue {request.QueueId}, session {request.SessionId}");
@@ -579,6 +619,11 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         catch (RpcException)
         {
             throw;
+        }
+        catch (ActorModels.ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error releasing session for queue {request.QueueId}, session {request.SessionId}");
+            throw DeliveryFailures.ToRpcException(ex);
         }
         catch (Exception ex)
         {

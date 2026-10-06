@@ -25,7 +25,7 @@ public class TopicActorInvoker : ITopicActorInvoker
         CancellationToken cancellationToken = default)
     {
         var proxy = _actorProxyFactory.Create(actorId, _actorType);
-        return await proxy.InvokeMethodAsync<TResponse>(methodName, cancellationToken);
+        return await ActorCall.RunAsync(() => proxy.InvokeMethodAsync<TResponse>(methodName, cancellationToken), cancellationToken);
     }
 
     /// <inheritdoc />
@@ -36,7 +36,7 @@ public class TopicActorInvoker : ITopicActorInvoker
         CancellationToken cancellationToken = default)
     {
         var proxy = _actorProxyFactory.Create(actorId, _actorType);
-        return await proxy.InvokeMethodAsync<TRequest, TResponse>(methodName, request, cancellationToken);
+        return await ActorCall.RunAsync(() => proxy.InvokeMethodAsync<TRequest, TResponse>(methodName, request, cancellationToken), cancellationToken);
     }
 
     /// <inheritdoc />
@@ -47,7 +47,7 @@ public class TopicActorInvoker : ITopicActorInvoker
         CancellationToken cancellationToken = default)
     {
         var proxy = _actorProxyFactory.Create(actorId, _actorType);
-        await proxy.InvokeMethodAsync(methodName, request, cancellationToken);
+        await ActorCall.RunAsync(() => proxy.InvokeMethodAsync(methodName, request, cancellationToken), cancellationToken);
     }
 
     /// <inheritdoc />
@@ -57,6 +57,6 @@ public class TopicActorInvoker : ITopicActorInvoker
         CancellationToken cancellationToken = default)
     {
         var proxy = _actorProxyFactory.Create(actorId, _actorType);
-        await proxy.InvokeMethodAsync(methodName, cancellationToken);
+        await ActorCall.RunAsync(() => proxy.InvokeMethodAsync(methodName, cancellationToken), cancellationToken);
     }
 }

@@ -363,7 +363,7 @@ public class DaprTestEnvironment : IAsyncLifetime
     /// as any one replica is up). Actor hosts are ready once they host QueueActor, gateways once
     /// their sidecar is connected to placement.
     /// </summary>
-    private async Task WaitForReadyAsync(TimeSpan timeout)
+    public async Task WaitForReadyAsync(TimeSpan timeout)
     {
         using var probe = new HttpClient();
         var deadline = DateTime.UtcNow + timeout;

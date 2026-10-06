@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using DaprMQ.Interfaces;
 using DaprMQ.ApiServer.Constants;
 using DaprMQ.ApiServer.Models;
+using DaprMQ.ApiServer.Services;
 
 namespace DaprMQ.ApiServer.Controllers;
 
@@ -149,6 +150,11 @@ public class QueueController : ControllerBase
 
             return BuildEnqueueResponse(queueId, totalEnqueued, totalDeduplicated);
         }
+        catch (ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error enqueuing items to queue {queueId}");
+            return new DeliveryFailureResult(ex);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, $"Error enqueuing items to queue {queueId}");
@@ -242,6 +248,11 @@ public class QueueController : ControllerBase
             };
 
             return await EnqueueItemsAsync(queueId, ResolveTargetActorId(queueId, sessionId), actorItems);
+        }
+        catch (ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error enqueuing object to queue {queueId}");
+            return new DeliveryFailureResult(ex);
         }
         catch (Exception ex)
         {
@@ -374,6 +385,11 @@ public class QueueController : ControllerBase
                 return Ok(new ApiDequeueResponse(apiItems));
             }
         }
+        catch (ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error dequeuing item from queue {queueId}");
+            return new DeliveryFailureResult(ex);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, $"Error dequeuing item from queue {queueId}");
@@ -497,6 +513,11 @@ public class QueueController : ControllerBase
                 result.ItemsAcknowledged
             ));
         }
+        catch (ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error acknowledging items for queue {queueId}");
+            return new DeliveryFailureResult(ex);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, $"Error acknowledging items for queue {queueId}");
@@ -560,6 +581,11 @@ public class QueueController : ControllerBase
                 NewExpiresAt: (long)result.NewExpiresAt,
                 LockId: request.LockId
             ));
+        }
+        catch (ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error extending lock for queue {queueId}");
+            return new DeliveryFailureResult(ex);
         }
         catch (Exception ex)
         {
@@ -653,6 +679,11 @@ public class QueueController : ControllerBase
                 DlqId: result.DlqId
             ));
         }
+        catch (ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error moving item to dead letter queue for {queueId}");
+            return new DeliveryFailureResult(ex);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, $"Error moving item to dead letter queue for {queueId}");
@@ -697,6 +728,11 @@ public class QueueController : ControllerBase
             }
 
             return result;
+        }
+        catch (ActorCallException ex)
+        {
+            _logger.LogWarning(ex, "Error fetching object for token");
+            return new DeliveryFailureResult(ex);
         }
         catch (Exception ex)
         {
@@ -786,6 +822,11 @@ public class QueueController : ControllerBase
                 sinkActorId
             ));
         }
+        catch (ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error registering sink for {queueId}");
+            return new DeliveryFailureResult(ex);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, $"Error registering sink for {queueId}");
@@ -814,6 +855,11 @@ public class QueueController : ControllerBase
                 true,
                 "Sink unregistered successfully"
             ));
+        }
+        catch (ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error unregistering sink for {queueId}");
+            return new DeliveryFailureResult(ex);
         }
         catch (Exception ex)
         {
@@ -865,6 +911,11 @@ public class QueueController : ControllerBase
 
             return Ok(new ApiAcceptSessionResponse(result.SessionId!, result.LeaseId!, result.LeaseExpiresAt!.Value));
         }
+        catch (ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error accepting session for queue {queueId}");
+            return new DeliveryFailureResult(ex);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, $"Error accepting session for queue {queueId}");
@@ -903,6 +954,11 @@ public class QueueController : ControllerBase
 
             return Ok(new ApiRenewSessionLeaseResponse(result.NewExpiresAt));
         }
+        catch (ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error renewing session lease for queue {queueId}, session {sessionId}");
+            return new DeliveryFailureResult(ex);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, $"Error renewing session lease for queue {queueId}, session {sessionId}");
@@ -936,6 +992,11 @@ public class QueueController : ControllerBase
             }
 
             return Ok(new ApiReleaseSessionResponse(true));
+        }
+        catch (ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error releasing session for queue {queueId}, session {sessionId}");
+            return new DeliveryFailureResult(ex);
         }
         catch (Exception ex)
         {
