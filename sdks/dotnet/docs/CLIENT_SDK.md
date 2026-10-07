@@ -40,12 +40,13 @@ contract in [RETRIES_AND_READINESS.md](../../testing/RETRIES_AND_READINESS.md):
 ```csharp
 var client = new DaprMQClient(httpClient, grpcChannel, new DaprMQRetryOptions
 {
-    Timeout = TimeSpan.FromSeconds(30),   // default; also sent to the server as the deadline. Zero = off
+    Timeout = TimeSpan.FromSeconds(30),   // default: how long to keep retrying an outage. Zero = off
     AutoIdempotencyKeys = true,           // optional: makes every enqueue safe to retry
 });
 // or: new DaprMQClientOptions { HttpBaseAddress = ..., GrpcAddress = ..., Retry = new() { ... } }
 ```
 
+- **Slow is not failed.** A call that reached a busy queue waits its turn for as long as it takes, up to your own cancellation (and a 100 s per-call safety limit). The retry timeout never cuts it short.
 - **Certainly not performed** (the server reports it couldn't serve the call, or the connection was
   refused): retried until `Timeout`, then `DaprMQUnavailableException`. Always safe to repeat later.
 - **Outcome unknown** (the connection broke after sending, or no response arrived in time): an

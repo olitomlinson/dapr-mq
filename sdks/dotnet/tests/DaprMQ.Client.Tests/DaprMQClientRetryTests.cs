@@ -70,14 +70,31 @@ public class DaprMQClientRetryTests
     }
 
     [Fact]
-    public async Task EveryAttempt_SendsTheRemainingTimeAsTheDeadline()
+    public async Task EveryAttempt_SendsTheRemainingRetryTime_NotACallDeadline()
     {
         var (handler, requests) = Sequence(() => Json(HttpStatusCode.OK, Ok));
 
         await CreateClient(handler).EnqueueAsync("q", [new EnqueueItemDto(new { n = 1 })]);
 
-        var ms = int.Parse(Assert.Single(requests[0].Headers.GetValues("daprmq-timeout")));
+        var ms = int.Parse(Assert.Single(requests[0].Headers.GetValues("daprmq-retry-timeout")));
         Assert.InRange(ms, 4_000, 5_000);
+        Assert.False(requests[0].Headers.Contains("daprmq-timeout"));
+    }
+
+    [Fact]
+    public async Task ASlowResponse_OutlivesTheRetryTimeout()
+    {
+        // e.g. queued behind thousands of calls on one busy queue: slow, but progressing.
+        var handler = new FakeHttpMessageHandler(async _ =>
+        {
+            await Task.Delay(300);
+            return Json(HttpStatusCode.OK, Ok);
+        });
+
+        var result = await CreateClient(handler, Fast with { Timeout = TimeSpan.FromMilliseconds(50) })
+            .EnqueueAsync("q", [new EnqueueItemDto(new { n = 1 })]);
+
+        Assert.True(result.Success);
     }
 
     [Fact]
@@ -191,7 +208,7 @@ public class DaprMQClientRetryTests
         await Assert.ThrowsAsync<DaprMQUnavailableException>(() => client.AcknowledgeAsync("q", "L1"));
 
         Assert.Single(requests);
-        Assert.False(requests[0].Headers.Contains("daprmq-timeout"));
+        Assert.False(requests[0].Headers.Contains("daprmq-retry-timeout"));
     }
 
     [Fact]

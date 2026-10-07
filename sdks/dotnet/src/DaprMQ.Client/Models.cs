@@ -40,8 +40,8 @@ public record DaprMQClientOptions
 public record DaprMQRetryOptions
 {
     /// <summary>
-    /// How long one call may keep retrying; also the deadline sent to the server. Zero turns client
-    /// retries off and sends no deadline.
+    /// How long one call may keep retrying a DaprMQ that can't serve it (also sent to the server as
+    /// its retry window). Never cuts a call that was delivered short. Zero turns client retries off.
     /// </summary>
     public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(30);
 

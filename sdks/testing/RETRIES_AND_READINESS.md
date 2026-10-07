@@ -9,18 +9,22 @@ conventions, e.g. `RetryTimeout` / `retry_timeout` / `retryTimeout`.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `RetryTimeout` | 30 s | How long one call may keep retrying. It is also the deadline sent to the server. `0` turns client retries off and sends no deadline, so the server's own cap applies. |
+| `RetryTimeout` | 30 s | How long one call may keep retrying a DaprMQ that can't serve it. Sent to the server as its retry window. It **never** cuts short a call that was delivered: a slow call (for example, one queued behind a busy queue) runs until the caller cancels, or until the per-call limit of 100 s. `0` turns client retries off. |
 | `AutoIdempotencyKeys` | off | Give every enqueued item without an `IdempotencyKey` a fresh random one (a UUID), so an enqueue whose outcome is unknown can be retried safely. Each key costs the server one extra state write, which is why it is opt-in. |
 
-## Sending the deadline
+## Telling the server how long to retry
 
-On every unary request:
+On every unary request, send `daprmq-retry-timeout: <remaining ms>` (a positive integer; gRPC
+metadata of the same name). "Remaining" is what is left of `RetryTimeout` when that attempt starts.
+The server retries undelivered calls for at most that long (capped by its `DELIVERY_RETRY_MAX_SECONDS`),
+but never cuts a delivered call short.
 
-- **REST:** send `daprmq-timeout: <remaining ms>`, a positive integer.
-- **gRPC:** set the call deadline to the remaining time.
+The server also accepts `daprmq-timeout` (REST) or a gRPC deadline. That is a **call deadline**: it
+bounds everything, including a slow delivered call, which then fails as `DELIVERY_UNKNOWN`. SDKs don't
+send one by default; send one only when the caller explicitly gives a deadline for the operation.
 
-"Remaining" is what is left of `RetryTimeout` when that attempt starts. The server retries
-undelivered calls within it and bounds each of its own attempts by it.
+Per-attempt limit on the client: 100 s (the server's `DELIVERY_ATTEMPT_MAX_SECONDS`), or the language's
+HTTP default if that is longer, so neither side gives up on a call the other is still running.
 
 ## Classifying a failure
 
@@ -46,9 +50,8 @@ Only the marker decides the class. A `503` or `UNAVAILABLE` without the marker i
 - **Backoff:** start at 100 ms, double each time, cap at 2 s, with full jitter (a uniformly random
   wait between 0 and the current backoff).
 - **Minimum attempt window: 6 s.** Don't start an attempt with less than 6 s of `RetryTimeout` left.
-  daprd takes about 5 s to answer "no host", so a shorter attempt would be cut off on the server and
-  come back as unknown. Instead, stop and throw `Unavailable`. The first attempt is always made.
-  Consequence: with `RetryTimeout` under about 6 s, a missing worker may surface as `DeliveryUnknown`.
+  daprd takes about 5 s to answer "no host", so a later attempt would only report "unavailable" after
+  `RetryTimeout` had passed. Stop and throw `Unavailable` instead. The first attempt is always made.
 - **Caller cancellation** stops retrying immediately and surfaces as the language's normal
   cancellation, never as `Unavailable` or `DeliveryUnknown`.
 - **Streams** (`ConsumeSession`) are out of scope: session consumers already reconnect.

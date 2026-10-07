@@ -25,7 +25,7 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
     public const string OperationsHealthService = "daprmq.DaprMQ.operations";
 
     private const string DeliveryMarkerHeader = "daprmq-delivery";
-    private const string TimeoutHeader = "daprmq-timeout";
+    private const string RetryTimeoutHeader = "daprmq-retry-timeout";
     private static readonly TimeSpan ReadyBackoffInitial = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan ReadyBackoffMax = TimeSpan.FromSeconds(2);
 
@@ -451,8 +451,9 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
     /// <summary>
     /// Sends one REST call under the retry contract (sdks/testing/RETRIES_AND_READINESS.md):
     /// not-delivered failures are retried within <see cref="DaprMQRetryOptions.Timeout"/>, unknown
-    /// outcomes only when <paramref name="unknownIsRetryable"/>. Every attempt carries the remaining
-    /// time as the server's deadline. Returns any other response for the caller to map.
+    /// outcomes only when <paramref name="unknownIsRetryable"/>. Every attempt tells the server how
+    /// much retry time is left (daprmq-retry-timeout); it never cuts a delivered call short, which
+    /// runs until the caller cancels or HttpClient.Timeout. Returns any other response to map.
     /// </summary>
     private async Task<HttpResponseMessage> SendAsync(
         string operation, string queueId, Func<HttpRequestMessage> build, bool unknownIsRetryable,
@@ -465,20 +466,18 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
         while (true)
         {
             var remaining = deadline - DateTimeOffset.UtcNow;
-            using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             using var request = build();
             if (retries)
             {
                 var ms = Math.Max(1, (long)remaining.TotalMilliseconds);
-                request.Headers.Add(TimeoutHeader, ms.ToString(CultureInfo.InvariantCulture));
-                attemptCts.CancelAfter(remaining > TimeSpan.Zero ? remaining : TimeSpan.FromMilliseconds(1));
+                request.Headers.Add(RetryTimeoutHeader, ms.ToString(CultureInfo.InvariantCulture));
             }
 
             DeliveryOutcome outcome;
             string reason;
             try
             {
-                var response = await _httpClient.SendAsync(request, attemptCts.Token);
+                var response = await _httpClient.SendAsync(request, ct);
                 var marker = response.Headers.TryGetValues(DeliveryMarkerHeader, out var values) ? values.FirstOrDefault() : null;
                 if (marker is not ("not-delivered" or "unknown"))
                 {
@@ -495,9 +494,9 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
             }
             catch (OperationCanceledException ex)
             {
-                // Our own deadline (or HttpClient.Timeout) cut the attempt off after it was sent.
+                // HttpClient.Timeout cut the attempt off after it was sent.
                 outcome = DeliveryOutcome.Unknown;
-                reason = $"no response within the retry timeout ({ex.Message})";
+                reason = $"no response in time ({ex.Message})";
             }
             catch (HttpRequestException ex) when (ex.HttpRequestError is HttpRequestError.ConnectionError or HttpRequestError.NameResolutionError)
             {
