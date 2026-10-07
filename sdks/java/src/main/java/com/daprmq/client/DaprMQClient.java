@@ -59,7 +59,9 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
     public static final String OPERATIONS_HEALTH_SERVICE = "daprmq.DaprMQ.operations";
 
     private static final String DELIVERY_MARKER = "daprmq-delivery";
-    private static final String TIMEOUT_HEADER = "daprmq-timeout";
+    private static final String RETRY_TIMEOUT_HEADER = "daprmq-retry-timeout";
+    /** Each attempt's own limit: matches the server's per-call safety limit (DELIVERY_ATTEMPT_MAX_SECONDS). */
+    private static final Duration ATTEMPT_TIMEOUT = Duration.ofSeconds(100);
 
     private final String httpBaseUrl;
     private final HttpClient httpClient;
@@ -443,8 +445,9 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
     /**
      * One REST call under the retry contract (sdks/testing/RETRIES_AND_READINESS.md): not-delivered
      * failures are retried within the retry timeout, unknown outcomes only when
-     * {@code unknownIsRetryable}. Every attempt carries the remaining time as the server's deadline.
-     * Returns any other response for the caller to map.
+     * {@code unknownIsRetryable}. Every attempt tells the server how much retry time is left
+     * (daprmq-retry-timeout); it never cuts a delivered call short, which runs until the thread is
+     * interrupted or the per-attempt limit. Returns any other response for the caller to map.
      */
     private HttpResponse<String> send(String operation, String queueId, HttpRequest.Builder request,
                                       boolean unknownIsRetryable, List<String> idempotencyKeys) {
@@ -454,10 +457,10 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
 
         while (true) {
             long remainingNanos = deadline - System.nanoTime();
-            HttpRequest.Builder attempt = request.copy();
+            HttpRequest.Builder attempt = request.copy().timeout(ATTEMPT_TIMEOUT);
             if (retries) {
                 long ms = Math.max(1, TimeUnit.NANOSECONDS.toMillis(remainingNanos));
-                attempt.setHeader(TIMEOUT_HEADER, String.valueOf(ms)).timeout(Duration.ofMillis(ms));
+                attempt.setHeader(RETRY_TIMEOUT_HEADER, String.valueOf(ms));
             }
 
             boolean notDelivered;

@@ -4,6 +4,7 @@ import com.daprmq.client.errors.DaprMQException;
 import com.daprmq.client.errors.DaprMQUnavailableException;
 import com.daprmq.client.errors.DeliveryUnknownException;
 import com.daprmq.client.types.EnqueueItem;
+import com.daprmq.client.types.EnqueueResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -51,12 +52,23 @@ class DaprMQClientRetryTest {
     }
 
     @Test
-    void everyAttemptSendsTheRemainingTimeAsTheDeadline() {
+    void everyAttemptSendsTheRemainingRetryTimeNotACallDeadline() {
         try (ScriptedHttpServer server = new ScriptedHttpServer(ok(OK))) {
             client(server.baseUrl(), FAST).enqueue("q", List.of(new EnqueueItem("x")));
 
-            long ms = Long.parseLong(server.requests().get(0).headers().get("daprmq-timeout"));
-            assertTrue(ms >= 4_000 && ms <= 5_000, "daprmq-timeout=" + ms);
+            long ms = Long.parseLong(server.requests().get(0).headers().get("daprmq-retry-timeout"));
+            assertTrue(ms >= 4_000 && ms <= 5_000, "daprmq-retry-timeout=" + ms);
+            assertFalse(server.requests().get(0).headers().containsKey("daprmq-timeout"));
+        }
+    }
+
+    @Test
+    void aSlowResponseOutlivesTheRetryTimeout() {
+        // e.g. queued behind thousands of calls on one busy queue: slow, but progressing.
+        try (ScriptedHttpServer server = new ScriptedHttpServer(ok(OK)).withDelay(Duration.ofMillis(300))) {
+            EnqueueResult result = client(server.baseUrl(), FAST.withTimeout(Duration.ofMillis(50))).enqueue("q", List.of(new EnqueueItem("x")));
+
+            assertTrue(result.success());
         }
     }
 
@@ -161,7 +173,7 @@ class DaprMQClientRetryTest {
                     () -> client(server.baseUrl(), RetryOptions.defaults().withTimeout(Duration.ZERO)).acknowledge("q", "L1"));
 
             assertEquals(1, server.requests().size());
-            assertFalse(server.requests().get(0).headers().containsKey("daprmq-timeout"));
+            assertFalse(server.requests().get(0).headers().containsKey("daprmq-retry-timeout"));
         }
     }
 

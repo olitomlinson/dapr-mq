@@ -26,7 +26,10 @@ public final class RetryOptions {
         return new RetryOptions(Duration.ofSeconds(30), false, Duration.ofSeconds(6), Duration.ofMillis(100), Duration.ofSeconds(2));
     }
 
-    /** How long one call may keep retrying; also the deadline sent to the server. Zero turns client retries off and sends no deadline. */
+    /**
+     * How long one call may keep retrying a DaprMQ that can't serve it (also sent to the server as its
+     * retry window). Never cuts a call that was delivered short. Zero turns client retries off.
+     */
     public RetryOptions withTimeout(Duration timeout) {
         return new RetryOptions(timeout, autoIdempotencyKeys, minAttemptWindow, initialBackoff, maxBackoff);
     }

@@ -32,6 +32,7 @@ final class ScriptedHttpServer implements AutoCloseable {
     private final HttpServer server;
     private final List<Answer> answers;
     private final List<Recorded> requests = new CopyOnWriteArrayList<>();
+    private volatile long delayMillis;
 
     ScriptedHttpServer(Answer... answers) {
         this.answers = List.of(answers);
@@ -42,6 +43,12 @@ final class ScriptedHttpServer implements AutoCloseable {
         }
         server.createContext("/", this::handle);
         server.start();
+    }
+
+    /** Answers each request only after this delay (a slow but working server). */
+    ScriptedHttpServer withDelay(java.time.Duration delay) {
+        delayMillis = delay.toMillis();
+        return this;
     }
 
     String baseUrl() {
@@ -59,6 +66,13 @@ final class ScriptedHttpServer implements AutoCloseable {
         exchange.getRequestHeaders().forEach((k, v) -> headers.put(k.toLowerCase(), v.isEmpty() ? "" : v.get(0)));
         requests.add(new Recorded(headers, buffer.toString(StandardCharsets.UTF_8)));
 
+        if (delayMillis > 0) {
+            try {
+                Thread.sleep(delayMillis);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
         Answer answer = answers.get(Math.min(requests.size(), answers.size()) - 1);
         answer.headers().forEach((k, v) -> exchange.getResponseHeaders().add(k, v));
         byte[] bytes = answer.body().getBytes(StandardCharsets.UTF_8);

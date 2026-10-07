@@ -48,10 +48,11 @@ contract in [RETRIES_AND_READINESS.md](../../testing/RETRIES_AND_READINESS.md):
 
 ```java
 DaprMQClient client = DaprMQClient.create(httpBaseUrl, grpcTarget, RetryOptions.defaults()
-        .withTimeout(Duration.ofSeconds(30))   // default; also sent to the server as the deadline. ZERO = off
+        .withTimeout(Duration.ofSeconds(30))   // default: how long to keep retrying an outage. ZERO = off
         .withAutoIdempotencyKeys(true));       // optional: makes every enqueue safe to retry
 ```
 
+- **Slow is not failed.** A call that reached a busy queue waits its turn for as long as it takes, up to your own cancellation (and a 100 s per-call safety limit). The retry timeout never cuts it short.
 - **Certainly not performed** (the server reports it couldn't serve the call, or the connection was
   refused): retried until the timeout, then `DaprMQUnavailableException`. Always safe to repeat later.
 - **Outcome unknown** (the connection broke after sending, or no response arrived in time): an
