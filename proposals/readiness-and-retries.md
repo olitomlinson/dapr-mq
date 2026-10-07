@@ -281,11 +281,14 @@ the message in every failure case.
 | Worker app **or** worker sidecar SIGKILLed while the gateway was still sending a 10 000-item enqueue | `HttpRequestException`: *Error while copying content to a stream* → `IOException`: *Unable to write data to the transport connection: Broken pipe* | ~1 s | 0 of 10 000 | not delivered in practice (the request body never finished sending); see below |
 | Worker app hung (paused), its sidecar up | `TaskCanceledException`: *HttpClient.Timeout of 100 seconds elapsing* → `HttpIOException`: *The response ended prematurely* | 100 s | — | **unknown** (the call reached the worker) |
 | Placement stopped (actor active, or new) | `TaskCanceledException`: *HttpClient.Timeout of 100 seconds* → `SocketException (125)` | 100 s | — | **unknown** (indistinguishable from a hang). Instance readiness does go unhealthy |
+| Kubernetes, workers starting while placement rebalances (found by `k8s-deploy-and-test.sh`) | `DaprApiException`: *failed to invoke target <ip>:50002 after 5 retries … remote actor moved* | ~6 s | no | **not delivered**: the target sidecar refused the call because placement had moved the actor |
+| Kubernetes, gateway restarting: its own sidecar not accepting yet | `HttpRequestException`: *Connection refused (localhost:3500)* (inner `SocketException` ConnectionRefused) | immediate | — | **not delivered**: the connection never opened |
 
 What this changes in the design:
 
-1. **The not-delivered signature is precise.** `DaprApiException` whose message contains
-   `failed to lookup actor` / `did not find address for actor`. Everything else defaults to unknown.
+1. **The not-delivered signatures are precise.** `DaprApiException` whose message contains
+   `failed to lookup actor` / `did not find address for actor` or `remote actor moved`, and a refused
+   connection to the gateway's own sidecar. Everything else defaults to unknown.
 2. **Request-body write failures** (`HttpRequestException` wrapping a *write* `IOException`) mean
    the body never fully reached the gateway's own sidecar, so the actor can't have run it, and the
    catalogue shows nothing stored. Treating them as not delivered is reasonable but is a judgement

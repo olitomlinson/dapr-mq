@@ -38,6 +38,14 @@ public static class ActorCallClassifier
         DaprApiException e when e.Message.Contains("did not find address for actor") || e.Message.Contains("failed to lookup actor")
             => DeliveryOutcome.NotDelivered,
 
+        // The target sidecar refused the call because placement had moved the actor elsewhere
+        // (seen while Kubernetes workers start); daprd's own retries ran out before it ran anywhere.
+        DaprApiException e when e.Message.Contains("remote actor moved") => DeliveryOutcome.NotDelivered,
+
+        // Our own sidecar refused the connection (e.g. a gateway restarting), so nothing was sent.
+        HttpRequestException { InnerException: System.Net.Sockets.SocketException { SocketErrorCode: System.Net.Sockets.SocketError.ConnectionRefused } }
+            => DeliveryOutcome.NotDelivered,
+
         // Any other daprd error, a broken connection or the actor client's timeout: it may have run.
         DaprApiException or HttpRequestException or IOException or OperationCanceledException => DeliveryOutcome.Unknown,
 

@@ -19,6 +19,16 @@ public class ActorCallClassifierTests
             DeliveryOutcome.NotDelivered
         },
         {
+            "Kubernetes, workers starting: the target refused the call because placement moved the actor (daprd retried 5 times)",
+            new DaprApiException("error invoke actor method: failed to invoke target 10.1.5.53:50002 after 5 retries. Error: rpc error: code = Internal desc = error invoke actor method: remote actor moved"),
+            DeliveryOutcome.NotDelivered
+        },
+        {
+            "Kubernetes, gateway restarting: its own sidecar refused the connection, so nothing was sent",
+            new HttpRequestException("Connection refused (localhost:3500)", new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionRefused)),
+            DeliveryOutcome.NotDelivered
+        },
+        {
             "worker killed while the request body was still being sent (judgement call: Unknown for now)",
             new HttpRequestException("Error while copying content to a stream.", new IOException("Unable to write data to the transport connection: Broken pipe.")),
             DeliveryOutcome.Unknown
