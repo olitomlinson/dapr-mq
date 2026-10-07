@@ -75,6 +75,25 @@ async def test_not_delivered_is_retried_until_it_succeeds_for_any_operation() ->
     assert len(transport.requests) == 3
 
 
+async def test_nack_not_delivered_is_retried_until_it_succeeds() -> None:
+    transport = SequenceTransport(not_delivered, ok({"success": True, "deadLettered": False, "deliveryCount": 1}))
+
+    result = await make_client(transport).nack("q", "L1")
+
+    assert len(transport.requests) == 2
+    assert result.dead_lettered is False
+
+
+async def test_nack_unknown_is_not_retried_and_names_the_operation() -> None:
+    transport = SequenceTransport(unknown)
+
+    with pytest.raises(DeliveryUnknownError) as raised:
+        await make_client(transport).nack("q", "L1")
+
+    assert len(transport.requests) == 1
+    assert raised.value.operation == "nack"
+
+
 async def test_every_attempt_sends_the_remaining_retry_time_not_a_call_deadline() -> None:
     transport = SequenceTransport(ok(OK))
 

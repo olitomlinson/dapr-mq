@@ -71,7 +71,7 @@ client = DaprMQClient(
   the items' `idempotency_keys`. What to do next:
   - **Enqueue without keys:** re-send and accept a possible duplicate.
   - **`dequeue_locked`:** don't re-send. If it ran, the items come back when their locks expire.
-  - **Acknowledge / extend_lock / dead_letter:** re-sending is safe in effect. A `LockNotFoundError`
+  - **Acknowledge / extend_lock / dead_letter / nack:** re-sending is safe in effect. A `LockNotFoundError`
     then means the first attempt worked.
 - **Cancelling the task** (e.g. `asyncio.wait_for`) stops retrying as normal cancellation.
 

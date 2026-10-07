@@ -207,7 +207,7 @@ class DaprMQClient:
         Counts as a delivery attempt: past the server's max delivery count the item is
         dead-lettered instead (``NackResult.dead_lettered``).
         """
-        response = await self._post_json(self._path(queue_id, "nack"), {"lockId": lock_id}, lease_id)
+        response = await self._post_json("nack", queue_id, self._path(queue_id, "nack"), {"lockId": lock_id}, lease_id)
         body = self._try_parse_json(response) or {}
         if response.is_success:
             return NackResult(
