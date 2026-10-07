@@ -134,4 +134,13 @@ Each container reads these env vars at startup to build its **default** config (
 | `DAPRMQ_GRPC_ADDRESS` | DaprMQ gateway gRPC address (`host:port`, no scheme) | `daprmq-gateway:8081` |
 | `DAPRMQ_QUEUE_PREFIX` | default queue-id prefix | `examples-dotnet` |
 
+**Worker mode** (consumer image only, dotnet so far — see the `autoscale` scenario in SCENARIOS.md): setting these
+starts a background loop that continuously drains `{queuePrefix}-{WORKER_QUEUE_SUFFIX}`, alongside the usual control API.
+
+| Env var | Purpose | Default |
+|---|---|---|
+| `WORKER_QUEUE_SUFFIX` | queue suffix to drain; unset = no worker | _(unset)_ |
+| `WORKER_BATCH_SIZE` | items per dequeue | `5` |
+| `WORKER_ITEM_DELAY_MS` | simulated work per item | `200` |
+
 For **local, non-Helm runs** (e.g. plain `docker run` against a docker-compose DaprMQ instance), default `DAPRMQ_HTTP_BASE_URL`/`DAPRMQ_GRPC_ADDRESS` to `http://localhost:8002` / `localhost:8003` if the env vars are unset, matching the SDKs' own doc examples. `DAPRMQ_QUEUE_PREFIX` defaults to `examples-{language}` if unset.

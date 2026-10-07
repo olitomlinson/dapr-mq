@@ -19,7 +19,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 
@@ -132,12 +131,13 @@ public final class DaprMQServer implements AutoCloseable {
             String grpcAddress = api.getHost() + ":" + api.getMappedPort(5001);
 
             HttpClient probeClient = HttpClient.newHttpClient();
-            waitFor("DaprMQ API + sidecar (actors registered)", () -> {
+            // The daprmq.DaprMQ.operations signal over HTTP: queue operations can be served. Doesn't
+            // write anything, unlike the probe enqueue it replaces.
+            waitFor("DaprMQ API + sidecar (queue operations servable)", () -> {
                 HttpRequest request = HttpRequest.newBuilder()
-                        .uri(URI.create(httpUrl + "/queue/readiness-" + UUID.randomUUID().toString().replace("-", "") + "/enqueue"))
-                        .header("Content-Type", "application/json")
+                        .uri(URI.create(httpUrl + "/health/operations"))
                         .timeout(Duration.ofSeconds(5))
-                        .POST(HttpRequest.BodyPublishers.ofString("{\"items\":[{\"item\":{\"probe\":true},\"priority\":1}]}"))
+                        .GET()
                         .build();
                 try {
                     return probeClient.send(request, HttpResponse.BodyHandlers.discarding()).statusCode() == 200;

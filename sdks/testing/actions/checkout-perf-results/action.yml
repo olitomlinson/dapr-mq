@@ -1,0 +1,28 @@
+name: Check out perf results
+description: >
+  Checks out the orphan perf-results branch as a worktree at ./perf-results (creating it if it doesn't
+  exist yet), converts any schema-1 .NET session-drain records in it to schema 2, and drops the old
+  per-SDK report. SDK jobs read it for regression baselines; the publish job commits to it.
+
+runs:
+  using: composite
+  steps:
+    - name: Check out results branch
+      shell: bash
+      run: |
+        git fetch origin perf-results --depth=1 || true
+        if git rev-parse --verify -q origin/perf-results > /dev/null; then
+          git worktree add perf-results origin/perf-results
+          git -C perf-results switch -C perf-results
+        else
+          git worktree add --orphan -b perf-results perf-results
+        fi
+
+    # Idempotent and cheap: a no-op once the branch has been converted. Remove after the first publish.
+    - name: Convert schema-1 history
+      shell: bash
+      run: |
+        if [ -f perf-results/sdk-dotnet/history.jsonl ]; then
+          dotnet run -c Release --project sdks/dotnet/perf/DaprMQ.Client.Perf -- --migrate-v1 perf-results/sdk-dotnet
+        fi
+        rm -f perf-results/sdk-dotnet/report.html

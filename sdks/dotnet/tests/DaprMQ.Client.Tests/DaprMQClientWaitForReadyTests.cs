@@ -55,6 +55,16 @@ public class DaprMQClientWaitForReadyTests
 
         await client.WaitForReadyAsync();
 
+        Assert.Equal("daprmq.DaprMQ.operations", Assert.Single(requests).Service);
+    }
+
+    [Fact]
+    public async Task WaitForReadyAsync_OtherService_WatchesThatService()
+    {
+        var (client, requests) = CreateClient(Statuses(ServingStatus.Serving));
+
+        await client.WaitForReadyAsync("daprmq.DaprMQ");
+
         Assert.Equal("daprmq.DaprMQ", Assert.Single(requests).Service);
     }
 
@@ -94,7 +104,7 @@ public class DaprMQClientWaitForReadyTests
         var (client, _) = CreateClient(Statuses(ServingStatus.NotServing));
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.WaitForReadyAsync(cts.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.WaitForReadyAsync(ct: cts.Token));
     }
 
     private sealed class ThrowingStreamReader(Exception ex) : IAsyncStreamReader<HealthCheckResponse>

@@ -10,7 +10,11 @@ public static class Scenarios
         new("priority", "producer", "Enqueues normal-priority items, then fast-lane items."),
         new("sessions", "producer", "Enqueues items across two sessions."),
         new("idempotency", "producer", "Enqueues an item, a duplicate reusing its idempotency key, then a distinct item."),
+        new("autoscale", "producer", $"Enqueues {AutoscaleItemCount} items for the KEDA-scaled worker Deployment to drain."),
     };
+
+    /// <summary>Enough backlog that one worker (WORKER_ITEM_DELAY_MS per item) can't keep up, so KEDA scales out.</summary>
+    private const int AutoscaleItemCount = 300;
 
     public static bool IsKnown(string name) => Descriptors.Any(d => d.Name == name);
 
@@ -22,6 +26,7 @@ public static class Scenarios
         "priority" => RunPriorityAsync(client, queuePrefix, log),
         "sessions" => RunSessionsAsync(client, queuePrefix, log),
         "idempotency" => RunIdempotencyAsync(client, queuePrefix, log),
+        "autoscale" => RunAutoscaleAsync(client, queuePrefix, log),
         _ => throw new ArgumentOutOfRangeException(nameof(name), $"unknown scenario '{name}'")
     };
 
@@ -162,6 +167,21 @@ public static class Scenarios
         var distinct = await client.EnqueueAsync(queueId, new[] { new EnqueueItemDto(new { n = 3 }, IdempotencyKey: distinctKey) });
         Step(steps, log, "enqueue",
             $"Enqueued item n=3 with a different idempotencyKey={distinctKey} (itemsEnqueued={distinct.ItemsEnqueued}, itemsDeduplicated={distinct.ItemsDeduplicated})");
+
+        return (queueId, steps);
+    }
+
+    private static async Task<(string, List<StepDto>)> RunAutoscaleAsync(
+        IDaprMQClient client, string queuePrefix, Action<string, string> log)
+    {
+        var queueId = $"{queuePrefix}-autoscale";
+        var steps = new List<StepDto>();
+
+        var items = Enumerable.Range(1, AutoscaleItemCount).Select(n => new EnqueueItemDto(new { n })).ToArray();
+        var result = await client.EnqueueAsync(queueId, items);
+
+        Step(steps, log, "enqueue",
+            $"Enqueued {result.ItemsEnqueued} items to queue {queueId} - the KEDA-scaled worker Deployment drains them");
 
         return (queueId, steps);
     }

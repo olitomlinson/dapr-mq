@@ -1,0 +1,122 @@
+name: Performance (extreme)
+
+# The `extreme` scale of sdks/testing/PERFORMANCE_TESTS.md, run only by hand: concurrency ramps up
+# to 256 workers and the big session drains, against a scaled-out Testcontainers stack (N API
+# replicas behind nginx, 3-node scheduler HA). Each SDK runs in its own job on its own stack, then
+# one job builds the cross-SDK report. Expect ~2h for the full suite on a standard runner.
+#
+# Results go to the perf-results branch (unless `publish` is off) under the runner's env label and
+# API replica count, so they never mix with the pr-scale baselines.
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_replicas:
+        description: 'API server replicas behind the load balancer'
+        required: false
+        default: '3'
+      profiles:
+        description: 'Space-separated extreme profiles, or "all" (enqueue-ramp enqueue-hot-ramp enqueue-batch-ramp dequeue-ack-ramp full wide-drain)'
+        required: false
+        default: 'all'
+      runner:
+        description: 'Runner label (a larger runner gives the stack and the load generator more headroom)'
+        required: false
+        default: 'ubuntu-latest'
+      dotnet:
+        description: 'Run the .NET SDK'
+        type: boolean
+        default: true
+      publish:
+        description: 'Commit results to the perf-results branch'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  # One extreme run at a time. Publishing merges by runId and retries the push, so it can overlap
+  # with the pr workflow safely.
+  group: perf-extreme
+  cancel-in-progress: false
+
+jobs:
+  build-image:
+    name: Build daprmq-api image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: server
+          file: server/Dockerfile
+          tags: daprmq-api:test
+          outputs: type=docker,dest=daprmq-api.tar
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - uses: actions/upload-artifact@v4
+        with:
+          name: daprmq-api-image
+          path: daprmq-api.tar
+          retention-days: 1
+
+  dotnet:
+    name: .NET SDK
+    needs: build-image
+    if: inputs.dotnet
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./sdks/testing/actions/load-api-image
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: ./sdks/testing/actions/checkout-perf-results
+
+      - name: Run extreme profiles
+        env:
+          PROFILES: ${{ inputs.profiles }}
+          REPLICAS: ${{ inputs.api_replicas }}
+          ENV_LABEL: ci-${{ inputs.runner }}
+        run: |
+          common=(--env-label "$ENV_LABEL" --out perf-results --api-replicas "$REPLICAS")
+          if [[ "$PROFILES" == "all" ]]; then
+            dotnet run -c Release --project sdks/dotnet/perf/DaprMQ.Client.Perf -- --suite extreme "${common[@]}"
+          else
+            status=0
+            for profile in $PROFILES; do
+              dotnet run -c Release --project sdks/dotnet/perf/DaprMQ.Client.Perf -- --profile "$profile" "${common[@]}" || status=$?
+            done
+            exit $status
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: perf-sdk-dotnet
+          path: perf-results/sdk-dotnet
+          if-no-files-found: ignore
+
+  publish:
+    name: Report and publish
+    needs: [dotnet]
+    if: ${{ !cancelled() && (contains(needs.*.result, 'success') || contains(needs.*.result, 'failure')) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: ./sdks/testing/actions/publish-perf-results
+        with:
+          push: ${{ inputs.publish }}
+          message: 'Perf extreme: ${{ github.sha }} (${{ inputs.api_replicas }} replicas)'

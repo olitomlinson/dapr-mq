@@ -38,4 +38,28 @@ public record DaprMQClientOptions
 {
     public required Uri HttpBaseAddress { get; init; }
     public required string GrpcAddress { get; init; }
+    public DaprMQRetryOptions Retry { get; init; } = new();
+}
+
+/// <summary>How calls ride out a DaprMQ that can't serve them yet (sdks/testing/RETRIES_AND_READINESS.md).</summary>
+public record DaprMQRetryOptions
+{
+    /// <summary>
+    /// How long one call may keep retrying a DaprMQ that can't serve it (also sent to the server as
+    /// its retry window). Never cuts a call that was delivered short. Zero turns client retries off.
+    /// </summary>
+    public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Give each enqueued item without an IdempotencyKey a fresh one, so an enqueue whose outcome is
+    /// unknown is retried safely. Costs the server one extra state write per item.
+    /// </summary>
+    public bool AutoIdempotencyKeys { get; init; }
+
+    /// <summary>No attempt starts with less left: the server takes ~5 s to report it can't serve.</summary>
+    internal TimeSpan MinAttemptWindow { get; init; } = TimeSpan.FromSeconds(6);
+
+    internal TimeSpan InitialBackoff { get; init; } = TimeSpan.FromMilliseconds(100);
+
+    internal TimeSpan MaxBackoff { get; init; } = TimeSpan.FromSeconds(2);
 }

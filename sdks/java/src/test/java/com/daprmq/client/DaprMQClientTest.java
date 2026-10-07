@@ -78,6 +78,17 @@ class DaprMQClientTest {
     }
 
     @Test
+    void dequeueLockedSendsCompetingConsumersHeaderOnlyWhenEnabled() {
+        server.respondWith(204, null);
+
+        client.dequeueLocked("q", 1, 30, null);
+        assertNull(server.lastRequest().headers().get("allow-competing-consumers"));
+
+        client.dequeueLocked("q", 1, 30, null, true);
+        assertEquals("true", server.lastRequest().headers().get("allow-competing-consumers"));
+    }
+
+    @Test
     void dequeueLockedReturnsNullOn204() {
         server.respondWith(204, null);
 

@@ -209,6 +209,24 @@ helm install daprmq-app2 ./helm \
 | `autoscaling.maxReplicas` | Maximum replicas | `10` |
 | `autoscaling.targetCPUUtilizationPercentage` | Target CPU percentage | `70` |
 
+### Operator (KEDA consumer autoscaling)
+
+`DaprMQ.Operator` hosts a [KEDA external scaler](https://keda.sh/docs/latest/scalers/external/) so you can scale your
+**consumer** Deployments on queue depth (KEDA itself must be installed separately). It runs under its own Dapr app-id and
+reads depth from the workers via Dapr service invocation; see
+[examples/keda/consumer-scaledobject.yaml](../examples/keda/consumer-scaledobject.yaml) and
+[ARCHITECTURE.md](../docs/ARCHITECTURE.md#autoscaling-consumers-with-keda).
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `operator.enabled` | Deploy the operator and its `<fullname>-operator` Service (requires `worker.enabled`) | `false` |
+| `operator.replicaCount` | Replicas (stateless) | `2` |
+| `operator.image.repository` | Image repository | `daprmq-operator` |
+| `operator.image.registry` / `.tag` | Default to `image.registry` / `image.tag` | `""` |
+| `operator.grpcPort` | KEDA `scalerAddress` port | `8081` |
+| `operator.depthCacheTtlMs` | Depth-read cache shared by KEDA's calls per poll | `1000` |
+| `operator.streamPollIntervalMs` | `external-push` activation re-check interval | `1000` |
+
 ## Usage
 
 ### Access the Gateway
@@ -423,7 +441,7 @@ Readiness (sidecar up and connected to placement; on workers, also hosting `Queu
 kubectl exec -n <namespace> <pod-name> -c daprmq -- curl http://localhost:8080/health/ready
 ```
 
-**Note:** Liveness uses `/health` (the process is up) and readiness uses `/health/ready`, both on the HTTP port (8080). The same readiness check is also served on the gRPC port (8081) as the standard `grpc.health.v1.Health` service. A gateway's readiness doesn't prove any worker is ready; check the worker pods for that.
+**Note:** Liveness uses `/health` (the process is up) and readiness uses `/health/ready`, both on the HTTP port (8080). The same readiness check is also served on the gRPC port (8081) as the standard `grpc.health.v1.Health` service. A gateway's readiness deliberately doesn't depend on the workers, so a worker outage doesn't take every gateway out of rotation. Whether queue operations can be served is a separate signal, `/health/operations` (gRPC health service `daprmq.DaprMQ.operations`): on a gateway it reports whether any worker answers; use it for monitoring, never as a probe (see `proposals/readiness-and-retries.md`).
 
 ## Uninstallation
 

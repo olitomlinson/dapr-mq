@@ -85,3 +85,19 @@ Default in-cluster gRPC address for the DaprMQ gateway (bare host:port, no schem
 {{- define "daprmq-examples.gatewayGrpcAddress" -}}
 {{ include "daprmq-examples.gatewayServiceName" . }}.{{ include "daprmq-examples.gatewayNamespace" . }}.svc.cluster.local:{{ .Values.daprmq.grpcPort }}
 {{- end }}
+
+{{/*
+In-cluster address of the main daprmq chart's operator (KEDA external scaler), bare host:port.
+Same naming rule as the gateway; `daprmq.operatorServiceName` overrides it outright.
+*/}}
+{{- define "daprmq-examples.operatorAddress" -}}
+{{- $name := .Values.daprmq.operatorServiceName -}}
+{{- if not $name -}}
+{{- if contains "daprmq" .Values.daprmq.releaseName -}}
+{{- $name = printf "%s-operator" .Values.daprmq.releaseName -}}
+{{- else -}}
+{{- $name = printf "%s-daprmq-operator" .Values.daprmq.releaseName -}}
+{{- end -}}
+{{- end -}}
+{{ $name }}.{{ include "daprmq-examples.gatewayNamespace" . }}.svc.cluster.local:{{ .Values.daprmq.operatorGrpcPort }}
+{{- end }}

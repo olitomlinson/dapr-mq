@@ -21,7 +21,7 @@ public class BlobReaperActorInvoker : IBlobReaperActorInvoker
         CancellationToken cancellationToken = default)
     {
         var proxy = _actorProxyFactory.Create(actorId, _actorType);
-        return await proxy.InvokeMethodAsync<TResponse>(methodName, cancellationToken);
+        return await ActorCall.RunAsync(ct => proxy.InvokeMethodAsync<TResponse>(methodName, ct), cancellationToken);
     }
 
     /// <inheritdoc />
@@ -32,7 +32,7 @@ public class BlobReaperActorInvoker : IBlobReaperActorInvoker
         CancellationToken cancellationToken = default)
     {
         var proxy = _actorProxyFactory.Create(actorId, _actorType);
-        return await proxy.InvokeMethodAsync<TRequest, TResponse>(methodName, request, cancellationToken);
+        return await ActorCall.RunAsync(ct => proxy.InvokeMethodAsync<TRequest, TResponse>(methodName, request, ct), cancellationToken);
     }
 
     /// <inheritdoc />
@@ -43,7 +43,7 @@ public class BlobReaperActorInvoker : IBlobReaperActorInvoker
         CancellationToken cancellationToken = default)
     {
         var proxy = _actorProxyFactory.Create(actorId, _actorType);
-        await proxy.InvokeMethodAsync(methodName, request, cancellationToken);
+        await ActorCall.RunAsync(ct => proxy.InvokeMethodAsync(methodName, request, ct), cancellationToken);
     }
 
     /// <inheritdoc />
@@ -53,6 +53,6 @@ public class BlobReaperActorInvoker : IBlobReaperActorInvoker
         CancellationToken cancellationToken = default)
     {
         var proxy = _actorProxyFactory.Create(actorId, _actorType);
-        await proxy.InvokeMethodAsync(methodName, cancellationToken);
+        await ActorCall.RunAsync(ct => proxy.InvokeMethodAsync(methodName, ct), cancellationToken);
     }
 }

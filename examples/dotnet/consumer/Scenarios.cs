@@ -11,6 +11,7 @@ public static class Scenarios
         new("priority", "consumer", "Dequeues items to show fast-lane items surfacing before normal ones."),
         new("sessions", "consumer", "Accepts, dequeues, acknowledges, and releases two sessions in turn."),
         new("idempotency", "consumer", "Dequeues and acknowledges the survivors of the producer's dedup demo."),
+        new("autoscale", "consumer", "No-op here: the KEDA-scaled worker Deployment (WORKER_QUEUE_SUFFIX=autoscale) consumes these items."),
     };
 
     public static bool IsKnown(string name) => Descriptors.Any(d => d.Name == name);
@@ -23,6 +24,7 @@ public static class Scenarios
         "priority" => RunPriorityAsync(client, queuePrefix, log),
         "sessions" => RunSessionsAsync(client, queuePrefix, log),
         "idempotency" => RunIdempotencyAsync(client, queuePrefix, log),
+        "autoscale" => Task.FromResult(RunAutoscale(queuePrefix, log)),
         _ => throw new ArgumentOutOfRangeException(nameof(name), $"unknown scenario '{name}'")
     };
 
@@ -277,6 +279,15 @@ public static class Scenarios
             Step(steps, log, "acknowledge", $"acked item n={GetField(item.Item, "n")}");
         }
 
+        return (queueId, steps);
+    }
+
+    private static (string, List<StepDto>) RunAutoscale(string queuePrefix, Action<string, string> log)
+    {
+        var queueId = $"{queuePrefix}-autoscale";
+        var steps = new List<StepDto>();
+        Step(steps, log, "skip",
+            $"not consuming {queueId} here - it is drained by the KEDA-scaled worker Deployment so this pod doesn't compete with it");
         return (queueId, steps);
     }
 }

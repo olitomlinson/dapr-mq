@@ -17,10 +17,11 @@ public class DaprReadinessOptions
 }
 
 /// <summary>
-/// Readiness from the sidecar's own view of its actor runtime (/v1.0/metadata), without invoking or
-/// activating an actor. Exact when this instance hosts QueueActor; on a gateway it only proves
-/// placement is reachable, not that a worker is hosting QueueActor (see
-/// proposals/grpc-health-readiness.md).
+/// Instance readiness from the sidecar's own view of its actor runtime (/v1.0/metadata), without
+/// invoking or activating an actor. An actor host is ready once it hosts QueueActor; a gateway once
+/// its sidecar is connected to placement. A gateway deliberately doesn't depend on any worker: a full
+/// worker outage must not take every gateway out of rotation, since callers' requests can wait for a
+/// worker within their deadline (proposals/readiness-and-retries.md, section 1).
 /// </summary>
 public class DaprReadinessHealthCheck(
     DaprClient daprClient,

@@ -33,6 +33,22 @@ builder.Services.ConfigureHttpJsonOptions(o =>
 
 var state = new AppState(Language, Role);
 
+// Worker mode (the examples chart's KEDA-scaled `<lang>-worker` Deployment): continuously drain
+// {queuePrefix}-{WORKER_QUEUE_SUFFIX} alongside the usual control API.
+var workerQueueSuffix = Environment.GetEnvironmentVariable("WORKER_QUEUE_SUFFIX");
+if (!string.IsNullOrEmpty(workerQueueSuffix))
+{
+    builder.Services.AddHostedService(_ => new AutoscaleWorker(
+        state,
+        workerQueueSuffix,
+        EnvInt("WORKER_BATCH_SIZE", 5),
+        TimeSpan.FromMilliseconds(EnvInt("WORKER_ITEM_DELAY_MS", 200)),
+        Log));
+}
+
+static int EnvInt(string name, int fallback) =>
+    int.TryParse(Environment.GetEnvironmentVariable(name), out var value) && value > 0 ? value : fallback;
+
 var app = builder.Build();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok", language = Language, role = Role }));

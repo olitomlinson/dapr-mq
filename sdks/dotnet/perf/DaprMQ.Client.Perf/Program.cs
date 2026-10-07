@@ -1,6 +1,7 @@
 using DaprMQ.Client;
 using DaprMQ.Client.Perf;
 using DaprMQ.IntegrationTests.Infrastructure;
+using DaprMQ.PerfReport;
 using Grpc.Net.Client;
 
 PerfOptions options;
@@ -14,7 +15,15 @@ catch (Exception ex) when (ex is ArgumentException or FormatException)
     return 2;
 }
 
-Directory.CreateDirectory(options.OutDir);
+if (options.MigrateV1Dir != null)
+{
+    Console.WriteLine($"Converted {RunRecords.MigrateV1Directory(options.MigrateV1Dir)} schema-1 records in {options.MigrateV1Dir}");
+    return 0;
+}
+
+// Results root shared by every SDK; this harness writes to {root}/sdk-dotnet.
+var sdkDir = PerfResults.SdkDir(options.OutDir, "dotnet");
+Directory.CreateDirectory(sdkDir);
 
 if (options.ReportOnly)
 {
@@ -35,7 +44,8 @@ if (options.HttpEndpoint != null)
 else
 {
     var image = Environment.GetEnvironmentVariable("DAPRMQ_API_IMAGE") ?? "daprmq-api:test";
-    Console.WriteLine($"Starting Testcontainers stack ({image})...");
+    var topology = DaprTopology.Perf(options.ApiReplicas);
+    Console.WriteLine($"Starting Testcontainers stack ({image}, {topology.ApiReplicas} API replica(s), {topology.SchedulerReplicas} schedulers)...");
 
     // DaprTestEnvironment mounts ../../../dapr-components relative to the working directory
     // (bin/<config>/<tfm> -> this project's copy), as it does under the test runner.
@@ -44,7 +54,7 @@ else
     try
     {
         // state-reads counts statements from Postgres' own log, so it needs log_statement=all.
-        await stack.InitializeAsync(null, image, enableQueryInstrumentation: options.Benchmark == Benchmarks.StateReads);
+        await stack.InitializeAsync(null, image, enableQueryInstrumentation: options.Benchmark == Benchmarks.StateReads, topology);
     }
     catch
     {
@@ -59,16 +69,16 @@ try
 {
     // The test stack speaks h2c (prior knowledge, no TLS).
     AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
-    using var http = new HttpClient { BaseAddress = new Uri(httpEndpoint), Timeout = TimeSpan.FromMinutes(5) };
-    using var channel = GrpcChannel.ForAddress(grpcEndpoint, new GrpcChannelOptions { HttpHandler = new SocketsHttpHandler() });
+    using var http = new HttpClient(new SocketsHttpHandler { MaxConnectionsPerServer = 1024 }) { BaseAddress = new Uri(httpEndpoint), Timeout = TimeSpan.FromMinutes(5) };
+    using var channel = GrpcChannel.ForAddress(grpcEndpoint, new GrpcChannelOptions { HttpHandler = new SocketsHttpHandler { EnableMultipleHttp2Connections = true } });
     var client = new DaprMQClient(http, channel);
 
     await WaitForServerAsync(client, cts.Token);
 
-    var environment = ResultStore.CaptureEnvironment(options.EnvLabel, server);
+    var environment = RunEnvironment.Capture(options.EnvLabel, server);
     if (options.Benchmark == Benchmarks.StateReads)
     {
-        return await RunStateReadsAsync(stack!, client, environment, options, cts.Token);
+        return await RunStateReadsAsync(stack!, client, environment, sdkDir, options, cts.Token);
     }
 
     var exitCode = 0;
@@ -78,30 +88,37 @@ try
     {
         Console.WriteLine();
         Console.WriteLine($"=== Profile {runOptions.Profile} ===");
-        var result = await new SessionDrainScenario(client, runOptions).RunAsync(cts.Token);
+        var context = new RunContext(DateTimeOffset.UtcNow, environment, runOptions.Scale, runOptions.ApiReplicas,
+            stack?.Topology.SchedulerReplicas, RunContext.ClientVersion());
 
-        var timestamp = DateTimeOffset.UtcNow;
-        var runId = $"{timestamp:yyyyMMdd'T'HHmmss'Z'}_{runOptions.EnvLabel}_{runOptions.Profile}";
-        var runPath = ResultStore.Save(options.OutDir, new RunRecord(1, runId, timestamp, environment, runOptions.Profile, runOptions.Scenario, result));
-        runIds.Add(runId);
+        System.Text.Json.Nodes.JsonObject record;
+        if (runOptions.Load is { } load)
+        {
+            var result = await new LoadScenario(client, load).RunAsync(cts.Token);
+            record = RunRecords.Load(context, runOptions.Profile, load, result);
+        }
+        else
+        {
+            var result = await new SessionDrainScenario(client, runOptions).RunAsync(cts.Token);
+            record = RunRecords.SessionDrain(context, runOptions.Profile, runOptions.Scenario, result);
+            PrintSummary(result, runOptions.MaxConcurrentSessions);
+        }
 
-        PrintSummary(result, runOptions.MaxConcurrentSessions);
+        var runPath = PerfResults.Save(options.OutDir, record);
+        runIds.Add(record["runId"]!.GetValue<string>());
         Console.WriteLine($"Run:    {runPath}");
 
-        // Lost or reordered messages make the timings meaningless - fail the run (and CI).
-        if (result.Missing != 0 || result.FifoViolations != 0)
+        // Lost/reordered messages or failed operations make the timings meaningless - fail the run (and CI).
+        if (record["checks"]!["passed"]!.GetValue<bool>() == false)
         {
+            Console.WriteLine($"FAILED: {record["checks"]!["failures"]!.ToJsonString()}");
             exitCode = 1;
         }
     }
 
     Console.WriteLine($"Report: {HtmlReport.Write(options.OutDir)}");
 
-    var history = ResultStore.LoadHistory(options.OutDir);
-    var comparisons = runIds
-        .Select(id => RegressionCheck.Compare(history.Single(r => (string?)r["runId"] == id), history, options.BaselineBranch))
-        .ToList();
-    var markdown = RegressionCheck.ToMarkdown(comparisons, options.BaselineBranch);
+    var (markdown, regressed) = Cli.Check(options.OutDir, runIds, options.BaselineBranch);
     Console.WriteLine();
     Console.WriteLine(markdown);
     if (Environment.GetEnvironmentVariable("GITHUB_STEP_SUMMARY") is { Length: > 0 } summaryPath)
@@ -109,7 +126,7 @@ try
         File.AppendAllText(summaryPath, markdown + "\n");
     }
 
-    if (exitCode == 0 && options.Gate && comparisons.Any(c => c.Regressed))
+    if (exitCode == 0 && options.Gate && regressed)
     {
         exitCode = 3;
     }
@@ -124,7 +141,7 @@ finally
     }
 }
 
-static async Task<int> RunStateReadsAsync(DaprTestEnvironment stack, DaprMQClient client, RunEnvironment environment, PerfOptions options, CancellationToken ct)
+static async Task<int> RunStateReadsAsync(DaprTestEnvironment stack, DaprMQClient client, RunEnvironment environment, string outDir, PerfOptions options, CancellationToken ct)
 {
     Console.WriteLine();
     Console.WriteLine("=== State reads ===");
@@ -132,10 +149,10 @@ static async Task<int> RunStateReadsAsync(DaprTestEnvironment stack, DaprMQClien
 
     var timestamp = DateTimeOffset.UtcNow;
     var runId = $"{timestamp:yyyyMMdd'T'HHmmss'Z'}_{options.EnvLabel}_state-reads";
-    var runPath = StateReadsStore.Save(options.OutDir, new StateReadsRunRecord(1, runId, timestamp, environment, steps));
+    var runPath = StateReadsStore.Save(outDir, new StateReadsRunRecord(1, runId, timestamp, environment, steps));
     Console.WriteLine($"Run:    {runPath}");
 
-    var history = StateReadsStore.LoadHistory(options.OutDir);
+    var history = StateReadsStore.LoadHistory(outDir);
     var comparisons = StateReadsRegressionCheck.Compare(history.Single(r => (string?)r["runId"] == runId), history, options.BaselineBranch);
     var markdown = RegressionCheck.ToMarkdown(comparisons, options.BaselineBranch, "Actor state reads", "Step");
     Console.WriteLine();
@@ -148,18 +165,19 @@ static async Task<int> RunStateReadsAsync(DaprTestEnvironment stack, DaprMQClien
     return options.Gate && comparisons.Any(c => c.Regressed) ? 3 : 0;
 }
 
-// Actors take a moment to register after the sidecar starts; wait on the gRPC health service.
+// Queues take a moment to become servable after the stack starts; wait on the gRPC health service
+// (daprmq.DaprMQ.operations) instead of writing a probe queue.
 static async Task WaitForServerAsync(DaprMQClient client, CancellationToken ct)
 {
     using var readyCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
     readyCts.CancelAfter(TimeSpan.FromMinutes(2));
     try
     {
-        await client.WaitForReadyAsync(readyCts.Token);
+        await client.WaitForReadyAsync(ct: readyCts.Token);
     }
     catch (OperationCanceledException) when (!ct.IsCancellationRequested)
     {
-        throw new TimeoutException("Server did not report ready within 2 minutes.");
+        throw new TimeoutException("Server did not report daprmq.DaprMQ.operations SERVING within 2 minutes.");
     }
 }
 

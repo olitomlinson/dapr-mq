@@ -4,7 +4,7 @@ public interface IDaprMQClient
 {
     Task<EnqueueResult> EnqueueAsync(string queueId, IEnumerable<EnqueueItemDto> items, CancellationToken ct = default);
 
-    Task<DequeueLockedResult?> DequeueLockedAsync(string queueId, int count = 1, int ttlSeconds = 30, string? leaseId = null, CancellationToken ct = default);
+    Task<DequeueLockedResult?> DequeueLockedAsync(string queueId, int count = 1, int ttlSeconds = 30, string? leaseId = null, bool allowCompetingConsumers = false, CancellationToken ct = default);
 
     Task AcknowledgeAsync(string queueId, string lockId, string? leaseId = null, CancellationToken ct = default);
 
@@ -29,5 +29,5 @@ public interface IDaprMQClient
         string queueId, string? sessionId, int leaseSeconds, int prefetchCount, CancellationToken ct = default,
         int sessionIdleTimeoutSeconds = 0);
 
-    Task WaitForReadyAsync(CancellationToken ct = default);
+    Task WaitForReadyAsync(string service = DaprMQClient.OperationsHealthService, CancellationToken ct = default);
 }

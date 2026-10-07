@@ -214,6 +214,15 @@ build_docker_image() {
         log_error "Failed to build Docker image"
         exit 1
     fi
+
+    # DaprMQ.Operator (KEDA scaler) - started by the integration tests' operator fixture
+    log_info "Image: daprmq-operator:test"
+    if docker build -t daprmq-operator:test -f "$SCRIPT_DIR/server/Dockerfile.operator" "$SCRIPT_DIR/server"; then
+        log_success "Docker image built successfully: daprmq-operator:test"
+    else
+        log_error "Failed to build operator Docker image"
+        exit 1
+    fi
 }
 
 # Push Docker image to registry

@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/olitomlinson/dapr-mq/sdks/testing/perf/result.schema.json",
+  "title": "DaprMQ SDK performance run",
+  "description": "One run of one profile by one SDK. runs/<runId>.json holds it in full; history.jsonl holds it without `timeline`. See sdks/testing/PERFORMANCE_TESTS.md.",
+  "type": "object",
+  "required": ["schemaVersion", "runId", "timestampUtc", "sdk", "environment", "topology", "scale", "scenario", "metrics", "checks"],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "runId": { "type": "string", "description": "<yyyyMMdd'T'HHmmss'Z'>_<sdk>_<envLabel>_<profile>" },
+    "timestampUtc": { "type": "string", "format": "date-time" },
+    "sdk": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "enum": ["dotnet", "python", "typescript", "java"] },
+        "version": { "type": ["string", "null"] },
+        "runtime": { "type": ["string", "null"], "description": "e.g. .NET 10.0.0, CPython 3.12.4, Node 22.9.0, OpenJDK 21" }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "required": ["label"],
+      "properties": {
+        "label": { "type": "string", "description": "Machine/runner class; runs are only compared within one label" },
+        "gitSha": { "type": ["string", "null"] },
+        "gitBranch": { "type": ["string", "null"] },
+        "gitDirty": { "type": "boolean" },
+        "os": { "type": ["string", "null"] },
+        "cpuCount": { "type": ["integer", "null"] }
+      }
+    },
+    "topology": {
+      "type": "object",
+      "required": ["apiReplicas"],
+      "properties": {
+        "apiReplicas": { "type": "integer", "minimum": 1 },
+        "schedulerReplicas": { "type": "integer", "minimum": 1 },
+        "loadBalancer": { "type": "boolean" },
+        "server": { "type": "string", "description": "testcontainers <image> | external <url>" }
+      }
+    },
+    "scale": { "enum": ["pr", "extreme", "adhoc"] },
+    "scenario": {
+      "type": "object",
+      "required": ["id", "name", "profile", "key", "params"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^P-[0-9]{2}$" },
+        "name": { "enum": ["enqueue", "enqueue-batch", "dequeue-ack", "session-drain"] },
+        "profile": { "type": "string" },
+        "key": { "type": "string", "description": "Canonical form of params; groups comparable runs" },
+        "params": { "type": "object" }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "description": "Headline numbers. Load scenarios (P-01..P-03): opsPerSecond, messagesPerSecond, latencyMs, ops, messages, errors. P-04: the session-drain metrics (wallClockSeconds, efficiency, peak, claimLatencyMs, ...).",
+      "properties": {
+        "opsPerSecond": { "type": "number" },
+        "messagesPerSecond": { "type": "number" },
+        "latencyMs": { "$ref": "#/$defs/distribution" },
+        "ops": { "type": "integer" },
+        "messages": { "type": "integer" },
+        "errors": { "type": "integer" }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "description": "Load scenarios: one entry per concurrency step (exactly one outside a ramp).",
+      "items": {
+        "type": "object",
+        "required": ["concurrency", "queues", "durationSeconds", "ops", "messages", "errors", "opsPerSecond", "messagesPerSecond", "latencyMs"],
+        "properties": {
+          "concurrency": { "type": "integer" },
+          "queues": { "type": "integer" },
+          "durationSeconds": { "type": "number" },
+          "ops": { "type": "integer" },
+          "messages": { "type": "integer" },
+          "errors": { "type": "integer" },
+          "opsPerSecond": { "type": "number" },
+          "messagesPerSecond": { "type": "number" },
+          "latencyMs": { "$ref": "#/$defs/distribution" }
+        }
+      }
+    },
+    "timeline": {
+      "type": "object",
+      "description": "Per-bucket series over the recorded window(s), t = 0 at the first recorded second. Omitted from history.jsonl.",
+      "required": ["bucketMs", "series"],
+      "properties": {
+        "bucketMs": { "type": "integer" },
+        "series": {
+          "type": "object",
+          "description": "Load: opsPerSecond, messagesPerSecond, latencyP50Ms, latencyP95Ms, latencyP99Ms, errors, concurrency. P-04: busySlots.",
+          "additionalProperties": { "type": "array", "items": { "type": ["number", "null"] } }
+        }
+      }
+    },
+    "checks": {
+      "type": "object",
+      "required": ["passed"],
+      "properties": {
+        "passed": { "type": "boolean" },
+        "failures": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  },
+  "$defs": {
+    "distribution": {
+      "type": "object",
+      "required": ["count", "mean", "p50", "p95", "p99", "max"],
+      "properties": {
+        "count": { "type": "integer" },
+        "mean": { "type": "number" },
+        "p50": { "type": "number" },
+        "p95": { "type": "number" },
+        "p99": { "type": "number" },
+        "max": { "type": "number" }
+      }
+    }
+  }
+}

@@ -267,6 +267,44 @@ Actor "queue-2" → Dequeue()  ─┼─▶ [Processing independently]
 Actor "queue-3" → Enqueue()  ─┴─▶ [Processing independently]
 ```
 
+## Locks and Competing Consumers
+
+### Locked dequeue
+
+`DequeueLocked` (`require-ack: true` over REST) takes items off the queue and parks each in its own lock, `{lockId}-lock`,
+which holds the item itself (`LockState.ItemJson`). A locked item no longer counts toward the queue's `Count`;
+`ActorMetadata.LockCount` tracks how many are in flight. `Acknowledge` deletes the lock, `ExtendLock` pushes its expiry
+out, and `DeadLetter` moves the item to `{queueId}-deadletter`.
+
+### Expiry
+
+There are no reminders or timers. Locks are swept lazily at the top of Dequeue/DequeueLocked/SetSessionLease and on
+activation, found through the `locks_exp_{bucket}` index (`ActorMetadata.LockExpiryBuckets`). An expired item is
+restored to the **position it was taken from**, not the tail: every item carries a monotonic `Sequence` stamped at
+enqueue, and the sweep merges reclaimed items back into the head segment in `Sequence` order. Each expiry increments the
+item's `DeliveryCount`; past `MaxDeliveryCount` (`DAPRMQ_MAX_DELIVERY_COUNT`, default 10) it is dead-lettered instead.
+Lock TTL is clamped to 1–300 seconds.
+
+### Single-consumer vs. competing consumers
+
+| | Default (single consumer) | `allow-competing-consumers: true` |
+|---|---|---|
+| While any lock is outstanding | further locked dequeues get `423 Locked` | each caller gets its own locks |
+| Ordering | strict FIFO processing - one batch in flight at a time | FIFO hand-out, but processing order across consumers is best-effort |
+| Use when | one consumer, or order of processing matters | several consumers/replicas share the queue (e.g. scaled by KEDA) |
+
+The default doesn't mean one *item* at a time - a single call with `count: 10` takes 10 locks; it's the *next* caller
+that is blocked until they're all resolved. Every SDK exposes the flag (`allowCompetingConsumers` /
+`allow_competing_consumers`; see each SDK's `docs/CLIENT_SDK.md`); the gRPC `DequeueLocked` has `allow_competing_consumers`.
+
+### MaxConcurrency (sinks only)
+
+`DequeueLockedRequest.MaxConcurrency` caps the queue's **total** in-flight locks: a call receives at most
+`MaxConcurrency - LockCount` items, and gets `MaxConcurrencyReached` (not `Locked`) at zero. It is not a public dequeue
+parameter - it is set only through an HTTP sink's `maxConcurrency` (1–100), and the sink always dequeues in competing
+mode, so the cap bounds how many concurrent webhook deliveries it makes. Because the cap counts every lock on the queue,
+a sink sharing a queue with other consumers is throttled by their locks too.
+
 ## Scalability
 
 ### Horizontal Scaling
@@ -294,6 +332,38 @@ Dapr's placement service:
 - Tracks which actors are on which app instances
 - Routes requests to correct instance
 - Handles actor migration during scaling/failures
+
+### Autoscaling consumers with KEDA
+
+`DaprMQ.Operator` (Helm `operator.enabled`) implements KEDA's
+[external scaler](https://keda.sh/docs/latest/scalers/external/) gRPC contract so consumer workloads scale on queue depth.
+
+```
+KEDA ──gRPC (externalscaler.proto)──▶ DaprMQ.Operator   (app-id {release}-daprmq-operator)
+                                         │ Dapr service invocation
+                                         ▼
+                                      workers ──▶ POST /internal/queue-depth
+                                         │ sidecar actor-state GET (no activation)
+                                         ▼
+                                      state store
+```
+
+**Why depth is read on the workers.** Dapr keys actor state by the *calling* sidecar's app-id
+(`{appId}||{actorType}||{actorId}||{key}`), so a `GET /v1.0/actors/{type}/{id}/state/metadata` from any other app-id
+silently returns empty (204). The read has no "hosted here" check, though, so any worker can read any queue, and it never
+activates the actor - polling doesn't keep idle queues alive. The workers expose that read as an internal endpoint
+(`QueueDepthEndpoint`, mapped whenever actors are registered), and the operator calls it.
+
+**Metric.** Messages mode: ready + locked items (+ `{queueId}-deadletter` with `includeDeadLetter: "true"`), summed
+across priorities. Locked items always count: they are out of the queue's `Count`, and lock expiry is swept lazily by
+the next dequeue, so scaling consumers to zero over a fully locked queue would strand any lock a scaled-in pod left
+behind. Sessions mode: number of `{queueId}-session-{id}` actors in the queue's SessionCoordinatorActor directory
+holding any ready or locked items.
+
+**Failure.** A failed read is gRPC `Unavailable`, never 0 - reporting 0 would scale consumers to zero during a DaprMQ
+outage. Configure the ScaledObject's `fallback` for what should happen instead.
+
+Trigger fields and a full example: [examples/keda/consumer-scaledobject.yaml](../examples/keda/consumer-scaledobject.yaml).
 
 ## Integration Patterns
 

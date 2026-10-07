@@ -39,7 +39,37 @@ client.close();
 
 `close()` only shuts down the gRPC channel if `create(...)` built it; a channel you constructed and passed in yourself is left alone. Every method blocks the calling thread (there's no async/`Future` variant) except `consumeSession`, which hands back a lazily-pulled `SessionStream`.
 
-Errors map to typed exceptions under `com.daprmq.client.errors` (`LockNotFoundException`, `LockExpiredException`, `SessionNotFoundException`, `SessionLockedException`, `SessionLeaseExpiredException`, `InvalidLeaseIdException`, `SessionActorUnavailableException`, `NoSessionsAvailableException`, `SessionLostException`, `ValidationException`, `ActorNotFoundException`), all extending `DaprMQException`. A `204 No Content` (queue empty / no session available) is not an error - `dequeueLocked`/`acceptSession` return `null` instead of throwing.
+Errors map to typed exceptions under `com.daprmq.client.errors` (`LockNotFoundException`, `LockExpiredException`, `SessionNotFoundException`, `SessionLockedException`, `SessionLeaseExpiredException`, `InvalidLeaseIdException`, `SessionActorUnavailableException`, `NoSessionsAvailableException`, `SessionLostException`, `ValidationException`, `ActorNotFoundException`, `DaprMQUnavailableException`, `DeliveryUnknownException`), all extending `DaprMQException`. A `204 No Content` (queue empty / no session available) is not an error - `dequeueLocked`/`acceptSession` return `null` instead of throwing.
+
+## Retries, failures and waiting for a server
+
+Calls ride out a DaprMQ that briefly can't serve them, such as a worker restarting, under the shared
+contract in [RETRIES_AND_READINESS.md](../../testing/RETRIES_AND_READINESS.md). [docs/TIMEOUTS_AND_RETRIES.md](../../../docs/TIMEOUTS_AND_RETRIES.md) covers what to program for, across all SDKs:
+
+```java
+DaprMQClient client = DaprMQClient.create(httpBaseUrl, grpcTarget, RetryOptions.defaults()
+        .withTimeout(Duration.ofSeconds(30))   // default: how long to keep retrying an outage. ZERO = off
+        .withAutoIdempotencyKeys(true));       // optional: makes every enqueue safe to retry
+```
+
+- **Slow is not failed.** A call that reached a busy queue waits its turn for as long as it takes, up to your own cancellation (and a 100 s per-call safety limit). The retry timeout never cuts it short.
+- **Certainly not performed** (the server reports it couldn't serve the call, or the connection was
+  refused): retried until the timeout, then `DaprMQUnavailableException`. Always safe to repeat later.
+- **Outcome unknown** (the connection broke after sending, or no response arrived in time): an
+  `enqueue` whose items all have an `idempotencyKey` is retried; anything else throws
+  `DeliveryUnknownException` straight away. It carries `getOperation()`, `getQueueId()` and, for
+  enqueue, `getIdempotencyKeys()`. What to do next:
+  - **Enqueue without keys:** re-send and accept a possible duplicate.
+  - **`dequeueLocked`:** don't re-send. If it ran, the items come back when their locks expire.
+  - **acknowledge / extendLock / deadLetter:** re-sending is safe in effect. A
+    `LockNotFoundException` then means the first attempt worked.
+- **Interrupting the calling thread** stops retrying with a `CancellationException`, and the
+  interrupt flag stays set.
+
+`client.waitForReady(Duration.ofSeconds(30))` waits until queue operations can be served (gRPC health
+service `daprmq.DaprMQ.operations`), without writing anything. It returns `false` if the timeout runs
+out first. `waitForReady()` waits until interrupted, and `waitForReady("daprmq.DaprMQ", timeout)`
+waits only for the server instance itself.
 
 ## Basic queue operations
 
@@ -56,6 +86,8 @@ if (result != null) {
     }
 }
 ```
+
+**Competing consumers.** By default a queue serves one lock at a time - while any item is locked, further locked dequeues come back `locked` (HTTP 423). When several consumers share a queue (e.g. replicas scaled out by KEDA), pass the `dequeueLocked(queueId, count, ttlSeconds, leaseId, true)` overload so each can hold its own locks concurrently.
 
 ## Sessions - manual API
 

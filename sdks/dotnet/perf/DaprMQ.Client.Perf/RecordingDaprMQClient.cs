@@ -61,8 +61,8 @@ public sealed class RecordingDaprMQClient(IDaprMQClient inner, Func<double> cloc
     public Task<EnqueueResult> EnqueueAsync(string queueId, IEnumerable<EnqueueItemDto> items, CancellationToken ct = default) =>
         inner.EnqueueAsync(queueId, items, ct);
 
-    public Task<DequeueLockedResult?> DequeueLockedAsync(string queueId, int count = 1, int ttlSeconds = 30, string? leaseId = null, CancellationToken ct = default) =>
-        inner.DequeueLockedAsync(queueId, count, ttlSeconds, leaseId, ct);
+    public Task<DequeueLockedResult?> DequeueLockedAsync(string queueId, int count = 1, int ttlSeconds = 30, string? leaseId = null, bool allowCompetingConsumers = false, CancellationToken ct = default) =>
+        inner.DequeueLockedAsync(queueId, count, ttlSeconds, leaseId, allowCompetingConsumers, ct);
 
     public Task AcknowledgeAsync(string queueId, string lockId, string? leaseId = null, CancellationToken ct = default) =>
         inner.AcknowledgeAsync(queueId, lockId, leaseId, ct);
@@ -85,5 +85,6 @@ public sealed class RecordingDaprMQClient(IDaprMQClient inner, Func<double> cloc
     public Task ReleaseSessionAsync(string queueId, string sessionId, string leaseId, CancellationToken ct = default) =>
         inner.ReleaseSessionAsync(queueId, sessionId, leaseId, ct);
 
-    public Task WaitForReadyAsync(CancellationToken ct = default) => inner.WaitForReadyAsync(ct);
+    public Task WaitForReadyAsync(string service = DaprMQClient.OperationsHealthService, CancellationToken ct = default) =>
+        inner.WaitForReadyAsync(service, ct);
 }

@@ -109,17 +109,47 @@ jobs:
           path: daprmq-api.tar
           retention-days: 1
 
+      # OperatorScalerTests run DaprMQ.Operator (the KEDA external scaler) in its own container.
+      - name: Build operator image
+        uses: docker/build-push-action@v6
+        with:
+          context: server
+          file: server/Dockerfile.operator
+          tags: daprmq-operator:test
+          outputs: type=docker,dest=daprmq-operator.tar
+          cache-from: type=gha,scope=operator
+          cache-to: type=gha,mode=max,scope=operator
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: daprmq-operator-image
+          path: daprmq-operator.tar
+          retention-days: 1
+
   # Each suite starts its own stack via Testcontainers (see sdks/testing/INTEGRATION_TESTS.md);
   # the runner only needs Docker and the prebuilt daprmq-api:test image.
   server:
-    name: Server integration tests
+    name: Server integration tests (${{ matrix.topology }})
     needs: [changes, build-image]
     if: needs.changes.outputs.server == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # combined: one process serves the API and hosts the actors. split: a gateway in front of a
+        # separate worker, as Helm deploys it (DaprTestEnvironment / DaprTopology).
+        topology: [combined, split]
     steps:
       - uses: actions/checkout@v4
 
       - uses: ./sdks/testing/actions/load-api-image
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: daprmq-operator-image
+
+      - name: Load operator image
+        run: docker load -i daprmq-operator.tar
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -127,6 +157,7 @@ jobs:
 
       - name: Run integration tests
         env:
+          DAPRMQ_TEST_TOPOLOGY: ${{ matrix.topology }}
           # Shared runners are ~2x slower than a dev machine; loosen the bulk throughput ceiling (default 60s).
           DAPRMQ_BULK_TEST_MAX_SECONDS: '300'
         # QueryCountComparisonTest is a local experiment that needs two hand-built images

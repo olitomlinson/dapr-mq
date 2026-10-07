@@ -1,22 +1,35 @@
-# Session drain benchmark
+# .NET SDK performance harness
 
-End-to-end performance test of the .NET SDK's `SessionQueueConsumer` against a real server
-(API server + Dapr sidecar + Postgres). It publishes **N sessions × M messages**, drains them with
-one consumer whose handler takes a fixed **settle time** per message, and records how long that
-took and where the consumer's slots sat idle.
+The .NET implementation of [sdks/testing/PERFORMANCE_TESTS.md](../../testing/PERFORMANCE_TESTS.md):
+closed-loop load (`enqueue`, `enqueue-batch`, `dequeue-ack`, and their `extreme` ramps) and the
+`SessionQueueConsumer` session drain, against a real server it starts with Testcontainers. Results use the
+shared schema, so [perf-results/report.html](../../testing/PERFORMANCE_TESTS.md#result-format) puts
+them next to every other SDK's.
 
 ```bash
 ./build-and-test.sh --skip-tests             # builds daprmq-api:test (once per server change)
-./run-session-perf-test.sh --suite ci        # the five CI smoke profiles, ~4 min
-./run-session-perf-test.sh --profile quick   # ~5 min
-./run-session-perf-test.sh                   # full scenario, ~1.5h+
-open sdks/dotnet/perf/results/report.html
+./run-perf-test.sh --suite pr                # every pr profile, ~6 min
+./run-perf-test.sh --profile enqueue         # one profile
+./run-perf-test.sh --suite extreme           # ramps + big drains, 3 API replicas behind nginx, ~2h
+./run-perf-test.sh --profile enqueue-ramp --api-replicas 5
+open perf-results/report.html
 ```
 
-## Profiles
+The stack is the perf topology of the spec: a 3-node scheduler HA cluster, and with `--api-replicas N`
+(default 1, `--suite extreme` 3) N API servers, each with its own sidecar, behind an nginx load balancer
+([DaprTopology.cs](../../../server/tests/DaprMQ.IntegrationTests/Infrastructure/DaprTopology.cs)).
 
-The CI profiles use short settle times so server and SDK overhead dominates the numbers instead of
-hiding behind handler time. `--suite ci` runs all five, back to back, against one stack.
+Load profiles are fixed by the spec. The rest of this page covers the session drain (`P-04`) in detail.
+
+## Session drain
+
+Publishes **N sessions × M messages**, drains them with one consumer whose handler takes a fixed
+**settle time** per message, and records how long that took and where the consumer's slots sat idle.
+
+### Profiles
+
+The pr profiles use short settle times so server and SDK overhead dominates the numbers instead of
+hiding behind handler time. `--suite pr` runs them, after the load profiles, against one stack.
 
 | Profile | Sessions × msgs | Settle | Slots | Other | Catches regressions in | Watch |
 |---|---|---|---|---|---|---|
@@ -26,7 +39,8 @@ hiding behind handler time. `--suite ci` runs all five, back to back, against on
 | `live-publish` | 20 × 50 | 100 ms | 20 | idle 1 s, concurrent, 200 ms ± 100 ms | Producer and consumer together: how fast a new message reaches a slot holding its session (sessions = slots, so no backlog) | delivery p95, in-session wait |
 | `sdk-defaults` | 40 × 5 | 1 s | 20 | SDK defaults | The out-of-the-box consumer, so changes to defaults show up | wall clock, drain wait |
 | `quick` | 100 × 20 | 1 s | 20 | SDK defaults | — | — |
-| `full` (default) | 1000 × 100 | 1 s | 20 | SDK defaults | — | — |
+| `full` (default, extreme) | 1000 × 100 | 1 s | 20 | SDK defaults | — | — |
+| `wide-drain` (extreme) | 2000 × 10 | 50 ms | 200 | idle 1 s | Many slots over short sessions: claim path and stream fan-out under load | claim p95, wall clock |
 
 `session-churn` reads as inefficient by design: the server counts the idle timeout in whole seconds, so
 every session costs ~1–2 s to close. Track its claim latency and wall clock, not efficiency.
@@ -47,7 +61,7 @@ Consumer options default to prefetch 10, lease 30 s, idle timeout = lease. Prefe
 `--http URL --grpc URL` targets an existing server instead of starting Testcontainers. `--report` only
 regenerates the report.
 
-## What is measured
+### What is measured
 
 Every `ConsumeSession` stream is timestamped by a decorating `IDaprMQClient`
 ([RecordingDaprMQClient.cs](DaprMQ.Client.Perf/RecordingDaprMQClient.cs)) and every handler call is
@@ -69,14 +83,17 @@ slots × window = handling + claim + in-session wait + drain wait + between stre
 | Between streams | Slot time outside any stream (client loop, backoff after failed claims) |
 | Delivery latency | Enqueue → handler start, from a publish timestamp in each payload. With `before` it's dominated by backlog wait; with `concurrent` it's the end-to-end latency |
 
-A run fails (exit 1) if any message is missing or a session's messages were handled out of order.
+A run fails (exit 1) if any message is missing or a session's messages were handled out of order
+(load profiles: on any failed operation, or a `dequeue-ack` queue draining early).
 
 ## Regression check
 
-After every run, each profile is compared with the **median of the last ≤10 runs** of the same scenario,
-in the same environment, on the baseline branch (`--baseline-branch`, default `main`; needs ≥3).
-A metric only counts as regressed or improved once it clears both a relative tolerance and an absolute
-floor, since shared runners are noisy:
+After every run, each profile is compared with the **median of the last ≤10 passing runs** of the same
+SDK, scenario key, environment and API replica count on the baseline branch (`--baseline-branch`,
+default `main`; needs ≥3). The rules live in the shared
+[RegressionCheck.cs](../../testing/perf/DaprMQ.PerfReport/RegressionCheck.cs), so every SDK is judged
+the same way. A metric only counts as regressed or improved once it clears both a relative tolerance
+and an absolute floor, since shared runners are noisy:
 
 | Metric | Worse when | Tolerance | Floor |
 |---|---|---|---|
@@ -84,6 +101,9 @@ floor, since shared runners are noisy:
 | Efficiency, peak utilisation | lower | 15% | 0.03 |
 | Claim p95, msg gap p95 | higher | 50% | 50 ms |
 | Delivery p95 | higher | 50% | 100 ms |
+| Load: messages/s | lower | 20% | 20 msg/s |
+| Load: latency p95 | higher | 50% | 5 ms |
+| Load: latency p99 | higher | 100% | 10 ms |
 
 Peak utilisation is skipped when the peak window is under 5 s (e.g. `live-publish`, where every session
 is claimed at once), since a window that short is noise. The table is printed, and appended to the GitHub job summary in CI. It's report-only unless `--gate` is
@@ -91,27 +111,28 @@ passed, which exits 3 on any regression.
 
 ## Results
 
-- `results/runs/<timestamp>_<env>_<profile>.json` — one run in full, incl. a per-second busy-slots timeline
-- `results/history.jsonl` — one summary line per run; the trend charts and the regression check read this
-- `results/report.html` — generated after every run
+Written under the results root (`--out`, default `<repo>/perf-results`, git-ignored), in the shared
+layout of [result.schema.json](../../testing/perf/result.schema.json):
 
-Local `results/` is git-ignored: it's your machine's own history. The shared history is CI's, on the
-`perf-results` branch (below).
+- `sdk-dotnet/runs/<runId>.json`: one run in full, including its per-second timeline
+- `sdk-dotnet/history.jsonl`: one line per run without the timeline. Trends and regression checks read this.
+- `report.html`: regenerated after every run from every `sdk-*/` directory present
 
-Runs are tagged with `--env-label` (default `local-<hostname>`), git sha/branch/dirty flag, OS and CPU
-count. The report charts each environment + scenario combination as its own series, since numbers from
-different machines aren't comparable. A scenario's key covers every non-default setting
-(e.g. `200x20@100ms/20slots+idle1s`) and is recomputed from the recorded parameters when history is loaded.
+Runs are tagged with `--env-label` (default `local-<hostname>`), git sha/branch/dirty flag, OS, CPU
+count and topology. Runs from different machines or replica counts aren't comparable, so the report
+filters by environment and replica count. Results from before the shared schema convert in place with
+`--migrate-v1 <dir>`. CI does this to the `perf-results` branch automatically.
 
-CI ([sdk-perf.yml](../../../.github/workflows/sdk-perf.yml)) runs `--suite ci` as `ci-ubuntu-latest` on
-every push to `main` and PR that touches `server/` or `sdks/dotnet/`, plus nightly. Results live on the
-`perf-results` branch under `sdk-dotnet/`: `main` and nightly runs append to it, PR runs compare against it.
-It can also be run by hand with any flags.
+CI ([perf.yml](../../../.github/workflows/perf.yml)) runs `--suite pr` as `ci-ubuntu-latest` on every push
+to `main` and PR that touches `server/`, `sdks/dotnet/` or `sdks/testing/`, plus nightly.
+[perf-extreme.yml](../../../.github/workflows/perf-extreme.yml) runs the extreme suite, only by hand.
+Results live on the `perf-results` branch: `main`, nightly, manual and extreme runs are merged into it,
+and PR runs compare against it. Every run uploads `report.html` as the `perf-report` artifact.
 
 ## State reads benchmark
 
 ```bash
-./run-session-perf-test.sh --benchmark state-reads   # ~2 min
+./run-perf-test.sh --benchmark state-reads   # ~2 min
 ```
 
 Counts the actor-state statements each operation sends to Postgres: reads (`SELECT`) and writes
@@ -143,8 +164,8 @@ runs on the baseline branch, like the session drain metrics. Because the counts 
 noise, the tolerance is 5% (15% for `topic-relay` and `consume-session`), with a floor of 0.5 statements per operation. The
 table goes to the console and the job summary; `--gate` exits 3 on a regression.
 
-**Results.** `results/state-reads/history.jsonl` has one line per run;
-`results/state-reads/runs/<runId>.json` adds a per-step breakdown by actor type and state name, with ids
+**Results.** `perf-results/sdk-dotnet/state-reads/history.jsonl` has one line per run;
+`perf-results/sdk-dotnet/state-reads/runs/<runId>.json` adds a per-step breakdown by actor type and state name, with ids
 and sequence numbers collapsed (`queue_*_seg_*`, `*-lock`, `session-lock_*`), to show which state a
 change came from. CI runs it after the session drain and stores it on the same `perf-results` branch.
 

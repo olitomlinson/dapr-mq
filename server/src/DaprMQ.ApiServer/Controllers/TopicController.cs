@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using DaprMQ.Interfaces;
 using DaprMQ.ApiServer.Constants;
 using DaprMQ.ApiServer.Models;
+using DaprMQ.ApiServer.Services;
 
 namespace DaprMQ.ApiServer.Controllers;
 
@@ -50,6 +51,11 @@ public class TopicController : ControllerBase
             }
 
             return StatusCode(202, new ApiPublishResponse(result.Accepted, result.PublishId, result.Sequence));
+        }
+        catch (ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error publishing to topic {topicId}");
+            return new DeliveryFailureResult(ex);
         }
         catch (Exception ex)
         {
@@ -117,6 +123,11 @@ public class TopicController : ControllerBase
 
             return StatusCode(201, new ApiSubscribeResponse(result.Success, result.QueueActorId));
         }
+        catch (ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error subscribing {subscriberId} to topic {topicId}");
+            return new DeliveryFailureResult(ex);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, $"Error subscribing {subscriberId} to topic {topicId}");
@@ -149,6 +160,11 @@ public class TopicController : ControllerBase
 
             return Ok(new ApiUnsubscribeResponse(result.Success));
         }
+        catch (ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error unsubscribing {subscriberId} from topic {topicId}");
+            return new DeliveryFailureResult(ex);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, $"Error unsubscribing {subscriberId} from topic {topicId}");
@@ -169,6 +185,11 @@ public class TopicController : ControllerBase
                 ActorMethodNames.ListSubscribers);
 
             return Ok(new ApiListSubscribersResponse(result.SubscriberIds));
+        }
+        catch (ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error listing subscribers for topic {topicId}");
+            return new DeliveryFailureResult(ex);
         }
         catch (Exception ex)
         {
@@ -197,6 +218,11 @@ public class TopicController : ControllerBase
             }
 
             return Ok(new ApiPublishStatusResponse(result.Complete, result.TargetSubscriberIds, result.DeliveredSubscriberIds));
+        }
+        catch (ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error reading publish status for topic {topicId}");
+            return new DeliveryFailureResult(ex);
         }
         catch (Exception ex)
         {
@@ -230,6 +256,11 @@ public class TopicController : ControllerBase
 
             return Ok(new ApiResetCircuitBreakerResponse(result.Success));
         }
+        catch (ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error resetting circuit breaker for {subscriberId} on topic {topicId}");
+            return new DeliveryFailureResult(ex);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, $"Error resetting circuit breaker for {subscriberId} on topic {topicId}");
@@ -257,6 +288,11 @@ public class TopicController : ControllerBase
             }
 
             return Ok(new ApiCircuitBreakerStatusResponse(result.ConsecutiveFailures, result.FirstFailureAt, result.NextRetryAt, result.Blacklisted));
+        }
+        catch (ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error reading circuit breaker status for {subscriberId} on topic {topicId}");
+            return new DeliveryFailureResult(ex);
         }
         catch (Exception ex)
         {

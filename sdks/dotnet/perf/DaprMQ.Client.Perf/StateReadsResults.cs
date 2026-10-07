@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using DaprMQ.PerfReport;
 
 namespace DaprMQ.Client.Perf;
 
@@ -17,7 +18,7 @@ public sealed record StateReadsRunRecord(int SchemaVersion, string RunId, DateTi
 /// </summary>
 public static class StateReadsStore
 {
-    private static readonly JsonSerializerOptions Indented = new(ResultStore.Json) { WriteIndented = true };
+    private static readonly JsonSerializerOptions Indented = new(RunEnvironment.Json) { WriteIndented = true };
 
     public static string Dir(string outDir) => Path.Combine(outDir, "state-reads");
 
@@ -29,12 +30,12 @@ public static class StateReadsStore
         var runPath = Path.Combine(runsDir, $"{run.RunId}.json");
         File.WriteAllText(runPath, JsonSerializer.Serialize(run, Indented));
 
-        var summary = JsonSerializer.SerializeToNode(run, ResultStore.Json)!.AsObject();
+        var summary = JsonSerializer.SerializeToNode(run, RunEnvironment.Json)!.AsObject();
         foreach (var step in summary["steps"]!.AsArray())
         {
             step!.AsObject().Remove("byKey");
         }
-        File.AppendAllText(Path.Combine(Dir(outDir), "history.jsonl"), summary.ToJsonString(ResultStore.Json) + "\n");
+        File.AppendAllText(Path.Combine(Dir(outDir), "history.jsonl"), summary.ToJsonString(RunEnvironment.Json) + "\n");
 
         return runPath;
     }

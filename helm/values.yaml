@@ -188,6 +188,60 @@ blobStore:
     backstopSeconds: 86400
     postDownloadSeconds: 86400
 
+# DaprMQ.Operator - control-plane service. v1 hosts the KEDA external scaler that scales *consumer*
+# workloads on queue depth (KEDA must be installed separately). Point a ScaledObject trigger at it:
+#   triggers:
+#   - type: external-push            # or "external" for polling only
+#     metadata:
+#       scalerAddress: <fullname>-operator.<namespace>:8081
+#       queueId: orders
+#       targetValue: "10"            # items (or sessions) per consumer replica
+# See docs/ARCHITECTURE.md ("Autoscaling consumers with KEDA") for every trigger field.
+operator:
+  enabled: false
+  replicaCount: 2
+
+  image:
+    registry: ""                     # "" = image.registry
+    repository: daprmq-operator
+    tag: ""                          # "" = image.tag
+
+  httpPort: 8080                     # health
+  grpcPort: 8081                     # KEDA scalerAddress
+
+  # Depth reads are cached this long so KEDA's several calls per poll cost one worker read.
+  depthCacheTtlMs: 1000
+  # How often an external-push stream re-checks activation (scale from zero latency).
+  streamPollIntervalMs: 1000
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8080
+    initialDelaySeconds: 10
+    periodSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 5
+
+  podAnnotations: {}
+  podSecurityContext: {}
+  securityContext: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
 # Autoscaling configuration (for worker)
 autoscaling:
   enabled: false

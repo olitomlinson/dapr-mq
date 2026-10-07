@@ -205,7 +205,9 @@ public class SessionTests(DaprTestFixture fixture)
         var sessionId = "renew-me";
         await EnqueueAsync(queueId, sessionId, new { seq = 1 });
 
-        var lease = await AcceptSessionSuccessfullyAsync(queueId, sessionId, leaseSeconds: 3);
+        // Lease times are kept in whole seconds, so a 3s lease taken late in a second could already
+        // count as expired when renewed 2s later; 4s keeps the renewal clear of the boundary.
+        var lease = await AcceptSessionSuccessfullyAsync(queueId, sessionId, leaseSeconds: 4);
 
         await Task.Delay(TimeSpan.FromSeconds(2));
 
@@ -214,9 +216,9 @@ public class SessionTests(DaprTestFixture fixture)
         var renewResult = await renewResponse.Content.ReadFromJsonAsync<ApiRenewSessionLeaseResponse>();
         Assert.NotNull(renewResult);
 
-        // Original 3s lease would have expired by now (~2s in + 2.5s more), but the renewal
-        // added 6s on top of the original expiry, so the session should still be usable.
-        await Task.Delay(TimeSpan.FromSeconds(2.5));
+        // The original 4s lease (up to ~5s with whole-second rounding) has expired by now (~2s in +
+        // 3s more), but the renewal added 6s on top of the original expiry, so the session is still usable.
+        await Task.Delay(TimeSpan.FromSeconds(3));
 
         var dequeueResponse = await DequeueAsync(queueId, sessionId, lease.LeaseId);
         Assert.Equal(HttpStatusCode.OK, dequeueResponse.StatusCode);

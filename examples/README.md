@@ -103,8 +103,24 @@ Swap `dotnet` for `java`, `python`, or `typescript` to try the same scenario aga
 | `priority` | Fast lane vs normal | Enqueues 3 normal-priority items, then 3 fast-lane items | Dequeues all 10 in one call — fast-lane items surface first despite being enqueued later |
 | `sessions` | Session ordering + exclusivity | Enqueues 2 items each to `session-a` and `session-b` | Accepts the first session via "any available" mode, the second via a targeted `sessionId`, dequeuing/acking/releasing each in turn |
 | `idempotency` | Message deduplication | Enqueues an item, a duplicate reusing its idempotency key, then a distinct item | Dequeues and acknowledges the 2 survivors, confirming the duplicate was silently dropped |
+| `autoscale` | KEDA consumer autoscaling (dotnet only) | Enqueues 300 items | No-op — a KEDA-scaled worker Deployment (consumer image in worker mode) drains them, scaling 0 → N → 0 |
 
 Full request/response detail: [`shared/SCENARIOS.md`](shared/SCENARIOS.md).
+
+## KEDA autoscaling demo
+
+With KEDA installed and the main chart deployed with `--set operator.enabled=true`, install the examples with
+`--set autoscale.enabled=true`. That adds a `daprmq-examples-<lang>-worker` Deployment (the consumer image in worker
+mode) and a `ScaledObject` that scales it on `examples-<lang>-autoscale`'s depth via the operator. Then run the
+producer's `autoscale` scenario and watch it:
+
+```bash
+curl -X POST http://localhost:8080/scenarios/autoscale/run      # producer port-forward, as above
+kubectl get deploy -n <namespace> daprmq-examples-dotnet-worker -w
+```
+
+Workers scale out from 0, drain the queue in parallel, and scale back to 0 after `autoscale.cooldownPeriod`.
+`../k8s-deploy-and-test.sh --keda` automates all of this. Only dotnet implements worker mode so far.
 
 ## Notes
 

@@ -15,22 +15,25 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    // Fully-qualified gRPC service name (proto package + service), as registered with the server's
-    // grpc.health.v1.Health service.
-    private const string HealthServiceName = "daprmq.DaprMQ";
-    private static readonly TimeSpan ReadyBackoffInitial = TimeSpan.FromMilliseconds(250);
-    private static readonly TimeSpan ReadyBackoffMax = TimeSpan.FromSeconds(2);
-
     /// <summary>
     /// How long a stopping ConsumeSession stream waits for the server to finish (apply the acks it
     /// was sent, release the session) before the call is cancelled outright.
     /// </summary>
     internal static TimeSpan SessionDrainTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
+    /// <summary>The health service <see cref="WaitForReadyAsync"/> watches by default.</summary>
+    public const string OperationsHealthService = "daprmq.DaprMQ.operations";
+
+    private const string DeliveryMarkerHeader = "daprmq-delivery";
+    private const string RetryTimeoutHeader = "daprmq-retry-timeout";
+    private static readonly TimeSpan ReadyBackoffInitial = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan ReadyBackoffMax = TimeSpan.FromSeconds(2);
+
     private readonly HttpClient _httpClient;
     private readonly GrpcChannel? _grpcChannel;
     private readonly GrpcService.DaprMQClient _grpcClient;
     private readonly Health.HealthClient? _healthClient;
+    private readonly DaprMQRetryOptions _retry;
     private readonly bool _ownsHttpClient;
     private readonly bool _ownsGrpcChannel;
 
@@ -39,7 +42,13 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
     /// (base address / target) by the caller and are not disposed by this instance.
     /// </summary>
     public DaprMQClient(HttpClient httpClient, GrpcChannel grpcChannel)
-        : this(httpClient, new GrpcService.DaprMQClient(grpcChannel), new Health.HealthClient(grpcChannel))
+        : this(httpClient, grpcChannel, null)
+    {
+    }
+
+    /// <inheritdoc cref="DaprMQClient(HttpClient, GrpcChannel)"/>
+    public DaprMQClient(HttpClient httpClient, GrpcChannel grpcChannel, DaprMQRetryOptions? retry)
+        : this(httpClient, new GrpcService.DaprMQClient(grpcChannel), new Health.HealthClient(grpcChannel), retry)
     {
         _grpcChannel = grpcChannel;
     }
@@ -48,12 +57,13 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
     /// Test seam - lets tests substitute a CallInvoker-backed generated client (CallInvoker's
     /// methods are virtual, so it's directly Moq-mockable) without needing a live GrpcChannel.
     /// </summary>
-    internal DaprMQClient(HttpClient httpClient, GrpcService.DaprMQClient grpcClient, Health.HealthClient? healthClient = null)
+    internal DaprMQClient(HttpClient httpClient, GrpcService.DaprMQClient grpcClient, Health.HealthClient? healthClient = null, DaprMQRetryOptions? retry = null)
     {
         _httpClient = httpClient;
         _grpcChannel = null;
         _grpcClient = grpcClient;
         _healthClient = healthClient;
+        _retry = retry ?? new DaprMQRetryOptions();
         _ownsHttpClient = false;
         _ownsGrpcChannel = false;
     }
@@ -63,7 +73,7 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
     /// Disposed by this instance's DisposeAsync.
     /// </summary>
     public DaprMQClient(DaprMQClientOptions options)
-        : this(new HttpClient { BaseAddress = options.HttpBaseAddress }, GrpcChannel.ForAddress(options.GrpcAddress))
+        : this(new HttpClient { BaseAddress = options.HttpBaseAddress }, GrpcChannel.ForAddress(options.GrpcAddress), options.Retry)
     {
         _ownsHttpClient = true;
         _ownsGrpcChannel = true;
@@ -71,9 +81,13 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
 
     public async Task<EnqueueResult> EnqueueAsync(string queueId, IEnumerable<EnqueueItemDto> items, CancellationToken ct = default)
     {
+        // Keys are fixed before the first attempt, so a retry re-sends the same ones.
+        var keyed = items
+            .Select(i => i.IdempotencyKey == null && _retry.AutoIdempotencyKeys ? i with { IdempotencyKey = Guid.NewGuid().ToString("N") } : i)
+            .ToList();
         var body = new
         {
-            items = items.Select(i => new
+            items = keyed.Select(i => new
             {
                 item = i.Item,
                 priority = i.Priority,
@@ -81,8 +95,12 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
                 sessionId = i.SessionId
             })
         };
+        var keys = keyed.Select(i => i.IdempotencyKey).ToList();
 
-        using var response = await _httpClient.PostAsJsonAsync(Path(queueId, "enqueue"), body, JsonOptions, ct);
+        // An unknown outcome is only safe to repeat when the server can de-duplicate every item.
+        using var response = await SendAsync("Enqueue", queueId,
+            () => BuildJsonRequest(Path(queueId, "enqueue"), body, null),
+            unknownIsRetryable: keys.All(k => k != null), keys, ct);
         if (!response.IsSuccessStatusCode)
         {
             throw await MapGenericErrorAsync(response, ct);
@@ -92,18 +110,28 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
         return new EnqueueResult(result.Success, result.Message, result.ItemsEnqueued, result.ItemsDeduplicated);
     }
 
-    public async Task<DequeueLockedResult?> DequeueLockedAsync(string queueId, int count = 1, int ttlSeconds = 30, string? leaseId = null, CancellationToken ct = default)
+    public async Task<DequeueLockedResult?> DequeueLockedAsync(string queueId, int count = 1, int ttlSeconds = 30, string? leaseId = null, bool allowCompetingConsumers = false, CancellationToken ct = default)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, Path(queueId, "dequeue"));
-        request.Headers.Add("require-ack", "true");
-        request.Headers.Add("count", count.ToString(CultureInfo.InvariantCulture));
-        request.Headers.Add("ttl-seconds", ttlSeconds.ToString(CultureInfo.InvariantCulture));
-        if (leaseId != null)
+        HttpRequestMessage Build()
         {
-            request.Headers.Add("lease-id", leaseId);
+            var request = new HttpRequestMessage(HttpMethod.Post, Path(queueId, "dequeue"));
+            request.Headers.Add("require-ack", "true");
+            request.Headers.Add("count", count.ToString(CultureInfo.InvariantCulture));
+            request.Headers.Add("ttl-seconds", ttlSeconds.ToString(CultureInfo.InvariantCulture));
+            if (leaseId != null)
+            {
+                request.Headers.Add("lease-id", leaseId);
+            }
+
+            if (allowCompetingConsumers)
+            {
+                request.Headers.Add("allow-competing-consumers", "true");
+            }
+
+            return request;
         }
 
-        using var response = await _httpClient.SendAsync(request, ct);
+        using var response = await SendAsync("DequeueLocked", queueId, Build, unknownIsRetryable: false, null, ct);
 
         if (response.StatusCode == HttpStatusCode.NoContent)
         {
@@ -136,8 +164,8 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
 
     public async Task AcknowledgeAsync(string queueId, string lockId, string? leaseId = null, CancellationToken ct = default)
     {
-        using var request = BuildJsonRequest(Path(queueId, "acknowledge"), new { lockId }, leaseId);
-        using var response = await _httpClient.SendAsync(request, ct);
+        using var response = await SendAsync("Acknowledge", queueId,
+            () => BuildJsonRequest(Path(queueId, "acknowledge"), new { lockId }, leaseId), unknownIsRetryable: false, null, ct);
         if (response.IsSuccessStatusCode)
         {
             return;
@@ -149,8 +177,8 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
 
     public async Task ExtendLockAsync(string queueId, string lockId, int additionalTtlSeconds, string? leaseId = null, CancellationToken ct = default)
     {
-        using var request = BuildJsonRequest(Path(queueId, "extend-lock"), new { lockId, additionalTtlSeconds }, leaseId);
-        using var response = await _httpClient.SendAsync(request, ct);
+        using var response = await SendAsync("ExtendLock", queueId,
+            () => BuildJsonRequest(Path(queueId, "extend-lock"), new { lockId, additionalTtlSeconds }, leaseId), unknownIsRetryable: false, null, ct);
         if (response.IsSuccessStatusCode)
         {
             return;
@@ -169,8 +197,8 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
 
     public async Task DeadLetterAsync(string queueId, string lockId, string? leaseId = null, CancellationToken ct = default)
     {
-        using var request = BuildJsonRequest(Path(queueId, "deadletter"), new { lockId }, leaseId);
-        using var response = await _httpClient.SendAsync(request, ct);
+        using var response = await SendAsync("DeadLetter", queueId,
+            () => BuildJsonRequest(Path(queueId, "deadletter"), new { lockId }, leaseId), unknownIsRetryable: false, null, ct);
         if (response.IsSuccessStatusCode)
         {
             return;
@@ -196,8 +224,8 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
 
     public async Task<SessionLease?> AcceptSessionAsync(string queueId, string? sessionId = null, int leaseSeconds = 30, CancellationToken ct = default)
     {
-        using var response = await _httpClient.PostAsJsonAsync(
-            Path(queueId, "sessions/accept"), new { sessionId, leaseSeconds }, JsonOptions, ct);
+        using var response = await SendAsync("AcceptSession", queueId,
+            () => BuildJsonRequest(Path(queueId, "sessions/accept"), new { sessionId, leaseSeconds }, null), unknownIsRetryable: false, null, ct);
 
         if (response.StatusCode == HttpStatusCode.NoContent)
         {
@@ -222,9 +250,9 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
 
     public async Task<SessionLease> RenewSessionLeaseAsync(string queueId, string sessionId, string leaseId, int additionalSeconds = 30, CancellationToken ct = default)
     {
-        using var response = await _httpClient.PostAsJsonAsync(
-            Path(queueId, $"sessions/{Uri.EscapeDataString(sessionId)}/renew"),
-            new { leaseId, additionalSeconds }, JsonOptions, ct);
+        using var response = await SendAsync("RenewSessionLease", queueId,
+            () => BuildJsonRequest(Path(queueId, $"sessions/{Uri.EscapeDataString(sessionId)}/renew"), new { leaseId, additionalSeconds }, null),
+            unknownIsRetryable: false, null, ct);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -240,9 +268,9 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
 
     public async Task ReleaseSessionAsync(string queueId, string sessionId, string leaseId, CancellationToken ct = default)
     {
-        using var response = await _httpClient.PostAsJsonAsync(
-            Path(queueId, $"sessions/{Uri.EscapeDataString(sessionId)}/release"),
-            new { leaseId }, JsonOptions, ct);
+        using var response = await SendAsync("ReleaseSession", queueId,
+            () => BuildJsonRequest(Path(queueId, $"sessions/{Uri.EscapeDataString(sessionId)}/release"), new { leaseId }, null),
+            unknownIsRetryable: false, null, ct);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -392,12 +420,14 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
     }
 
     /// <summary>
-    /// Waits until the server reports SERVING over the standard gRPC health protocol
-    /// (grpc.health.v1.Health/Watch). Retries while the server isn't listening yet; has no deadline
-    /// of its own, so apply one with <paramref name="ct"/>.
+    /// Waits until the server reports SERVING for <paramref name="service"/> over the standard gRPC
+    /// health protocol (grpc.health.v1.Health/Watch). The default,
+    /// <see cref="OperationsHealthService"/>, means queue operations can be served end to end;
+    /// "daprmq.DaprMQ" means just this server instance is ready. Reconnects while the server isn't
+    /// listening; has no deadline of its own, so bound it with <paramref name="ct"/>.
     /// </summary>
-    /// <exception cref="NotSupportedException">The server predates the health service.</exception>
-    public async Task WaitForReadyAsync(CancellationToken ct = default)
+    /// <exception cref="NotSupportedException">The server doesn't expose the health service.</exception>
+    public async Task WaitForReadyAsync(string service = OperationsHealthService, CancellationToken ct = default)
     {
         var healthClient = _healthClient
             ?? throw new InvalidOperationException("This DaprMQClient was created without a health client.");
@@ -407,7 +437,7 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
         {
             try
             {
-                using var call = healthClient.Watch(new HealthCheckRequest { Service = HealthServiceName }, cancellationToken: ct);
+                using var call = healthClient.Watch(new HealthCheckRequest { Service = service }, cancellationToken: ct);
                 await foreach (var response in call.ResponseStream.ReadAllAsync(ct))
                 {
                     if (response.Status == HealthCheckResponse.Types.ServingStatus.Serving)
@@ -434,6 +464,88 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
             await Task.Delay(backoff, ct);
             backoff = TimeSpan.FromTicks(Math.Min(backoff.Ticks * 2, ReadyBackoffMax.Ticks));
         }
+    }
+
+    /// <summary>
+    /// Sends one REST call under the retry contract (sdks/testing/RETRIES_AND_READINESS.md):
+    /// not-delivered failures are retried within <see cref="DaprMQRetryOptions.Timeout"/>, unknown
+    /// outcomes only when <paramref name="unknownIsRetryable"/>. Every attempt tells the server how
+    /// much retry time is left (daprmq-retry-timeout); it never cuts a delivered call short, which
+    /// runs until the caller cancels or HttpClient.Timeout. Returns any other response to map.
+    /// </summary>
+    private async Task<HttpResponseMessage> SendAsync(
+        string operation, string queueId, Func<HttpRequestMessage> build, bool unknownIsRetryable,
+        IReadOnlyList<string?>? idempotencyKeys, CancellationToken ct)
+    {
+        var retries = _retry.Timeout > TimeSpan.Zero;
+        var deadline = DateTimeOffset.UtcNow + _retry.Timeout;
+        var backoff = _retry.InitialBackoff;
+
+        while (true)
+        {
+            var remaining = deadline - DateTimeOffset.UtcNow;
+            using var request = build();
+            if (retries)
+            {
+                var ms = Math.Max(1, (long)remaining.TotalMilliseconds);
+                request.Headers.Add(RetryTimeoutHeader, ms.ToString(CultureInfo.InvariantCulture));
+            }
+
+            DeliveryOutcome outcome;
+            string reason;
+            try
+            {
+                var response = await _httpClient.SendAsync(request, ct);
+                var marker = response.Headers.TryGetValues(DeliveryMarkerHeader, out var values) ? values.FirstOrDefault() : null;
+                if (marker is not ("not-delivered" or "unknown"))
+                {
+                    return response;
+                }
+
+                outcome = marker == "not-delivered" ? DeliveryOutcome.NotDelivered : DeliveryOutcome.Unknown;
+                reason = await ReadErrorMessageAsync(response, ct);
+                response.Dispose();
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (OperationCanceledException ex)
+            {
+                // HttpClient.Timeout cut the attempt off after it was sent.
+                outcome = DeliveryOutcome.Unknown;
+                reason = $"no response in time ({ex.Message})";
+            }
+            catch (HttpRequestException ex) when (ex.HttpRequestError is HttpRequestError.ConnectionError or HttpRequestError.NameResolutionError)
+            {
+                outcome = DeliveryOutcome.NotDelivered; // nothing was sent
+                reason = ex.Message;
+            }
+            catch (HttpRequestException ex)
+            {
+                outcome = DeliveryOutcome.Unknown; // sent, then the connection broke
+                reason = ex.Message;
+            }
+
+            var retryable = outcome == DeliveryOutcome.NotDelivered || unknownIsRetryable;
+            var delay = TimeSpan.FromTicks((long)(Random.Shared.NextDouble() * backoff.Ticks));
+            var timeLeft = deadline - DateTimeOffset.UtcNow - delay;
+            if (!retries || !retryable || timeLeft < _retry.MinAttemptWindow)
+            {
+                throw outcome == DeliveryOutcome.NotDelivered
+                    ? new DaprMQUnavailableException($"DaprMQ is unavailable; {operation} was not performed: {reason}", operation, queueId)
+                    : new DeliveryUnknownException($"The outcome of {operation} is unknown: it may or may not have been performed ({reason})", operation, queueId, idempotencyKeys);
+            }
+
+            await Task.Delay(delay, ct);
+            backoff = TimeSpan.FromTicks(Math.Min(backoff.Ticks * 2, _retry.MaxBackoff.Ticks));
+        }
+    }
+
+    private enum DeliveryOutcome
+    {
+        NotDelivered,
+        Unknown,
     }
 
     public async ValueTask DisposeAsync()

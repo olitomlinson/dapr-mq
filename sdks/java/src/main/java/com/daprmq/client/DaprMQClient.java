@@ -2,6 +2,8 @@ package com.daprmq.client;
 
 import com.daprmq.client.errors.ActorNotFoundException;
 import com.daprmq.client.errors.DaprMQException;
+import com.daprmq.client.errors.DaprMQUnavailableException;
+import com.daprmq.client.errors.DeliveryUnknownException;
 import com.daprmq.client.errors.InvalidLeaseIdException;
 import com.daprmq.client.errors.LockExpiredException;
 import com.daprmq.client.errors.LockNotFoundException;
@@ -21,18 +23,30 @@ import com.daprmq.grpc.DaprMQGrpc;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
+import io.grpc.health.v1.HealthCheckRequest;
+import io.grpc.health.v1.HealthCheckResponse;
+import io.grpc.health.v1.HealthGrpc;
 
 import java.io.IOException;
+import java.net.ConnectException;
 import java.net.URI;
+import java.net.http.HttpConnectTimeoutException;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -42,9 +56,19 @@ import java.util.concurrent.TimeUnit;
  * plain HTTP call under the hood.
  */
 public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
+    /** The health service {@link #waitForReady()} watches by default: queue operations can be served. */
+    public static final String OPERATIONS_HEALTH_SERVICE = "daprmq.DaprMQ.operations";
+
+    private static final String DELIVERY_MARKER = "daprmq-delivery";
+    private static final String RETRY_TIMEOUT_HEADER = "daprmq-retry-timeout";
+    /** Each attempt's own limit: matches the server's per-call safety limit (DELIVERY_ATTEMPT_MAX_SECONDS). */
+    private static final Duration ATTEMPT_TIMEOUT = Duration.ofSeconds(100);
+
     private final String httpBaseUrl;
     private final HttpClient httpClient;
     private final DaprMQGrpc.DaprMQStub asyncStub;
+    private final HealthGrpc.HealthBlockingStub healthStub;
+    private final RetryOptions retry;
     private final ManagedChannel ownedChannel;
 
     /**
@@ -52,41 +76,66 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
      * shut down by {@link #close()}.
      */
     public DaprMQClient(String httpBaseUrl, ManagedChannel grpcChannel) {
-        this(httpBaseUrl, HttpClient.newHttpClient(), DaprMQGrpc.newStub(grpcChannel), null);
+        this(httpBaseUrl, grpcChannel, RetryOptions.defaults());
+    }
+
+    /** As {@link #DaprMQClient(String, ManagedChannel)}, with retry behaviour. */
+    public DaprMQClient(String httpBaseUrl, ManagedChannel grpcChannel, RetryOptions retry) {
+        this(httpBaseUrl, HttpClient.newHttpClient(), DaprMQGrpc.newStub(grpcChannel), HealthGrpc.newBlockingStub(grpcChannel), retry, null);
     }
 
     /** Test seam - lets tests substitute a mock/in-process stub directly. */
     DaprMQClient(String httpBaseUrl, HttpClient httpClient, DaprMQGrpc.DaprMQStub asyncStub) {
-        this(httpBaseUrl, httpClient, asyncStub, null);
+        this(httpBaseUrl, httpClient, asyncStub, null, RetryOptions.defaults(), null);
     }
 
-    private DaprMQClient(String httpBaseUrl, HttpClient httpClient, DaprMQGrpc.DaprMQStub asyncStub, ManagedChannel ownedChannel) {
+    /** Test seam - also substitutes the health stub and retry behaviour. */
+    DaprMQClient(String httpBaseUrl, HttpClient httpClient, DaprMQGrpc.DaprMQStub asyncStub, HealthGrpc.HealthBlockingStub healthStub, RetryOptions retry) {
+        this(httpBaseUrl, httpClient, asyncStub, healthStub, retry, null);
+    }
+
+    private DaprMQClient(String httpBaseUrl, HttpClient httpClient, DaprMQGrpc.DaprMQStub asyncStub,
+                         HealthGrpc.HealthBlockingStub healthStub, RetryOptions retry, ManagedChannel ownedChannel) {
         this.httpBaseUrl = httpBaseUrl.replaceAll("/+$", "");
         this.httpClient = httpClient;
         this.asyncStub = asyncStub;
+        this.healthStub = healthStub;
+        this.retry = retry;
         this.ownedChannel = ownedChannel;
     }
 
     /** Convenience factory - builds and owns a plaintext gRPC channel, closed by {@link #close()}. */
     public static DaprMQClient create(String httpBaseUrl, String grpcTarget) {
+        return create(httpBaseUrl, grpcTarget, RetryOptions.defaults());
+    }
+
+    /** As {@link #create(String, String)}, with retry behaviour. */
+    public static DaprMQClient create(String httpBaseUrl, String grpcTarget, RetryOptions retry) {
         ManagedChannel channel = ManagedChannelBuilder.forTarget(grpcTarget).usePlaintext().build();
-        return new DaprMQClient(httpBaseUrl, HttpClient.newHttpClient(), DaprMQGrpc.newStub(channel), channel);
+        return new DaprMQClient(httpBaseUrl, HttpClient.newHttpClient(), DaprMQGrpc.newStub(channel), HealthGrpc.newBlockingStub(channel), retry, channel);
     }
 
     public EnqueueResult enqueue(String queueId, List<EnqueueItem> items) {
+        // Keys are fixed before the first attempt, so a retry re-sends the same ones.
+        List<String> keys = new ArrayList<>();
         List<Map<String, Object>> wireItems = new ArrayList<>();
         for (EnqueueItem i : items) {
+            String key = i.idempotencyKey() != null ? i.idempotencyKey()
+                    : retry.autoIdempotencyKeys() ? UUID.randomUUID().toString().replace("-", "") : null;
+            keys.add(key);
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("item", i.item());
             m.put("priority", i.priority());
-            m.put("idempotencyKey", i.idempotencyKey());
+            m.put("idempotencyKey", key);
             m.put("sessionId", i.sessionId());
             wireItems.add(m);
         }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("items", wireItems);
 
-        HttpResponse<String> response = postJson(path(queueId, "enqueue"), body, null);
+        // An unknown outcome is only safe to repeat when the server can de-duplicate every item.
+        boolean allKeyed = keys.stream().allMatch(k -> k != null);
+        HttpResponse<String> response = send("enqueue", queueId, jsonRequest(path(queueId, "enqueue"), body, null), allKeyed, keys);
         if (!isSuccess(response.statusCode())) {
             throw mapGenericError(response.statusCode(), response.body());
         }
@@ -104,6 +153,15 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
     }
 
     public DequeueLockedResult dequeueLocked(String queueId, int count, int ttlSeconds, String leaseId) {
+        return dequeueLocked(queueId, count, ttlSeconds, leaseId, false);
+    }
+
+    /**
+     * {@code allowCompetingConsumers} lets several consumers hold locks on the queue at once (the
+     * server otherwise answers 423 Locked while any lock is outstanding) - needed when scaling a
+     * consumer out to multiple replicas.
+     */
+    public DequeueLockedResult dequeueLocked(String queueId, int count, int ttlSeconds, String leaseId, boolean allowCompetingConsumers) {
         Map<String, String> headers = new LinkedHashMap<>();
         headers.put("require-ack", "true");
         headers.put("count", String.valueOf(count));
@@ -111,8 +169,13 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
         if (leaseId != null) {
             headers.put("lease-id", leaseId);
         }
+        if (allowCompetingConsumers) {
+            headers.put("allow-competing-consumers", "true");
+        }
 
-        HttpResponse<String> response = postNoBody(path(queueId, "dequeue"), headers);
+        HttpRequest.Builder request = HttpRequest.newBuilder().uri(URI.create(path(queueId, "dequeue"))).POST(HttpRequest.BodyPublishers.noBody());
+        headers.forEach(request::header);
+        HttpResponse<String> response = send("dequeueLocked", queueId, request, false, null);
 
         if (response.statusCode() == 204) {
             return null;
@@ -146,7 +209,7 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
 
     public void acknowledge(String queueId, String lockId, String leaseId) {
         Map<String, Object> body = Map.of("lockId", lockId);
-        HttpResponse<String> response = postJson(path(queueId, "acknowledge"), body, leaseId);
+        HttpResponse<String> response = postJson("acknowledge", queueId, path(queueId, "acknowledge"), body, leaseId);
         if (isSuccess(response.statusCode())) {
             return;
         }
@@ -168,7 +231,7 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
         body.put("lockId", lockId);
         body.put("additionalTtlSeconds", additionalTtlSeconds);
 
-        HttpResponse<String> response = postJson(path(queueId, "extend-lock"), body, leaseId);
+        HttpResponse<String> response = postJson("extendLock", queueId, path(queueId, "extend-lock"), body, leaseId);
         if (isSuccess(response.statusCode())) {
             return;
         }
@@ -189,7 +252,7 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
 
     public void deadLetter(String queueId, String lockId, String leaseId) {
         Map<String, Object> body = Map.of("lockId", lockId);
-        HttpResponse<String> response = postJson(path(queueId, "deadletter"), body, leaseId);
+        HttpResponse<String> response = postJson("deadLetter", queueId, path(queueId, "deadletter"), body, leaseId);
         if (isSuccess(response.statusCode())) {
             return;
         }
@@ -238,7 +301,7 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
         body.put("sessionId", sessionId);
         body.put("leaseSeconds", leaseSeconds);
 
-        HttpResponse<String> response = postJson(path(queueId, "sessions/accept"), body, null);
+        HttpResponse<String> response = postJson("acceptSession", queueId, path(queueId, "sessions/accept"), body, null);
 
         if (response.statusCode() == 204) {
             return null;
@@ -267,7 +330,7 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
         body.put("leaseId", leaseId);
         body.put("additionalSeconds", additionalSeconds);
 
-        HttpResponse<String> response = postJson(path(queueId, "sessions/" + encode(sessionId) + "/renew"), body, null);
+        HttpResponse<String> response = postJson("renewSessionLease", queueId, path(queueId, "sessions/" + encode(sessionId) + "/renew"), body, null);
 
         if (!isSuccess(response.statusCode())) {
             String message = Json.errorMessageFrom(response.body(), response.statusCode());
@@ -280,7 +343,7 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
 
     public void releaseSession(String queueId, String sessionId, String leaseId) {
         Map<String, Object> body = Map.of("leaseId", leaseId);
-        HttpResponse<String> response = postJson(path(queueId, "sessions/" + encode(sessionId) + "/release"), body, null);
+        HttpResponse<String> response = postJson("releaseSession", queueId, path(queueId, "sessions/" + encode(sessionId) + "/release"), body, null);
         if (!isSuccess(response.statusCode())) {
             throw new InvalidLeaseIdException(Json.errorMessageFrom(response.body(), response.statusCode()));
         }
@@ -299,6 +362,73 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
     @Override
     public SessionStream consumeSession(String queueId, ConsumeSessionOptions options) {
         return new SessionStream(asyncStub::consumeSession, queueId, options);
+    }
+
+    /**
+     * Blocks until queue operations can be served (gRPC health service
+     * {@value #OPERATIONS_HEALTH_SERVICE}), or the thread is interrupted
+     * ({@link CancellationException}).
+     */
+    public void waitForReady() {
+        waitForReady(OPERATIONS_HEALTH_SERVICE, null);
+    }
+
+    /** As {@link #waitForReady()}, giving up after {@code timeout}: false if it ran out first. */
+    public boolean waitForReady(Duration timeout) {
+        return waitForReady(OPERATIONS_HEALTH_SERVICE, timeout);
+    }
+
+    /**
+     * Waits until the server reports SERVING for {@code service} over the standard gRPC health
+     * protocol (grpc.health.v1.Health/Watch); "daprmq.DaprMQ" means just this server instance is
+     * ready. Reconnects while the server isn't listening.
+     *
+     * @param timeout how long to wait, or null for no limit
+     * @return true once SERVING; false if {@code timeout} ran out first
+     * @throws UnsupportedOperationException if the server doesn't expose the health service
+     * @throws CancellationException if the thread is interrupted
+     */
+    public boolean waitForReady(String service, Duration timeout) {
+        if (healthStub == null) {
+            throw new IllegalStateException("This DaprMQClient was created without a gRPC channel or health stub.");
+        }
+        long deadline = timeout == null ? Long.MAX_VALUE : System.nanoTime() + timeout.toNanos();
+        long backoffMillis = 250;
+
+        while (true) {
+            long remainingNanos = deadline - System.nanoTime();
+            if (remainingNanos <= 0) {
+                return false;
+            }
+            HealthGrpc.HealthBlockingStub stub = timeout == null ? healthStub : healthStub.withDeadlineAfter(remainingNanos, TimeUnit.NANOSECONDS);
+            try {
+                Iterator<HealthCheckResponse> stream = stub.watch(HealthCheckRequest.newBuilder().setService(service).build());
+                while (stream.hasNext()) {
+                    if (stream.next().getStatus() == HealthCheckResponse.ServingStatus.SERVING) {
+                        return true;
+                    }
+                    backoffMillis = 250;
+                }
+                // Stream ended before SERVING (e.g. server shutting down) - reconnect.
+            } catch (StatusRuntimeException e) {
+                Status.Code code = e.getStatus().getCode();
+                if (code == Status.Code.UNIMPLEMENTED) {
+                    throw new UnsupportedOperationException("The DaprMQ server does not expose the gRPC health service; upgrade the server.", e);
+                }
+                if (code == Status.Code.DEADLINE_EXCEEDED) {
+                    return false;
+                }
+                if (code == Status.Code.CANCELLED && Thread.currentThread().isInterrupted()) {
+                    throw new CancellationException("waitForReady interrupted");
+                }
+                if (code != Status.Code.UNAVAILABLE) {
+                    throw e;
+                }
+                // Server not listening yet - retry with backoff.
+            }
+            sleep(Math.min(backoffMillis, Math.max(1, TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()))));
+            backoffMillis = Math.min(backoffMillis * 2, 2_000);
+        }
     }
 
     @Override
@@ -325,7 +455,11 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
         return status >= 200 && status < 300;
     }
 
-    private HttpResponse<String> postJson(String path, Object body, String leaseId) {
+    private HttpResponse<String> postJson(String operation, String queueId, String path, Object body, String leaseId) {
+        return send(operation, queueId, jsonRequest(path, body, leaseId), false, null);
+    }
+
+    private static HttpRequest.Builder jsonRequest(String path, Object body, String leaseId) {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(path))
                 .header("content-type", "application/json")
@@ -333,23 +467,73 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
         if (leaseId != null) {
             builder.header("lease-id", leaseId);
         }
-        return send(builder);
+        return builder;
     }
 
-    private HttpResponse<String> postNoBody(String path, Map<String, String> headers) {
-        HttpRequest.Builder builder = HttpRequest.newBuilder().uri(URI.create(path)).POST(HttpRequest.BodyPublishers.noBody());
-        headers.forEach(builder::header);
-        return send(builder);
+    /**
+     * One REST call under the retry contract (sdks/testing/RETRIES_AND_READINESS.md): not-delivered
+     * failures are retried within the retry timeout, unknown outcomes only when
+     * {@code unknownIsRetryable}. Every attempt tells the server how much retry time is left
+     * (daprmq-retry-timeout); it never cuts a delivered call short, which runs until the thread is
+     * interrupted or the per-attempt limit. Returns any other response for the caller to map.
+     */
+    private HttpResponse<String> send(String operation, String queueId, HttpRequest.Builder request,
+                                      boolean unknownIsRetryable, List<String> idempotencyKeys) {
+        boolean retries = !retry.timeout().isZero() && !retry.timeout().isNegative();
+        long deadline = System.nanoTime() + retry.timeout().toNanos();
+        long backoffNanos = retry.initialBackoff().toNanos();
+
+        while (true) {
+            long remainingNanos = deadline - System.nanoTime();
+            HttpRequest.Builder attempt = request.copy().timeout(ATTEMPT_TIMEOUT);
+            if (retries) {
+                long ms = Math.max(1, TimeUnit.NANOSECONDS.toMillis(remainingNanos));
+                attempt.setHeader(RETRY_TIMEOUT_HEADER, String.valueOf(ms));
+            }
+
+            boolean notDelivered;
+            String reason;
+            try {
+                HttpResponse<String> response = httpClient.send(attempt.build(), HttpResponse.BodyHandlers.ofString());
+                String marker = response.headers().firstValue(DELIVERY_MARKER).orElse(null);
+                if (!"not-delivered".equals(marker) && !"unknown".equals(marker)) {
+                    return response;
+                }
+                notDelivered = "not-delivered".equals(marker);
+                reason = Json.errorMessageFrom(response.body(), response.statusCode());
+            } catch (ConnectException | HttpConnectTimeoutException e) {
+                notDelivered = true; // the connection never opened: nothing was sent
+                reason = e.toString();
+            } catch (IOException e) {
+                notDelivered = false; // sent, then broke or timed out
+                reason = e.toString();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new CancellationException(operation + " interrupted");
+            }
+
+            boolean retryable = notDelivered || unknownIsRetryable;
+            long delayNanos = (long) (ThreadLocalRandom.current().nextDouble() * backoffNanos);
+            long timeLeftNanos = deadline - System.nanoTime() - delayNanos;
+            if (!retries || !retryable || timeLeftNanos < retry.minAttemptWindow().toNanos()) {
+                if (notDelivered) {
+                    throw new DaprMQUnavailableException("DaprMQ is unavailable; " + operation + " was not performed: " + reason, operation, queueId);
+                }
+                throw new DeliveryUnknownException("The outcome of " + operation + " is unknown: it may or may not have been performed (" + reason + ")",
+                        operation, queueId, idempotencyKeys);
+            }
+
+            sleep(TimeUnit.NANOSECONDS.toMillis(delayNanos));
+            backoffNanos = Math.min(backoffNanos * 2, retry.maxBackoff().toNanos());
+        }
     }
 
-    private HttpResponse<String> send(HttpRequest.Builder builder) {
+    private static void sleep(long millis) {
         try {
-            return httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
-        } catch (IOException e) {
-            throw new DaprMQException("HTTP request failed: " + e.getMessage());
+            Thread.sleep(millis);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new DaprMQException("HTTP request interrupted");
+            throw new CancellationException("interrupted");
         }
     }
 

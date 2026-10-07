@@ -11,8 +11,6 @@ export const DequeueSection = ({ isDequeuing, onDequeue, onDequeueLocked }: Dequ
   const [ttl, setTtl] = useState(30);
   const [dequeueCount, setDequeueCount] = useState(1);
 
-  const isValid = !allowCompeting || ttl >= 5;
-
   const handleDequeue = () => {
     onDequeue(dequeueCount);
   };
@@ -103,13 +101,7 @@ export const DequeueSection = ({ isDequeuing, onDequeue, onDequeueLocked }: Dequ
             <span>seconds</span>
           </label>
 
-          {!isValid && (
-            <div style={{ color: '#d32f2f', fontSize: '0.9em' }}>
-              ⚠️ Competing consumer mode requires TTL ≥ 5 seconds
-            </div>
-          )}
-
-          <button onClick={handleDequeueLocked} disabled={isDequeuing || !isValid}>
+          <button onClick={handleDequeueLocked} disabled={isDequeuing}>
             {isDequeuing ? 'Dequeuing...' : 'Dequeue with Ack'}
           </button>
         </div>

@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using DaprMQ.Client.Perf;
+using DaprMQ.PerfReport;
 
 namespace DaprMQ.Client.Perf.Tests;
 

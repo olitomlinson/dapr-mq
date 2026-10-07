@@ -11,6 +11,7 @@ public class HealthTests(DaprTestFixture fixture)
     [Theory]
     [InlineData("")]
     [InlineData("daprmq.DaprMQ")]
+    [InlineData("daprmq.DaprMQ.operations")]
     public async Task GrpcHealthCheck_RunningStack_ReturnsServing(string service)
     {
         AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
@@ -20,6 +21,14 @@ public class HealthTests(DaprTestFixture fixture)
         var response = await client.CheckAsync(new HealthCheckRequest { Service = service });
 
         Assert.Equal(HealthCheckResponse.Types.ServingStatus.Serving, response.Status);
+    }
+
+    [Fact]
+    public async Task HealthOperations_RunningStack_Returns200()
+    {
+        var response = await fixture.ApiClient.GetAsync("/health/operations");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
     [Fact]
