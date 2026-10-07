@@ -227,7 +227,7 @@ each SDK's docs say so:
   count raised.
 - **Plain dequeue (no lock):** the item may be gone. This is why unknown outcomes are never retried
   automatically. Callers that can't lose items this way should use locked dequeues.
-- **Acknowledge / ExtendLock / DeadLetter:** re-sending is effectively safe. If the first call
+- **Acknowledge / ExtendLock / DeadLetter / Nack:** re-sending is effectively safe. If the first call
   worked, the re-send gets `LockNotFound`, which here means success (open question 4).
 
 **Waiting for the system.** Retries already cover the first call after startup: before the gateway

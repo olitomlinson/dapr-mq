@@ -71,7 +71,7 @@ guide):
 
 - **Enqueue without keys:** re-send and accept a possible duplicate.
 - **Dequeue with a lock:** don't re-send. If it ran, the items return when their locks expire.
-- **Acknowledge / ExtendLock / DeadLetter:** re-sending is effectively safe. If the first attempt
+- **Acknowledge / ExtendLock / DeadLetter / Nack:** re-sending is effectively safe. If the first attempt
   worked, the re-send gets `LockNotFound`.
 
 ## Waiting for a server

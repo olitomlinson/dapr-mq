@@ -91,6 +91,21 @@ public class DeliveryFailureMappingTests
     }
 
     [Fact]
+    public async Task Rest_Nack_NotDelivered_Returns503Unavailable()
+    {
+        var invoker = new Mock<IQueueActorInvoker>();
+        invoker.Setup(i => i.InvokeMethodAsync<ActorModels.NackRequest, ActorModels.NackResponse>(
+                It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<ActorModels.NackRequest>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(NotDelivered());
+
+        var result = await CreateController(invoker.Object).Nack("q", new ApiNackRequest("L1"));
+
+        var objectResult = Assert.IsType<DeliveryFailureResult>(result);
+        Assert.Equal(503, objectResult.StatusCode);
+        Assert.Equal("UNAVAILABLE", Assert.IsType<ApiErrorResponse>(objectResult.Value).ErrorCode);
+    }
+
+    [Fact]
     public async Task Rest_NonDeliveryFailure_StillReturns500()
     {
         var result = await CreateController(EnqueueThrows(new InvalidOperationException("bug")).Object).Enqueue("q", OneItem());
@@ -107,6 +122,22 @@ public class DeliveryFailureMappingTests
             var body = Assert.IsType<ApiErrorResponse>(new DeliveryFailureResult(ex).Value);
             Assert.DoesNotContain("actor", body.Message, StringComparison.OrdinalIgnoreCase);
         }
+    }
+
+    [Fact]
+    public async Task Grpc_Nack_Unknown_ReturnsUnknownWithMarker()
+    {
+        var invoker = new Mock<IQueueActorInvoker>();
+        invoker.Setup(i => i.InvokeMethodAsync<ActorModels.NackRequest, ActorModels.NackResponse>(
+                It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<ActorModels.NackRequest>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(Unknown());
+        var service = new DaprMQGrpcService(new Mock<ILogger<DaprMQGrpcService>>().Object, invoker.Object, new Mock<ISessionCoordinatorActorInvoker>().Object);
+
+        var ex = await Assert.ThrowsAsync<RpcException>(() =>
+            service.Nack(new ApiServer.Grpc.NackRequest { QueueId = "q", LockId = "L1" }, new Mock<ServerCallContext>().Object));
+
+        Assert.Equal(StatusCode.Unknown, ex.StatusCode);
+        Assert.Equal("unknown", ex.Trailers.GetValue("daprmq-delivery"));
     }
 
     [Theory]

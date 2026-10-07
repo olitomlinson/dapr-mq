@@ -421,6 +421,11 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         {
             throw;
         }
+        catch (ActorModels.ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error nacking item in queue {request.QueueId}");
+            throw DeliveryFailures.ToRpcException(ex);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, $"Error nacking item in queue {request.QueueId}");

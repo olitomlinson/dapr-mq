@@ -662,6 +662,11 @@ public class QueueController : ControllerBase
 
             return Ok(response);
         }
+        catch (ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error nacking item in {queueId}");
+            return new DeliveryFailureResult(ex);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, $"Error nacking item in {queueId}");

@@ -105,7 +105,7 @@ The safe response depends on whether repeating the operation could do harm. The 
 | Enqueue, every item keyed | Yes, within `RetryTimeout` | Nothing: the server drops duplicates by key. Keys are remembered for 24 hours by default. |
 | Enqueue, some items unkeyed | No | Re-send if a duplicate is acceptable, or check downstream first. The error lists which items had keys. |
 | Dequeue with a lock | No | **Don't re-send.** If it ran, the items are locked to a lock id you never received. They return to the queue when the lock expires (the TTL you asked for), with their delivery count raised. |
-| Acknowledge, extend lock, dead-letter | No | Re-sending is safe in effect. If the first attempt worked, the re-send gets `LockNotFound`: treat that as success. |
+| Acknowledge, extend lock, dead-letter, nack | No | Re-sending is safe in effect. If the first attempt worked, the re-send gets `LockNotFound`: treat that as success. |
 | Accept, renew or release a session | No | Accept: try again; a session claimed but unseen expires with its lease. Renew: re-send while the lease is still valid. Release: safe to re-send; an invalid lease id means it already worked. |
 
 **Prefer idempotency keys for enqueues.** They make every enqueue safe to retry, including your own retries after a crash. Use a key that identifies the business event, such as an order id plus an event type, so a re-sent event is recognised. `AutoIdempotencyKeys` protects only against the SDK's own retries, because each new call gets fresh keys.
@@ -192,7 +192,7 @@ Don't send a test enqueue to check readiness. It leaves a queue behind in the st
 
 **Can I retry after `DaprMQUnavailable`?** Yes, always: the operation was not performed.
 
-**Can I retry after `DeliveryUnknown`?** Only where repeating is harmless: a keyed enqueue, an acknowledge, an extend, a dead-letter. Never re-send a dequeue to recover from it.
+**Can I retry after `DeliveryUnknown`?** Only where repeating is harmless: a keyed enqueue, an acknowledge, an extend, a dead-letter, a nack. Never re-send a dequeue to recover from it.
 
 **Does `AutoIdempotencyKeys` stop duplicates from my own retries?** No. It covers the SDK's retries within one call; your own re-send is a new call with new keys. Use business keys for that.
 
