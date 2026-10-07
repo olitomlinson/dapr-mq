@@ -141,12 +141,29 @@ Don't send a test enqueue to check readiness. It leaves a queue behind in the st
 | A worker restarts, or a deploy rolls the workers | The call takes a few extra seconds, then succeeds | Nothing. This is what the retries are for. |
 | Every worker down for longer than `RetryTimeout` | `DaprMQUnavailable` after roughly `RetryTimeout`, often a few seconds sooner | Back off and try later, buffer locally, or fail the request upstream. Nothing was written. |
 | DaprMQ unreachable (wrong address, network down) | `DaprMQUnavailable` once `RetryTimeout` runs out | Check configuration. A refused connection counts as not performed. |
-| Thousands of concurrent calls on one queue | Calls get slower but succeed; past 100 s a call ends as `DeliveryUnknown` | Spread load across queues, or limit concurrency per queue on your side |
+| Thousands of concurrent calls on one queue | Calls get slower but succeed; past 100 s a call ends as `DeliveryUnknown` | Cap concurrent calls per queue on your side (see Patterns), or spread load across queues |
 | A worker hangs mid-call | `DeliveryUnknown` after up to 100 s, or sooner if you cancel | Handle it per operation (see above) |
 | A proxy in front times out first | A plain error or `504` without delivery information | Treat as delivery unknown; raise the proxy timeout above the longest call you expect |
 
 ### Patterns
 
+- **Cap concurrent calls per queue.** A queue handles one operation at a time, so 10,000 acknowledges
+  sent at once all wait in a single line, and the last ones wait tens of seconds. Keep the line in your
+  own process instead: allow at most 50 to 100 calls in flight per queue. Total time is the same, but
+  each call waits a fraction of a second, nothing approaches the 100-second limit, and connections
+  aren't held open through the gateway. With many consumer instances on one queue, divide the cap
+  between them.
+
+  ```csharp
+  // .NET: at most 100 acknowledges in flight
+  await Parallel.ForEachAsync(lockIds, new ParallelOptions { MaxDegreeOfParallelism = 100 },
+      async (lockId, ct) => await client.AcknowledgeAsync(queueId, lockId, ct: ct));
+  ```
+
+  Python: an `asyncio.Semaphore(100)` around each call. TypeScript: run the calls in chunks of 100, or
+  use a concurrency limiter. Java: a fixed thread pool of 100, or a `Semaphore(100)`. A batch
+  acknowledge, settling many locks in one call, is proposed in
+  [batch-acknowledge.md](../proposals/batch-acknowledge.md).
 - **Match timeouts from the outside in.** Your request handler's deadline should be longer than `RetryTimeout` plus a typical call. A gateway or ingress in front of DaprMQ should allow longer than the server's 100-second call limit, or your callers will see the proxy's error instead of DaprMQ's.
 - **Shorten `RetryTimeout` for interactive paths.** A user waiting on a web request may prefer a fast `DaprMQUnavailable` after 5 seconds to a 30-second wait. Values under about 6 seconds give a single attempt, because the server takes about 5 seconds to report that no worker is available.
 - **Lengthen it for background producers.** A batch job that can wait gains nothing from failing early. Retries stop at the server's cap, 30 seconds by default, so ask your operator if you need longer.
@@ -161,6 +178,7 @@ Don't send a test enqueue to check readiness. It leaves a queue behind in the st
 - [ ] `DaprMQUnavailable` handled: back off, buffer, or fail upstream
 - [ ] `DeliveryUnknown` handled per operation, never by blindly re-sending a dequeue
 - [ ] Consumers are idempotent, since items can be delivered more than once
+- [ ] Concurrent calls per queue are capped (50 to 100 in flight), not fired all at once
 - [ ] Lock TTLs cover the slowest handler, or locks are extended
 - [ ] Proxy and ingress timeouts are longer than DaprMQ's 100-second call limit
 - [ ] Startup and test fixtures use `WaitForReady()` with a bound, never a probe enqueue
