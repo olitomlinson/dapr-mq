@@ -22,6 +22,7 @@ export interface ConsumeSessionRequestMessage {
   start?: ConsumeSessionStartMessage;
   ack?: { lockId: string };
   deadLetter?: { lockId: string };
+  nack?: { lockId: string };
 }
 
 export interface SessionAssignedMessage {

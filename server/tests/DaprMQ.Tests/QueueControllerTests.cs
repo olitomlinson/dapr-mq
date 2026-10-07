@@ -855,6 +855,74 @@ public class QueueControllerTests
         Assert.IsType<BadRequestObjectResult>(result);
     }
 
+    // ===== Nack Controller Tests =====
+
+    private static Mock<IQueueActorInvoker> MockNack(NackResponse response)
+    {
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        mockInvoker.Setup(i => i.InvokeMethodAsync<NackRequest, NackResponse>(
+                It.IsAny<ActorId>(),
+                "Nack",
+                It.IsAny<NackRequest>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(response);
+        return mockInvoker;
+    }
+
+    [Fact]
+    public async Task Nack_ValidLock_Returns200()
+    {
+        var mockInvoker = MockNack(new NackResponse { Success = true, Message = "Requeued", DeliveryCount = 1 });
+        var controller = CreateController(mockInvoker.Object);
+
+        var result = await controller.Nack("test-queue", new ApiNackRequest("valid-lock-123"), lease_id: "lease-1");
+
+        var okResult = Assert.IsType<OkObjectResult>(result);
+        var response = Assert.IsType<ApiNackResponse>(okResult.Value);
+        Assert.True(response.Success);
+        Assert.False(response.DeadLettered);
+        Assert.Equal(1, response.DeliveryCount);
+        mockInvoker.Verify(i => i.InvokeMethodAsync<NackRequest, NackResponse>(
+            It.Is<ActorId>(id => id.GetId() == "test-queue"),
+            "Nack",
+            It.Is<NackRequest>(r => r.LockId == "valid-lock-123" && r.LeaseId == "lease-1"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Nack_PastMaxDeliveryCount_Returns200WithDeadLettered()
+    {
+        var mockInvoker = MockNack(new NackResponse
+        {
+            Success = true, Message = "Dead-lettered", DeadLettered = true, DeliveryCount = 11, DlqId = "test-queue-deadletter"
+        });
+        var controller = CreateController(mockInvoker.Object);
+
+        var result = await controller.Nack("test-queue", new ApiNackRequest("valid-lock-123"));
+
+        var response = Assert.IsType<ApiNackResponse>(Assert.IsType<OkObjectResult>(result).Value);
+        Assert.True(response.DeadLettered);
+        Assert.Equal("test-queue-deadletter", response.DlqId);
+    }
+
+    [Theory]
+    [InlineData("LOCK_EXPIRED", 410)]
+    [InlineData("SESSION_LEASE_EXPIRED", 410)]
+    [InlineData("LOCK_NOT_FOUND", 404)]
+    [InlineData("INVALID_LOCK_ID", 400)]
+    [InlineData("DLQ_ENQUEUE_FAILED", 400)]
+    public async Task Nack_Error_MapsToHttpStatus(string errorCode, int expectedStatus)
+    {
+        var mockInvoker = MockNack(new NackResponse { Success = false, Message = "nope", ErrorCode = errorCode });
+        var controller = CreateController(mockInvoker.Object);
+
+        var result = await controller.Nack("test-queue", new ApiNackRequest("lock"));
+
+        var objectResult = Assert.IsAssignableFrom<ObjectResult>(result);
+        Assert.Equal(expectedStatus, objectResult.StatusCode);
+        Assert.Equal(errorCode, Assert.IsType<ApiNackResponse>(objectResult.Value).ErrorCode);
+    }
+
     // ===== Bulk Dequeue Controller Tests =====
 
     /// <summary>

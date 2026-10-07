@@ -3,5 +3,7 @@ package com.daprmq.client;
 public enum SessionHandlerFailureAction {
     DEAD_LETTER_MESSAGE,
     ABANDON_SESSION,
-    BOTH
+    BOTH,
+    /** Return the message to the front of the session for redelivery. */
+    NACK_MESSAGE
 }

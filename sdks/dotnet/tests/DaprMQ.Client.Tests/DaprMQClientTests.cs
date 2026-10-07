@@ -178,6 +178,47 @@ public class DaprMQClientTests
         await Assert.ThrowsAsync<LockNotFoundException>(() => client.DeadLetterAsync("q", "L1"));
     }
 
+    // ---- Nack ----
+
+    [Fact]
+    public async Task NackAsync_Success_ReturnsResult()
+    {
+        var handler = new FakeHttpMessageHandler(HttpStatusCode.OK,
+            """{"success":true,"message":"requeued","deadLettered":false,"deliveryCount":2}""");
+        var client = CreateClient(handler);
+
+        var result = await client.NackAsync("q", "L1", leaseId: "lease-1");
+
+        Assert.False(result.DeadLettered);
+        Assert.Equal(2, result.DeliveryCount);
+        Assert.Null(result.DlqId);
+        Assert.EndsWith("/queue/q/nack", handler.LastRequest!.RequestUri!.AbsolutePath);
+        Assert.Equal("lease-1", handler.LastRequest.Headers.GetValues("lease-id").Single());
+    }
+
+    [Fact]
+    public async Task NackAsync_DeadLettered_ReturnsDlqId()
+    {
+        var handler = new FakeHttpMessageHandler(HttpStatusCode.OK,
+            """{"success":true,"message":"dead-lettered","deadLettered":true,"deliveryCount":11,"dlqId":"q-deadletter"}""");
+        var client = CreateClient(handler);
+
+        var result = await client.NackAsync("q", "L1");
+
+        Assert.True(result.DeadLettered);
+        Assert.Equal("q-deadletter", result.DlqId);
+    }
+
+    [Fact]
+    public async Task NackAsync_ErrorCode_ThrowsTypedException()
+    {
+        var handler = new FakeHttpMessageHandler(HttpStatusCode.Gone,
+            """{"success":false,"message":"expired","errorCode":"LOCK_EXPIRED"}""");
+        var client = CreateClient(handler);
+
+        await Assert.ThrowsAsync<LockExpiredException>(() => client.NackAsync("q", "L1"));
+    }
+
     // ---- Sessions ----
 
     [Fact]

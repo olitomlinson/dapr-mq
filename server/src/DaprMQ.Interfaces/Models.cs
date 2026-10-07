@@ -411,6 +411,60 @@ public record AcknowledgeResponse
 }
 
 /// <summary>
+/// Request model for Nack operation.
+/// </summary>
+public record NackRequest
+{
+    /// <summary>
+    /// Lock ID of the item to return to the queue.
+    /// </summary>
+    public string LockId { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Required when calling a session-scoped queue actor with an active lease synced onto it
+    /// (null otherwise, e.g. an ordinary queue). Must match the current lease holder's LeaseId.
+    /// </summary>
+    public string? LeaseId { get; init; }
+}
+
+/// <summary>
+/// Response model for Nack operation.
+/// </summary>
+public record NackResponse
+{
+    /// <summary>
+    /// Whether the nack was successful.
+    /// </summary>
+    public bool Success { get; init; }
+
+    /// <summary>
+    /// Status message.
+    /// </summary>
+    public string Message { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Error code (if not successful).
+    /// </summary>
+    public string? ErrorCode { get; init; }
+
+    /// <summary>
+    /// True if the nack took the item past LockConfig.MaxDeliveryCount, so it was routed to the
+    /// dead-letter queue instead of being returned to this one.
+    /// </summary>
+    public bool DeadLettered { get; init; }
+
+    /// <summary>
+    /// The item's delivery count after this nack.
+    /// </summary>
+    public int DeliveryCount { get; init; }
+
+    /// <summary>
+    /// Dead letter queue ID, when DeadLettered.
+    /// </summary>
+    public string? DlqId { get; init; }
+}
+
+/// <summary>
 /// Request model for ExtendLock operation.
 /// </summary>
 public record ExtendLockRequest

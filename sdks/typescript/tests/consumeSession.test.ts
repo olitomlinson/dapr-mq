@@ -104,4 +104,19 @@ describe("DaprMQClient.consumeSession", () => {
 
     expect(stream.written[1].deadLetter?.lockId).toBe("L2");
   });
+
+  it("nack() writes a nack frame", async () => {
+    const stream = new FakeDuplexStream();
+    const client = createClient(stream);
+
+    stream.emitData({ payload: "sessionAssigned", sessionAssigned: { sessionId: "s1", leaseExpiresAt: 1.0 } });
+    stream.emitData({ payload: "delivered", delivered: { lockId: "L3", itemJson: "{}", priority: 1, lockExpiresAt: 1.0 } });
+    stream.emitEnd();
+
+    for await (const delivery of client.consumeSession("q", { sessionId: "s1" })) {
+      await delivery.nack();
+    }
+
+    expect(stream.written[1].nack?.lockId).toBe("L3");
+  });
 });

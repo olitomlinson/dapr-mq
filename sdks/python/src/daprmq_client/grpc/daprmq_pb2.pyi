@@ -138,6 +138,32 @@ class AcknowledgeResponse(_message.Message):
     error_code: str
     def __init__(self, success: _Optional[bool] = ..., message: _Optional[str] = ..., items_acknowledged: _Optional[int] = ..., error_code: _Optional[str] = ...) -> None: ...
 
+class NackRequest(_message.Message):
+    __slots__ = ("queue_id", "lock_id", "lease_id")
+    QUEUE_ID_FIELD_NUMBER: _ClassVar[int]
+    LOCK_ID_FIELD_NUMBER: _ClassVar[int]
+    LEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    queue_id: str
+    lock_id: str
+    lease_id: str
+    def __init__(self, queue_id: _Optional[str] = ..., lock_id: _Optional[str] = ..., lease_id: _Optional[str] = ...) -> None: ...
+
+class NackResponse(_message.Message):
+    __slots__ = ("success", "message", "error_code", "dead_lettered", "delivery_count", "dlq_id")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_CODE_FIELD_NUMBER: _ClassVar[int]
+    DEAD_LETTERED_FIELD_NUMBER: _ClassVar[int]
+    DELIVERY_COUNT_FIELD_NUMBER: _ClassVar[int]
+    DLQ_ID_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    message: str
+    error_code: str
+    dead_lettered: bool
+    delivery_count: int
+    dlq_id: str
+    def __init__(self, success: _Optional[bool] = ..., message: _Optional[str] = ..., error_code: _Optional[str] = ..., dead_lettered: _Optional[bool] = ..., delivery_count: _Optional[int] = ..., dlq_id: _Optional[str] = ...) -> None: ...
+
 class ExtendLockRequest(_message.Message):
     __slots__ = ("queue_id", "lock_id", "additional_ttl_seconds", "lease_id")
     QUEUE_ID_FIELD_NUMBER: _ClassVar[int]
@@ -249,26 +275,30 @@ class ReleaseSessionResponse(_message.Message):
     def __init__(self, success: _Optional[bool] = ...) -> None: ...
 
 class ConsumeSessionRequest(_message.Message):
-    __slots__ = ("start", "ack", "dead_letter")
+    __slots__ = ("start", "ack", "dead_letter", "nack")
     START_FIELD_NUMBER: _ClassVar[int]
     ACK_FIELD_NUMBER: _ClassVar[int]
     DEAD_LETTER_FIELD_NUMBER: _ClassVar[int]
+    NACK_FIELD_NUMBER: _ClassVar[int]
     start: ConsumeSessionStart
     ack: ConsumeSessionAck
     dead_letter: ConsumeSessionDeadLetter
-    def __init__(self, start: _Optional[_Union[ConsumeSessionStart, _Mapping]] = ..., ack: _Optional[_Union[ConsumeSessionAck, _Mapping]] = ..., dead_letter: _Optional[_Union[ConsumeSessionDeadLetter, _Mapping]] = ...) -> None: ...
+    nack: ConsumeSessionNack
+    def __init__(self, start: _Optional[_Union[ConsumeSessionStart, _Mapping]] = ..., ack: _Optional[_Union[ConsumeSessionAck, _Mapping]] = ..., dead_letter: _Optional[_Union[ConsumeSessionDeadLetter, _Mapping]] = ..., nack: _Optional[_Union[ConsumeSessionNack, _Mapping]] = ...) -> None: ...
 
 class ConsumeSessionStart(_message.Message):
-    __slots__ = ("queue_id", "session_id", "lease_seconds", "prefetch_count")
+    __slots__ = ("queue_id", "session_id", "lease_seconds", "prefetch_count", "session_idle_timeout_seconds")
     QUEUE_ID_FIELD_NUMBER: _ClassVar[int]
     SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     LEASE_SECONDS_FIELD_NUMBER: _ClassVar[int]
     PREFETCH_COUNT_FIELD_NUMBER: _ClassVar[int]
+    SESSION_IDLE_TIMEOUT_SECONDS_FIELD_NUMBER: _ClassVar[int]
     queue_id: str
     session_id: str
     lease_seconds: int
     prefetch_count: int
-    def __init__(self, queue_id: _Optional[str] = ..., session_id: _Optional[str] = ..., lease_seconds: _Optional[int] = ..., prefetch_count: _Optional[int] = ...) -> None: ...
+    session_idle_timeout_seconds: int
+    def __init__(self, queue_id: _Optional[str] = ..., session_id: _Optional[str] = ..., lease_seconds: _Optional[int] = ..., prefetch_count: _Optional[int] = ..., session_idle_timeout_seconds: _Optional[int] = ...) -> None: ...
 
 class ConsumeSessionAck(_message.Message):
     __slots__ = ("lock_id",)
@@ -282,17 +312,25 @@ class ConsumeSessionDeadLetter(_message.Message):
     lock_id: str
     def __init__(self, lock_id: _Optional[str] = ...) -> None: ...
 
+class ConsumeSessionNack(_message.Message):
+    __slots__ = ("lock_id",)
+    LOCK_ID_FIELD_NUMBER: _ClassVar[int]
+    lock_id: str
+    def __init__(self, lock_id: _Optional[str] = ...) -> None: ...
+
 class ConsumeSessionResponse(_message.Message):
-    __slots__ = ("session_assigned", "delivered", "error", "session_lost")
+    __slots__ = ("session_assigned", "delivered", "error", "session_lost", "session_drained")
     SESSION_ASSIGNED_FIELD_NUMBER: _ClassVar[int]
     DELIVERED_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
     SESSION_LOST_FIELD_NUMBER: _ClassVar[int]
+    SESSION_DRAINED_FIELD_NUMBER: _ClassVar[int]
     session_assigned: SessionAssigned
     delivered: SessionDelivered
     error: SessionError
     session_lost: SessionLost
-    def __init__(self, session_assigned: _Optional[_Union[SessionAssigned, _Mapping]] = ..., delivered: _Optional[_Union[SessionDelivered, _Mapping]] = ..., error: _Optional[_Union[SessionError, _Mapping]] = ..., session_lost: _Optional[_Union[SessionLost, _Mapping]] = ...) -> None: ...
+    session_drained: SessionDrained
+    def __init__(self, session_assigned: _Optional[_Union[SessionAssigned, _Mapping]] = ..., delivered: _Optional[_Union[SessionDelivered, _Mapping]] = ..., error: _Optional[_Union[SessionError, _Mapping]] = ..., session_lost: _Optional[_Union[SessionLost, _Mapping]] = ..., session_drained: _Optional[_Union[SessionDrained, _Mapping]] = ...) -> None: ...
 
 class SessionAssigned(_message.Message):
     __slots__ = ("session_id", "lease_expires_at")
@@ -327,3 +365,9 @@ class SessionLost(_message.Message):
     MESSAGE_FIELD_NUMBER: _ClassVar[int]
     message: str
     def __init__(self, message: _Optional[str] = ...) -> None: ...
+
+class SessionDrained(_message.Message):
+    __slots__ = ("session_id",)
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    def __init__(self, session_id: _Optional[str] = ...) -> None: ...

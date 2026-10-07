@@ -17,6 +17,7 @@ import com.daprmq.client.types.DequeueLockedItem;
 import com.daprmq.client.types.DequeueLockedResult;
 import com.daprmq.client.types.EnqueueItem;
 import com.daprmq.client.types.EnqueueResult;
+import com.daprmq.client.types.NackResult;
 import com.daprmq.client.types.SessionLease;
 import com.daprmq.grpc.DaprMQGrpc;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -51,7 +52,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * REST-backed for every operation except {@link #consumeSession}, which is the one method built
  * on the {@code ConsumeSession} gRPC streaming RPC - everything else (enqueue, dequeueLocked,
- * acknowledge, extendLock, deadLetter, acceptSession, renewSessionLease, releaseSession) is a
+ * acknowledge, extendLock, deadLetter, nack, acceptSession, renewSessionLease, releaseSession) is a
  * plain HTTP call under the hood.
  */
 public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
@@ -257,6 +258,33 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
         }
 
         JsonNode parsed = Json.tryParse(response.body());
+        String errorCode = parsed == null ? null : Json.textOrNull(parsed, "errorCode");
+        String message = (parsed != null && parsed.hasNonNull("message"))
+                ? parsed.get("message").asText()
+                : Json.errorMessageFrom(response.body(), response.statusCode());
+        throw mapLockError(errorCode, message);
+    }
+
+    public NackResult nack(String queueId, String lockId) {
+        return nack(queueId, lockId, null);
+    }
+
+    /**
+     * Returns a locked item to its original position in the queue. Counts as a delivery attempt:
+     * past the server's max delivery count the item is dead-lettered instead
+     * ({@link NackResult#deadLettered()}).
+     */
+    public NackResult nack(String queueId, String lockId, String leaseId) {
+        Map<String, Object> body = Map.of("lockId", lockId);
+        HttpResponse<String> response = postJson("nack", queueId, path(queueId, "nack"), body, leaseId);
+        JsonNode parsed = Json.tryParse(response.body());
+        if (isSuccess(response.statusCode())) {
+            return new NackResult(
+                    parsed != null && parsed.path("deadLettered").asBoolean(false),
+                    parsed == null ? 0 : parsed.path("deliveryCount").asInt(0),
+                    parsed == null ? null : Json.textOrNull(parsed, "dlqId"));
+        }
+
         String errorCode = parsed == null ? null : Json.textOrNull(parsed, "errorCode");
         String message = (parsed != null && parsed.hasNonNull("message"))
                 ? parsed.get("message").asText()

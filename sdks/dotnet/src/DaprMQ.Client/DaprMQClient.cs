@@ -208,6 +208,20 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
         throw MapLockError(body?.ErrorCode, body?.Message ?? await ReadErrorMessageAsync(response, ct));
     }
 
+    public async Task<NackResult> NackAsync(string queueId, string lockId, string? leaseId = null, CancellationToken ct = default)
+    {
+        using var response = await SendAsync("Nack", queueId,
+            () => BuildJsonRequest(Path(queueId, "nack"), new { lockId }, leaseId), unknownIsRetryable: false, null, ct);
+        if (response.IsSuccessStatusCode)
+        {
+            var result = await ReadRequiredAsync<NackResponseWire>(response, ct);
+            return new NackResult(result.DeadLettered, result.DeliveryCount, result.DlqId);
+        }
+
+        var body = await response.Content.ReadFromJsonAsync<NackResponseWire>(JsonOptions, ct);
+        throw MapLockError(body?.ErrorCode, body?.Message ?? await ReadErrorMessageAsync(response, ct));
+    }
+
     public async Task<SessionLease?> AcceptSessionAsync(string queueId, string? sessionId = null, int leaseSeconds = 30, CancellationToken ct = default)
     {
         using var response = await SendAsync("AcceptSession", queueId,
@@ -369,6 +383,10 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
                             DeadLetterAsync = _ => WriteAsync(new global::DaprMQ.ApiServer.Grpc.ConsumeSessionRequest
                             {
                                 DeadLetter = new global::DaprMQ.ApiServer.Grpc.ConsumeSessionDeadLetter { LockId = delivered.LockId }
+                            }),
+                            NackAsync = _ => WriteAsync(new global::DaprMQ.ApiServer.Grpc.ConsumeSessionRequest
+                            {
+                                Nack = new global::DaprMQ.ApiServer.Grpc.ConsumeSessionNack { LockId = delivered.LockId }
                             })
                         };
                         break;

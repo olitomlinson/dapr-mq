@@ -155,6 +155,36 @@ describe("DaprMQClient.deadLetter", () => {
   });
 });
 
+describe("DaprMQClient.nack", () => {
+  it("returns the nack result and sends the lease header", async () => {
+    const fake = fakeFetch(200, { success: true, message: "requeued", deadLettered: false, deliveryCount: 2 });
+    const client = createClient(fake.fetch);
+
+    const result = await client.nack("q", "L1", { leaseId: "lease-1" });
+
+    expect(result).toEqual({ deadLettered: false, deliveryCount: 2, dlqId: undefined });
+    expect(fake.lastRequest!.url).toBe("http://localhost:5000/queue/q/nack");
+    expect(fake.lastRequest!.headers["lease-id"]).toBe("lease-1");
+  });
+
+  it("reports dead-lettering past the max delivery count", async () => {
+    const fake = fakeFetch(200, { success: true, message: "dlq", deadLettered: true, deliveryCount: 11, dlqId: "q-deadletter" });
+    const client = createClient(fake.fetch);
+
+    const result = await client.nack("q", "L1");
+
+    expect(result.deadLettered).toBe(true);
+    expect(result.dlqId).toBe("q-deadletter");
+  });
+
+  it("maps errorCode to a typed exception", async () => {
+    const fake = fakeFetch(410, { success: false, message: "expired", errorCode: "LOCK_EXPIRED" });
+    const client = createClient(fake.fetch);
+
+    await expect(client.nack("q", "L1")).rejects.toBeInstanceOf(LockExpiredError);
+  });
+});
+
 describe("DaprMQClient sessions", () => {
   it("acceptSession maps a successful response", async () => {
     const fake = fakeFetch(200, { sessionId: "order-42", leaseId: "lease-1", leaseExpiresAt: 1780000200.0 });

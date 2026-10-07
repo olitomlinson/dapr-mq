@@ -4,7 +4,7 @@ public final class SessionQueueConsumerOptions {
     private int maxConcurrentSessions = 4;
     private String targetSessionId;
     private int leaseSeconds = 30;
-    private int prefetchCount = 10;
+    private int prefetchCount = 1;
     private int minBackoffSeconds = 1;
     private int maxBackoffSeconds = 60;
     private SessionHandlerFailureAction onHandlerException = SessionHandlerFailureAction.DEAD_LETTER_MESSAGE;

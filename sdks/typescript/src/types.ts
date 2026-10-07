@@ -25,6 +25,13 @@ export interface DequeueLockedResult {
   message?: string;
 }
 
+export interface NackResult {
+  /** True if the nack exceeded the server's max delivery count, so the item was dead-lettered. */
+  deadLettered: boolean;
+  deliveryCount: number;
+  dlqId?: string;
+}
+
 export interface SessionLease {
   sessionId: string;
   leaseId: string;
@@ -34,8 +41,8 @@ export interface SessionLease {
 /**
  * One delivered, locked item from consumeSession. There is no leaseId here - the ConsumeSession
  * wire protocol never exposes one to the client (the server tracks the lease internally and
- * applies it when it calls Acknowledge/DeadLetter on the caller's behalf), so ack/deadLetter are
- * the only way to resolve this item.
+ * applies it when it calls Acknowledge/DeadLetter/Nack on the caller's behalf), so
+ * ack/deadLetter/nack are the only way to resolve this item.
  */
 export interface SessionDelivery {
   sessionId: string;
@@ -45,4 +52,6 @@ export interface SessionDelivery {
   lockExpiresAt: number;
   ack(): Promise<void>;
   deadLetter(): Promise<void>;
+  /** Returns the item to the front of the session for redelivery. */
+  nack(): Promise<void>;
 }

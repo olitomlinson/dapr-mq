@@ -162,6 +162,27 @@ public class DaprMQClientConsumeSessionTests
         Assert.Equal("L2", written[1].DeadLetter.LockId);
     }
 
+    [Fact]
+    public async Task ConsumeSessionAsync_NackAsync_WritesNackFrame()
+    {
+        var (client, requests, responses) = CreateClientWithFakeStream();
+
+        responses.Add(new ConsumeSessionResponse { SessionAssigned = new SessionAssigned { SessionId = "s1", LeaseExpiresAt = 1.0 } });
+        responses.Add(new ConsumeSessionResponse
+        {
+            Delivered = new SessionDelivered { LockId = "L3", ItemJson = "{}", Priority = 1, LockExpiresAt = 1.0 }
+        });
+        responses.Complete();
+
+        await foreach (var delivery in client.ConsumeSessionAsync("q", "s1", 30, 10))
+        {
+            await delivery.NackAsync(CancellationToken.None);
+        }
+
+        var written = requests.WrittenSoFar;
+        Assert.Equal("L3", written[1].Nack.LockId);
+    }
+
     /// <summary>
     /// A fake ConsumeSession call whose server, like the real one, ends its response stream only
     /// after it sees the client half-close - and takes a little while to do it (applying the acks it

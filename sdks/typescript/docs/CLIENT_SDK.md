@@ -32,7 +32,7 @@ const client = new DaprMQClient({
 client.close();
 ```
 
-`DaprMQClient` is REST-backed for every operation except `consumeSession`, which is the one method built on the `ConsumeSession` gRPC streaming RPC - everything else (`enqueue`, `dequeueLocked`, `acknowledge`, `extendLock`, `deadLetter`, `acceptSession`, `renewSessionLease`, `releaseSession`) is a plain `fetch` call under the hood.
+`DaprMQClient` is REST-backed for every operation except `consumeSession`, which is the one method built on the `ConsumeSession` gRPC streaming RPC - everything else (`enqueue`, `dequeueLocked`, `acknowledge`, `extendLock`, `nack`, `deadLetter`, `acceptSession`, `renewSessionLease`, `releaseSession`) is a plain `fetch` call under the hood.
 
 `grpcAddress` is required unless you pass a pre-built `grpcClient` (e.g. in tests - see `fetch`/`grpcClient` in `DaprMQClientOptions`, both DI/test seams). `client.close()` only tears down the gRPC client if this instance built it; a `grpcClient` you supplied yourself is left alone.
 
@@ -62,7 +62,7 @@ const client = new DaprMQClient({
   the items' `idempotencyKeys`. What to do next:
   - **Enqueue without keys:** re-send and accept a possible duplicate.
   - **`dequeueLocked`:** don't re-send. If it ran, the items come back when their locks expire.
-  - **acknowledge / extendLock / deadLetter:** re-sending is safe in effect. A `LockNotFoundError`
+  - **acknowledge / extendLock / deadLetter / nack:** re-sending is safe in effect. A `LockNotFoundError`
     then means the first attempt worked.
 - **Aborting your `signal`** stops retrying and rejects with the abort reason.
 
@@ -114,7 +114,7 @@ const consumer = new SessionQueueConsumer(
   {
     maxConcurrentSessions: 8,
     leaseSeconds: 30,
-    prefetchCount: 10,
+    prefetchCount: 1,
     onHandlerException: "deadLetterMessage",
   },
   async (context, signal) => {
@@ -128,6 +128,10 @@ consumer.start();
 // ... run your application ...
 await consumer.stop(); // stops claiming, drains in-flight handlers, closes streams
 ```
+
+`onHandlerException` is one of `"deadLetterMessage"` (default), `"nackMessage"` (return the item to the front of the session for redelivery - counts toward the server's max delivery count, past which it is dead-lettered), `"abandonSession"`, or `"both"`. Session ordering holds only at the default prefetch of 1: with a larger prefetch, items already delivered are handled before a nacked item comes back.
+
+`client.nack(queueId, lockId, { leaseId })` (and `delivery.nack()` on a `SessionDelivery`) returns a locked item to its original position; it resolves to `{ deadLettered, deliveryCount, dlqId }`.
 
 `SessionMessageContext` deliberately has no `leaseId` - the `ConsumeSession` wire protocol never exposes one to the client (the server tracks it internally and applies it when calling `acknowledge`/`deadLetter` on your behalf), which is exactly what makes the managed loop simpler than the manual API above.
 

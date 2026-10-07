@@ -6,12 +6,13 @@ import com.fasterxml.jackson.databind.JsonNode;
  * One delivered, locked item from {@code DaprMQClient.consumeSession}.
  *
  * <p>There is no leaseId here - the ConsumeSession wire protocol never exposes one to the client
- * (the server tracks the lease internally and applies it when it calls Acknowledge/DeadLetter on
- * the caller's behalf), so {@link #ack()}/{@link #deadLetter()} are the only way to resolve this
- * item.
+ * (the server tracks the lease internally and applies it when it calls Acknowledge/DeadLetter/Nack
+ * on the caller's behalf), so {@link #ack()}/{@link #deadLetter()}/{@link #nack()} are the only way
+ * to resolve this item.
  *
  * @param ack        Acknowledges and permanently removes this item.
  * @param deadLetter Moves this item to the dead letter queue.
+ * @param nack       Returns this item to the front of the session for redelivery.
  */
 public record SessionDelivery(
         String sessionId,
@@ -20,5 +21,6 @@ public record SessionDelivery(
         int priority,
         double lockExpiresAt,
         Runnable ack,
-        Runnable deadLetter) {
+        Runnable deadLetter,
+        Runnable nack) {
 }

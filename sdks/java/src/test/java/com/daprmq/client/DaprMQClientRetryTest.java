@@ -5,6 +5,7 @@ import com.daprmq.client.errors.DaprMQUnavailableException;
 import com.daprmq.client.errors.DeliveryUnknownException;
 import com.daprmq.client.types.EnqueueItem;
 import com.daprmq.client.types.EnqueueResult;
+import com.daprmq.client.types.NackResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -48,6 +49,26 @@ class DaprMQClientRetryTest {
             client(server.baseUrl(), FAST).acknowledge("q", "L1");
 
             assertEquals(3, server.requests().size());
+        }
+    }
+
+    @Test
+    void nackNotDeliveredIsRetriedUntilItSucceeds() {
+        try (ScriptedHttpServer server = new ScriptedHttpServer(NOT_DELIVERED, ok("{\"success\":true,\"deadLettered\":false,\"deliveryCount\":1}"))) {
+            NackResult result = client(server.baseUrl(), FAST).nack("q", "L1");
+
+            assertEquals(2, server.requests().size());
+            assertFalse(result.deadLettered());
+        }
+    }
+
+    @Test
+    void nackUnknownIsNotRetriedAndNamesTheOperation() {
+        try (ScriptedHttpServer server = new ScriptedHttpServer(UNKNOWN)) {
+            DeliveryUnknownException e = assertThrows(DeliveryUnknownException.class, () -> client(server.baseUrl(), FAST).nack("q", "L1"));
+
+            assertEquals(1, server.requests().size());
+            assertEquals("nack", e.getOperation());
         }
     }
 

@@ -8,6 +8,7 @@ interface MessagesListProps {
   messages: DequeuedMessage[];
   onAcknowledge: (lockId: string, index: number) => void;
   onDeadLetter: (lockId: string, index: number) => void;
+  onNack: (lockId: string, index: number) => void;
   onAcknowledgeByLockId?: (lockId: string) => void;
   onDeadLetterByLockId?: (lockId: string) => void;
   wiremockLockStates?: Record<string, { acknowledged?: boolean; deadLettered?: boolean; dlqId?: string }>;
@@ -28,6 +29,7 @@ export const MessagesList = ({
   messages,
   onAcknowledge,
   onDeadLetter,
+  onNack,
   onAcknowledgeByLockId,
   onDeadLetterByLockId,
   wiremockLockStates,
@@ -60,6 +62,7 @@ export const MessagesList = ({
               message={msg}
               onAcknowledge={() => msg.lockId && onAcknowledge(msg.lockId, index)}
               onDeadLetter={() => msg.lockId && onDeadLetter(msg.lockId, index)}
+              onNack={() => msg.lockId && onNack(msg.lockId, index)}
             />
           ))
         )}
@@ -85,6 +88,7 @@ export const MessagesList = ({
                 message={msg}
                 onAcknowledge={() => msg.lockId && onAcknowledge(msg.lockId, index)}
                 onDeadLetter={() => msg.lockId && onDeadLetter(msg.lockId, index)}
+              onNack={() => msg.lockId && onNack(msg.lockId, index)}
               />
             ))
           )}

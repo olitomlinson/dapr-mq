@@ -49,7 +49,7 @@
 
 ## Domain Knowledge (Reference Only)
 
-**Queue ops:** Enqueue (FIFO), Dequeue, DequeueLocked (creates lock), Acknowledge (removes lock), ExtendLock
+**Queue ops:** Enqueue (FIFO), Dequeue, DequeueLocked (creates lock), Acknowledge (removes lock), Nack (returns item to its original position, +1 DeliveryCount, DLQ past max), ExtendLock
 
 **Priority:** 0=fast lane, 1+=normal. Lower first.
 
@@ -65,6 +65,6 @@ An expired lock's item returns to the position it was taken from, not the tail: 
 
 **Lock expiry:** no reminder or timer. Locks are swept lazily at the top of Dequeue/DequeueLocked/SetSessionLease and on activation, using the index to find them. Plain queues expire per-item TTL and restore the item to its original position (by `Sequence`); session actors hold locks for the life of the lease and bulk-restore to the *front* when it lapses. `DeliveryCount` increments per expiry, and past `MaxDeliveryCount` the item is dead-lettered.
 
-**Sessions:** AcceptSession/RenewSessionLease/ReleaseSession, actor id `{queueId}-session-{sessionId}`. Lease via `LeaseId` header on Dequeue/Ack/ExtendLock/DeadLetter.
+**Sessions:** AcceptSession/RenewSessionLease/ReleaseSession, actor id `{queueId}-session-{sessionId}`. Lease via `LeaseId` header on Dequeue/Ack/Nack/ExtendLock/DeadLetter.
 
 See [ARCHITECTURE.md](docs/ARCHITECTURE.md) and [API_REFERENCE.md](docs/API_REFERENCE.md) for details.

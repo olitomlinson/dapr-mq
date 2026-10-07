@@ -22,6 +22,8 @@ class SessionHandlerFailureAction(str, Enum):
     DEAD_LETTER_MESSAGE = "dead_letter_message"
     ABANDON_SESSION = "abandon_session"
     BOTH = "both"
+    NACK_MESSAGE = "nack_message"
+    """Return the message to the front of the session for redelivery."""
 
 
 @dataclass
@@ -30,7 +32,7 @@ class SessionQueueConsumerOptions:
     """Sticky routing to one specific session. Must pair with max_concurrent_sessions == 1."""
     target_session_id: str | None = None
     lease_seconds: int = 30
-    prefetch_count: int = 10
+    prefetch_count: int = 1
     min_backoff_seconds: int = 1
     max_backoff_seconds: int = 60
     on_handler_exception: SessionHandlerFailureAction = SessionHandlerFailureAction.DEAD_LETTER_MESSAGE
@@ -59,7 +61,7 @@ class SessionCapableClient(Protocol):
         *,
         session_id: str | None = None,
         lease_seconds: int = 30,
-        prefetch_count: int = 10,
+        prefetch_count: int = 1,
         cancel: asyncio.Event | None = None,
     ) -> Any: ...
 
@@ -182,5 +184,7 @@ class SessionQueueConsumer:
             action = self.options.on_handler_exception
             if action in (SessionHandlerFailureAction.DEAD_LETTER_MESSAGE, SessionHandlerFailureAction.BOTH):
                 await delivery.dead_letter()
+            if action == SessionHandlerFailureAction.NACK_MESSAGE:
+                await delivery.nack()
             if action in (SessionHandlerFailureAction.ABANDON_SESSION, SessionHandlerFailureAction.BOTH):
                 raise

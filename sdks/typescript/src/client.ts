@@ -23,11 +23,12 @@ import {
 } from "./grpc/daprmqGrpcClient.js";
 import { createHealthGrpcClient, type HealthGrpcClient } from "./grpc/healthGrpcClient.js";
 import { AsyncMessageQueue } from "./asyncMessageQueue.js";
-import type { DequeueLockedResult, EnqueueItem, EnqueueResult, SessionDelivery, SessionLease } from "./types.js";
+import type { DequeueLockedResult, EnqueueItem, EnqueueResult, NackResult, SessionDelivery, SessionLease } from "./types.js";
 import type {
   AcceptSessionResponseWire,
   AcknowledgeResponseWire,
   DeadLetterResponseWire,
+  NackResponseWire,
   DequeueLockedResponseWire,
   EnqueueResponseWire,
   LockedResponseWire,
@@ -256,6 +257,25 @@ export class DaprMQClient {
     throw this.mapLockError(body?.errorCode, body?.message ?? this.errorMessageFrom(text, response.status));
   }
 
+  /**
+   * Returns a locked item to its original position in the queue. Counts as a delivery attempt:
+   * past the server's max delivery count the item is dead-lettered instead (deadLettered: true).
+   */
+  async nack(
+    queueId: string,
+    lockId: string,
+    options: { leaseId?: string; signal?: AbortSignal } = {},
+  ): Promise<NackResult> {
+    const response = await this.postJson("nack", queueId, this.path(queueId, "nack"), { lockId }, options.leaseId, options.signal);
+    const text = await this.readBodyText(response);
+    const body = this.tryParseJson<NackResponseWire>(text);
+    if (response.ok) {
+      return { deadLettered: body?.deadLettered ?? false, deliveryCount: body?.deliveryCount ?? 0, dlqId: body?.dlqId ?? undefined };
+    }
+
+    throw this.mapLockError(body?.errorCode, body?.message ?? this.errorMessageFrom(text, response.status));
+  }
+
   async acceptSession(
     queueId: string,
     options: { sessionId?: string; leaseSeconds?: number; signal?: AbortSignal } = {},
@@ -346,7 +366,7 @@ export class DaprMQClient {
       signal?: AbortSignal;
     } = {},
   ): AsyncGenerator<SessionDelivery, void, void> {
-    const { sessionId, leaseSeconds = 30, prefetchCount = 10, sessionIdleTimeoutSeconds = 0, signal } = options;
+    const { sessionId, leaseSeconds = 30, prefetchCount = 1, sessionIdleTimeoutSeconds = 0, signal } = options;
     const call = this.grpcClient.consumeSession();
 
     const onAbort = () => call.cancel();
@@ -381,6 +401,9 @@ export class DaprMQClient {
               },
               deadLetter: async () => {
                 call.write({ deadLetter: { lockId: delivered.lockId } });
+              },
+              nack: async () => {
+                call.write({ nack: { lockId: delivered.lockId } });
               },
             };
             break;

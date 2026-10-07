@@ -32,6 +32,7 @@ public class RecordingDaprMQClientTests
                     LockExpiresAt = 0,
                     AckAsync = _ => Task.CompletedTask,
                     DeadLetterAsync = _ => Task.CompletedTask,
+                    NackAsync = _ => Task.CompletedTask,
                 };
             }
 
@@ -47,6 +48,7 @@ public class RecordingDaprMQClientTests
         public Task AcknowledgeAsync(string queueId, string lockId, string? leaseId = null, CancellationToken ct = default) => throw new NotSupportedException();
         public Task ExtendLockAsync(string queueId, string lockId, int additionalTtlSeconds, string? leaseId = null, CancellationToken ct = default) => throw new NotSupportedException();
         public Task DeadLetterAsync(string queueId, string lockId, string? leaseId = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<NackResult> NackAsync(string queueId, string lockId, string? leaseId = null, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<SessionLease?> AcceptSessionAsync(string queueId, string? sessionId = null, int leaseSeconds = 30, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<SessionLease> RenewSessionLeaseAsync(string queueId, string sessionId, string leaseId, int additionalSeconds = 30, CancellationToken ct = default) => throw new NotSupportedException();
         public Task ReleaseSessionAsync(string queueId, string sessionId, string leaseId, CancellationToken ct = default) => throw new NotSupportedException();

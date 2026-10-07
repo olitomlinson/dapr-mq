@@ -6,6 +6,8 @@ import type {
   AcknowledgeRequest,
   DeadLetterRequest,
   DeadLetterResponse,
+  NackRequest,
+  NackResponse,
   ApiError,
   RegisterSinkRequest,
   RegisterSinkResponse,
@@ -96,6 +98,21 @@ export const queueApi = {
 
   async deadLetter(queueId: string, request: DeadLetterRequest): Promise<DeadLetterResponse> {
     const response = await fetch(`${API_BASE}/queue/${queueId}/deadletter`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({ message: 'Unknown error' }));
+      throw new QueueApiError(response.status, data);
+    }
+
+    return response.json();
+  },
+
+  async nack(queueId: string, request: NackRequest): Promise<NackResponse> {
+    const response = await fetch(`${API_BASE}/queue/${queueId}/nack`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),

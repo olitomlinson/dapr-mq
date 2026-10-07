@@ -37,6 +37,14 @@ class DequeueLockedResult:
 
 
 @dataclass
+class NackResult:
+    dead_lettered: bool
+    """True if the nack exceeded the server's max delivery count, so the item was dead-lettered."""
+    delivery_count: int
+    dlq_id: str | None = None
+
+
+@dataclass
 class SessionLease:
     session_id: str
     lease_id: str
@@ -48,8 +56,8 @@ class SessionDelivery:
     """One delivered, locked item from consume_session.
 
     There is no lease_id here - the ConsumeSession wire protocol never exposes one to the client
-    (the server tracks the lease internally and applies it when it calls Acknowledge/DeadLetter
-    on the caller's behalf), so ack()/dead_letter() are the only way to resolve this item.
+    (the server tracks the lease internally and applies it when it calls Acknowledge/DeadLetter/Nack
+    on the caller's behalf), so ack()/dead_letter()/nack() are the only way to resolve this item.
     """
 
     session_id: str
@@ -59,6 +67,8 @@ class SessionDelivery:
     lock_expires_at: float
     ack: Callable[[], Awaitable[None]]
     dead_letter: Callable[[], Awaitable[None]]
+    nack: Callable[[], Awaitable[None]]
+    """Returns the item to the front of the session for redelivery."""
 
 
 @dataclass(frozen=True)

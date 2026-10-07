@@ -314,6 +314,57 @@ public class DaprMQGrpcServiceTests
     }
 
     [Fact]
+    public async Task Nack_Success_ReturnsDeliveryCountAndDeadLettered()
+    {
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        mockInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.NackRequest, ActorModels.NackResponse>(
+                It.IsAny<ActorId>(),
+                "Nack",
+                It.Is<ActorModels.NackRequest>(r => r.LockId == "lock-1" && r.LeaseId == "lease-1"),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.NackResponse
+            {
+                Success = true,
+                Message = "Dead-lettered",
+                DeadLettered = true,
+                DeliveryCount = 11,
+                DlqId = "test-queue-deadletter"
+            });
+
+        var service = new DaprMQGrpcService(_mockLogger.Object, mockInvoker.Object, _mockSessionCoordinatorActorInvoker.Object);
+
+        var response = await service.Nack(
+            new ApiServer.Grpc.NackRequest { QueueId = "test-queue", LockId = "lock-1", LeaseId = "lease-1" },
+            _mockContext.Object);
+
+        Assert.True(response.Success);
+        Assert.True(response.DeadLettered);
+        Assert.Equal(11, response.DeliveryCount);
+        Assert.Equal("test-queue-deadletter", response.DlqId);
+    }
+
+    [Theory]
+    [InlineData("LOCK_EXPIRED", StatusCode.FailedPrecondition)]
+    [InlineData("SESSION_LEASE_EXPIRED", StatusCode.FailedPrecondition)]
+    [InlineData("LOCK_NOT_FOUND", StatusCode.NotFound)]
+    [InlineData("INVALID_LOCK_ID", StatusCode.InvalidArgument)]
+    [InlineData("INVALID_LEASE_ID", StatusCode.InvalidArgument)]
+    [InlineData("DLQ_ENQUEUE_FAILED", StatusCode.Internal)]
+    public async Task Nack_Error_MapsToStatusCode(string errorCode, StatusCode expected)
+    {
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        mockInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.NackRequest, ActorModels.NackResponse>(
+                It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<ActorModels.NackRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.NackResponse { Success = false, ErrorCode = errorCode, Message = "nope" });
+
+        var service = new DaprMQGrpcService(_mockLogger.Object, mockInvoker.Object, _mockSessionCoordinatorActorInvoker.Object);
+
+        var ex = await Assert.ThrowsAsync<RpcException>(async () =>
+            await service.Nack(new ApiServer.Grpc.NackRequest { QueueId = "test-queue", LockId = "lock-1" }, _mockContext.Object));
+        Assert.Equal(expected, ex.StatusCode);
+    }
+
+    [Fact]
     public async Task ExtendLock_Success_ReturnsNewExpiry()
     {
         // Arrange

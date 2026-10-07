@@ -33,7 +33,7 @@ from .errors import (
     ValidationError,
 )
 from .grpc import daprmq_pb2, daprmq_pb2_grpc
-from .types import DequeueLockedItem, DequeueLockedResult, EnqueueItem, EnqueueResult, RetryOptions, SessionDelivery, SessionLease
+from .types import DequeueLockedItem, DequeueLockedResult, EnqueueItem, EnqueueResult, NackResult, RetryOptions, SessionDelivery, SessionLease
 
 #: The health service :meth:`DaprMQClient.wait_for_ready` watches by default: queue operations can be served.
 OPERATIONS_HEALTH_SERVICE = "daprmq.DaprMQ.operations"
@@ -201,6 +201,24 @@ class DaprMQClient:
         message = (body or {}).get("message") or self._error_message_from(response)
         raise self._map_lock_error(error_code, message)
 
+    async def nack(self, queue_id: str, lock_id: str, *, lease_id: str | None = None) -> NackResult:
+        """Returns a locked item to its original position in the queue.
+
+        Counts as a delivery attempt: past the server's max delivery count the item is
+        dead-lettered instead (``NackResult.dead_lettered``).
+        """
+        response = await self._post_json("nack", queue_id, self._path(queue_id, "nack"), {"lockId": lock_id}, lease_id)
+        body = self._try_parse_json(response) or {}
+        if response.is_success:
+            return NackResult(
+                dead_lettered=body.get("deadLettered", False),
+                delivery_count=body.get("deliveryCount", 0),
+                dlq_id=body.get("dlqId"),
+            )
+
+        message = body.get("message") or self._error_message_from(response)
+        raise self._map_lock_error(body.get("errorCode"), message)
+
     async def accept_session(
         self, queue_id: str, *, session_id: str | None = None, lease_seconds: int = 30
     ) -> SessionLease | None:
@@ -257,7 +275,7 @@ class DaprMQClient:
         *,
         session_id: str | None = None,
         lease_seconds: int = 30,
-        prefetch_count: int = 10,
+        prefetch_count: int = 1,
         cancel: asyncio.Event | None = None,
     ) -> AsyncIterator[SessionDelivery]:
         """Managed consume loop for exactly one session: claims a session (any-available or
@@ -305,6 +323,9 @@ class DaprMQClient:
                             daprmq_pb2.ConsumeSessionRequest(dead_letter=daprmq_pb2.ConsumeSessionDeadLetter(lock_id=lock_id))
                         )
 
+                    async def nack(lock_id: str = lock_id) -> None:
+                        await call.write(daprmq_pb2.ConsumeSessionRequest(nack=daprmq_pb2.ConsumeSessionNack(lock_id=lock_id)))
+
                     yield SessionDelivery(
                         session_id=assigned_session_id,
                         lock_id=lock_id,
@@ -313,6 +334,7 @@ class DaprMQClient:
                         lock_expires_at=delivered.lock_expires_at,
                         ack=ack,
                         dead_letter=dead_letter,
+                        nack=nack,
                     )
 
                 elif payload == "error":

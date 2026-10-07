@@ -168,6 +168,7 @@ public final class SessionQueueConsumer implements AutoCloseable {
                     delivery.deadLetter().run();
                     throw asRuntimeException(e);
                 }
+                case NACK_MESSAGE -> delivery.nack().run();
             }
         }
     }

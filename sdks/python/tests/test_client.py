@@ -8,6 +8,7 @@ from daprmq_client import (
     InvalidLeaseIdError,
     LockExpiredError,
     LockNotFoundError,
+    NackResult,
     SessionActorUnavailableError,
     SessionLeaseExpiredError,
     SessionLockedError,
@@ -144,6 +145,33 @@ class TestDeadLetter:
 
         with pytest.raises(LockNotFoundError):
             await client.dead_letter("q", "L1")
+
+
+class TestNack:
+    async def test_returns_the_nack_result_and_sends_the_lease_header(self) -> None:
+        client, transport = make_client(200, {"success": True, "message": "requeued", "deadLettered": False, "deliveryCount": 2})
+
+        result = await client.nack("q", "L1", lease_id="lease-1")
+
+        assert result == NackResult(dead_lettered=False, delivery_count=2, dlq_id=None)
+        assert str(transport.last_request.url) == "http://localhost:5000/queue/q/nack"
+        assert transport.last_request.headers["lease-id"] == "lease-1"
+
+    async def test_reports_dead_lettering_past_the_max_delivery_count(self) -> None:
+        client, _ = make_client(
+            200, {"success": True, "message": "dlq", "deadLettered": True, "deliveryCount": 11, "dlqId": "q-deadletter"}
+        )
+
+        result = await client.nack("q", "L1")
+
+        assert result.dead_lettered is True
+        assert result.dlq_id == "q-deadletter"
+
+    async def test_maps_error_code_to_a_typed_exception(self) -> None:
+        client, _ = make_client(410, {"success": False, "message": "expired", "errorCode": "LOCK_EXPIRED"})
+
+        with pytest.raises(LockExpiredError):
+            await client.nack("q", "L1")
 
 
 class TestSessions:

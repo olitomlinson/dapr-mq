@@ -7,7 +7,8 @@ import {
 } from "./errors.js";
 import type { SessionDelivery } from "./types.js";
 
-export type SessionHandlerFailureAction = "deadLetterMessage" | "abandonSession" | "both";
+/** nackMessage returns the message to the front of the session for redelivery. */
+export type SessionHandlerFailureAction = "deadLetterMessage" | "abandonSession" | "both" | "nackMessage";
 
 export interface SessionQueueConsumerOptions {
   maxConcurrentSessions?: number;
@@ -120,7 +121,7 @@ export class SessionQueueConsumer {
       maxConcurrentSessions,
       targetSessionId: options.targetSessionId,
       leaseSeconds: options.leaseSeconds ?? 30,
-      prefetchCount: options.prefetchCount ?? 10,
+      prefetchCount: options.prefetchCount ?? 1,
       minBackoffSeconds: options.minBackoffSeconds ?? 1,
       maxBackoffSeconds: options.maxBackoffSeconds ?? 60,
       onHandlerException: options.onHandlerException ?? "deadLetterMessage",
@@ -233,6 +234,9 @@ export class SessionQueueConsumer {
         case "both":
           await delivery.deadLetter();
           throw err;
+        case "nackMessage":
+          await delivery.nack();
+          break;
       }
     }
   }

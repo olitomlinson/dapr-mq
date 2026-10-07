@@ -11,6 +11,7 @@ import com.daprmq.client.errors.ValidationException;
 import com.daprmq.client.types.DequeueLockedResult;
 import com.daprmq.client.types.EnqueueItem;
 import com.daprmq.client.types.EnqueueResult;
+import com.daprmq.client.types.NackResult;
 import com.daprmq.client.types.SessionLease;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -144,6 +145,34 @@ class DaprMQClientTest {
         server.respondWith(410, "{\"success\":false,\"message\":\"expired\",\"errorCode\":\"SESSION_LEASE_EXPIRED\"}");
 
         assertThrows(SessionLeaseExpiredException.class, () -> client.deadLetter("q", "L1"));
+    }
+
+    @Test
+    void nackReturnsTheResultAndSendsTheLeaseHeader() {
+        server.respondWith(200, "{\"success\":true,\"message\":\"requeued\",\"deadLettered\":false,\"deliveryCount\":2}");
+
+        NackResult result = client.nack("q", "L1", "lease-1");
+
+        assertEquals(new NackResult(false, 2, null), result);
+        assertEquals("/queue/q/nack", server.lastRequest().path());
+        assertEquals("lease-1", server.lastRequest().headers().get("lease-id"));
+    }
+
+    @Test
+    void nackReportsDeadLetteringPastTheMaxDeliveryCount() {
+        server.respondWith(200, "{\"success\":true,\"message\":\"dlq\",\"deadLettered\":true,\"deliveryCount\":11,\"dlqId\":\"q-deadletter\"}");
+
+        NackResult result = client.nack("q", "L1");
+
+        assertTrue(result.deadLettered());
+        assertEquals("q-deadletter", result.dlqId());
+    }
+
+    @Test
+    void nackMapsLockExpired() {
+        server.respondWith(410, "{\"success\":false,\"message\":\"expired\",\"errorCode\":\"LOCK_EXPIRED\"}");
+
+        assertThrows(LockExpiredException.class, () -> client.nack("q", "L1"));
     }
 
     @Test

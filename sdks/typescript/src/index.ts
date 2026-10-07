@@ -13,6 +13,7 @@ export type {
   DequeueLockedResult,
   SessionLease,
   SessionDelivery,
+  NackResult,
 } from "./types.js";
 export {
   DaprMQError,

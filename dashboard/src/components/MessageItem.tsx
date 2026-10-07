@@ -10,9 +10,10 @@ interface MessageItemProps {
   message: DequeuedMessage;
   onAcknowledge: () => void;
   onDeadLetter: () => void;
+  onNack?: () => void;
 }
 
-export const MessageItem = ({ message, onAcknowledge, onDeadLetter }: MessageItemProps) => {
+export const MessageItem = ({ message, onAcknowledge, onDeadLetter, onNack }: MessageItemProps) => {
   const hasLockInfo = message.locked && message.lockId;
   const claim = isObjectClaim(message.item) ? message.item : null;
   const downloadUrl = claim ? `${API_BASE}/object/${claim.objectClaimToken}` : undefined;
@@ -41,6 +42,7 @@ export const MessageItem = ({ message, onAcknowledge, onDeadLetter }: MessageIte
           message={message}
           onAcknowledge={onAcknowledge}
           onDeadLetter={onDeadLetter}
+          onNack={onNack}
           downloadUrl={downloadUrl}
         />
       )}
