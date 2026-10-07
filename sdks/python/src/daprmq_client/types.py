@@ -65,8 +65,8 @@ class SessionDelivery:
 class RetryOptions:
     """How calls ride out a DaprMQ that can't serve them yet (sdks/testing/RETRIES_AND_READINESS.md)."""
 
-    #: Seconds one call may keep retrying; also the deadline sent to the server. 0 turns client
-    #: retries off and sends no deadline.
+    #: Seconds one call may keep retrying a DaprMQ that can't serve it (also sent to the server as
+    #: its retry window). Never cuts a call that was delivered short. 0 turns client retries off.
     timeout: float = 30.0
     #: Give each enqueued item without an idempotency key a fresh one, so an enqueue whose outcome
     #: is unknown is retried safely. Costs the server one extra state write per item.

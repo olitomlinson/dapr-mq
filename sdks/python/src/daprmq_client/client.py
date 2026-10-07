@@ -39,7 +39,7 @@ from .types import DequeueLockedItem, DequeueLockedResult, EnqueueItem, EnqueueR
 OPERATIONS_HEALTH_SERVICE = "daprmq.DaprMQ.operations"
 
 _DELIVERY_MARKER = "daprmq-delivery"
-_TIMEOUT_HEADER = "daprmq-timeout"
+_RETRY_TIMEOUT_HEADER = "daprmq-retry-timeout"
 _NOT_DELIVERED = "not-delivered"
 _UNKNOWN = "unknown"
 
@@ -65,7 +65,9 @@ class DaprMQClient:
         self._http_base_url = http_base_url.rstrip("/")
         self._retry = retry or RetryOptions()
         self._health_stub = health_stub
-        self._http_client = http_client or httpx.AsyncClient()
+        # httpx's own default (5 s) would cut a slow but progressing call short; match the server's
+        # per-call safety limit instead (DELIVERY_ATTEMPT_MAX_SECONDS, 100 s).
+        self._http_client = http_client or httpx.AsyncClient(timeout=httpx.Timeout(100.0, connect=10.0))
         self._owns_http_client = http_client is None
 
         if grpc_stub is not None:
@@ -394,8 +396,9 @@ class DaprMQClient:
     ) -> httpx.Response:
         """One REST call under the retry contract (sdks/testing/RETRIES_AND_READINESS.md):
         not-delivered failures are retried within the retry timeout, unknown outcomes only when
-        ``unknown_is_retryable``. Every attempt carries the remaining time as the server's
-        deadline. Returns any other response for the caller to map."""
+        ``unknown_is_retryable``. Every attempt tells the server how much retry time is left
+        (daprmq-retry-timeout); it never cuts a delivered call short, which runs until the caller
+        cancels or the HTTP client's own timeout. Returns any other response for the caller to map."""
         retry = self._retry
         retries = retry.timeout > 0
         deadline = time.monotonic() + retry.timeout
@@ -404,16 +407,12 @@ class DaprMQClient:
         while True:
             remaining = deadline - time.monotonic()
             attempt_headers = dict(headers or {})
-            request_timeout: Any = httpx.USE_CLIENT_DEFAULT
             if retries:
-                attempt_headers[_TIMEOUT_HEADER] = str(max(1, int(remaining * 1000)))
-                request_timeout = max(remaining, 0.001)
+                attempt_headers[_RETRY_TIMEOUT_HEADER] = str(max(1, int(remaining * 1000)))
 
             not_delivered: bool
             try:
-                response = await self._http_client.request(
-                    method, url, json=json_body, headers=attempt_headers or None, timeout=request_timeout
-                )
+                response = await self._http_client.request(method, url, json=json_body, headers=attempt_headers or None)
                 marker = response.headers.get(_DELIVERY_MARKER)
                 if marker not in (_NOT_DELIVERED, _UNKNOWN):
                     return response

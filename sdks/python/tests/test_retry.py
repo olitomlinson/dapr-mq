@@ -75,12 +75,28 @@ async def test_not_delivered_is_retried_until_it_succeeds_for_any_operation() ->
     assert len(transport.requests) == 3
 
 
-async def test_every_attempt_sends_the_remaining_time_as_the_deadline() -> None:
+async def test_every_attempt_sends_the_remaining_retry_time_not_a_call_deadline() -> None:
     transport = SequenceTransport(ok(OK))
 
     await make_client(transport).enqueue("q", [EnqueueItem(item={"n": 1})])
 
-    assert 4_000 <= int(transport.requests[0].headers["daprmq-timeout"]) <= 5_000
+    assert 4_000 <= int(transport.requests[0].headers["daprmq-retry-timeout"]) <= 5_000
+    assert "daprmq-timeout" not in transport.requests[0].headers
+
+
+class SlowTransport(httpx.AsyncBaseTransport):
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.3)
+        return httpx.Response(200, json=OK, request=request)
+
+
+async def test_a_slow_response_outlives_the_retry_timeout() -> None:
+    # e.g. queued behind thousands of calls on one busy queue: slow, but progressing.
+    client = make_client(SlowTransport(), RetryOptions(timeout=0.05, min_attempt_window=0.01, initial_backoff=0.001))
+
+    result = await client.enqueue("q", [EnqueueItem(item={"n": 1})])
+
+    assert result.success
 
 
 async def test_not_delivered_until_time_runs_out_raises_unavailable() -> None:
@@ -195,7 +211,7 @@ async def test_retries_off_send_no_deadline_and_make_one_attempt() -> None:
         await make_client(transport, RetryOptions(timeout=0)).acknowledge("q", "L1")
 
     assert len(transport.requests) == 1
-    assert "daprmq-timeout" not in transport.requests[0].headers
+    assert "daprmq-retry-timeout" not in transport.requests[0].headers
 
 
 async def test_caller_cancellation_stops_retrying_as_cancellation() -> None:
