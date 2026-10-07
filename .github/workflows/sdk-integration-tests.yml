@@ -129,10 +129,16 @@ jobs:
   # Each suite starts its own stack via Testcontainers (see sdks/testing/INTEGRATION_TESTS.md);
   # the runner only needs Docker and the prebuilt daprmq-api:test image.
   server:
-    name: Server integration tests
+    name: Server integration tests (${{ matrix.topology }})
     needs: [changes, build-image]
     if: needs.changes.outputs.server == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # combined: one process serves the API and hosts the actors. split: a gateway in front of a
+        # separate worker, as Helm deploys it (DaprTestEnvironment / DaprTopology).
+        topology: [combined, split]
     steps:
       - uses: actions/checkout@v4
 
@@ -151,6 +157,7 @@ jobs:
 
       - name: Run integration tests
         env:
+          DAPRMQ_TEST_TOPOLOGY: ${{ matrix.topology }}
           # Shared runners are ~2x slower than a dev machine; loosen the bulk throughput ceiling (default 60s).
           DAPRMQ_BULK_TEST_MAX_SECONDS: '300'
         # QueryCountComparisonTest is a local experiment that needs two hand-built images

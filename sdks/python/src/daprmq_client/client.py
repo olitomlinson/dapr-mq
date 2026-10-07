@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
+import time
+import uuid
+from collections.abc import Callable
 from collections.abc import AsyncIterator, Iterable
 from types import TracebackType
 from typing import Any
@@ -10,8 +14,11 @@ from urllib.parse import quote
 import grpc
 import grpc.aio
 import httpx
+from grpc_health.v1 import health_pb2, health_pb2_grpc
 
 from .errors import (
+    DaprMQUnavailableError,
+    DeliveryUnknownError,
     ActorNotFoundError,
     DaprMQError,
     InvalidLeaseIdError,
@@ -26,7 +33,15 @@ from .errors import (
     ValidationError,
 )
 from .grpc import daprmq_pb2, daprmq_pb2_grpc
-from .types import DequeueLockedItem, DequeueLockedResult, EnqueueItem, EnqueueResult, SessionDelivery, SessionLease
+from .types import DequeueLockedItem, DequeueLockedResult, EnqueueItem, EnqueueResult, RetryOptions, SessionDelivery, SessionLease
+
+#: The health service :meth:`DaprMQClient.wait_for_ready` watches by default: queue operations can be served.
+OPERATIONS_HEALTH_SERVICE = "daprmq.DaprMQ.operations"
+
+_DELIVERY_MARKER = "daprmq-delivery"
+_RETRY_TIMEOUT_HEADER = "daprmq-retry-timeout"
+_NOT_DELIVERED = "not-delivered"
+_UNKNOWN = "unknown"
 
 
 class DaprMQClient:
@@ -44,9 +59,15 @@ class DaprMQClient:
         grpc_credentials: grpc.ChannelCredentials | None = None,
         http_client: httpx.AsyncClient | None = None,
         grpc_stub: Any | None = None,
+        retry: RetryOptions | None = None,
+        health_stub: Any | None = None,
     ) -> None:
         self._http_base_url = http_base_url.rstrip("/")
-        self._http_client = http_client or httpx.AsyncClient()
+        self._retry = retry or RetryOptions()
+        self._health_stub = health_stub
+        # httpx's own default (5 s) would cut a slow but progressing call short; match the server's
+        # per-call safety limit instead (DELIVERY_ATTEMPT_MAX_SECONDS, 100 s).
+        self._http_client = http_client or httpx.AsyncClient(timeout=httpx.Timeout(100.0, connect=10.0))
         self._owns_http_client = http_client is None
 
         if grpc_stub is not None:
@@ -63,21 +84,32 @@ class DaprMQClient:
             )
             self._grpc_stub = daprmq_pb2_grpc.DaprMQStub(self._grpc_channel)
             self._owns_grpc_channel = True
+            if self._health_stub is None:
+                self._health_stub = health_pb2_grpc.HealthStub(self._grpc_channel)
 
     async def enqueue(self, queue_id: str, items: Iterable[EnqueueItem]) -> EnqueueResult:
+        items = list(items)  # iterated twice below; a generator would come up empty the second time
+        # Keys are fixed before the first attempt, so a retry re-sends the same ones.
+        keys = [
+            i.idempotency_key or (uuid.uuid4().hex if self._retry.auto_idempotency_keys else None) for i in items
+        ]
         body = {
             "items": [
                 {
                     "item": i.item,
                     "priority": i.priority,
-                    "idempotencyKey": i.idempotency_key,
+                    "idempotencyKey": key,
                     "sessionId": i.session_id,
                 }
-                for i in items
+                for i, key in zip(items, keys)
             ]
         }
 
-        response = await self._http_client.post(self._path(queue_id, "enqueue"), json=body)
+        # An unknown outcome is only safe to repeat when the server can de-duplicate every item.
+        response = await self._send(
+            "enqueue", queue_id, "POST", self._path(queue_id, "enqueue"), json_body=body,
+            unknown_is_retryable=all(k is not None for k in keys), idempotency_keys=keys,
+        )
         if not response.is_success:
             raise await self._map_generic_error(response)
 
@@ -104,7 +136,7 @@ class DaprMQClient:
         if allow_competing_consumers:
             headers["allow-competing-consumers"] = "true"
 
-        response = await self._http_client.post(self._path(queue_id, "dequeue"), headers=headers)
+        response = await self._send("dequeue_locked", queue_id, "POST", self._path(queue_id, "dequeue"), headers=headers)
 
         if response.status_code == 204:
             return None
@@ -128,7 +160,7 @@ class DaprMQClient:
         return DequeueLockedResult(items=items, locked=result["locked"], message=result.get("message"))
 
     async def acknowledge(self, queue_id: str, lock_id: str, *, lease_id: str | None = None) -> None:
-        response = await self._post_json(self._path(queue_id, "acknowledge"), {"lockId": lock_id}, lease_id)
+        response = await self._post_json("acknowledge", queue_id, self._path(queue_id, "acknowledge"), {"lockId": lock_id}, lease_id)
         if response.is_success:
             return
 
@@ -141,6 +173,8 @@ class DaprMQClient:
         self, queue_id: str, lock_id: str, additional_ttl_seconds: int, *, lease_id: str | None = None
     ) -> None:
         response = await self._post_json(
+            "extend_lock",
+            queue_id,
             self._path(queue_id, "extend-lock"),
             {"lockId": lock_id, "additionalTtlSeconds": additional_ttl_seconds},
             lease_id,
@@ -158,7 +192,7 @@ class DaprMQClient:
         raise ValidationError(message)
 
     async def dead_letter(self, queue_id: str, lock_id: str, *, lease_id: str | None = None) -> None:
-        response = await self._post_json(self._path(queue_id, "deadletter"), {"lockId": lock_id}, lease_id)
+        response = await self._post_json("dead_letter", queue_id, self._path(queue_id, "deadletter"), {"lockId": lock_id}, lease_id)
         if response.is_success:
             return
 
@@ -171,7 +205,8 @@ class DaprMQClient:
         self, queue_id: str, *, session_id: str | None = None, lease_seconds: int = 30
     ) -> SessionLease | None:
         response = await self._post_json(
-            self._path(queue_id, "sessions/accept"), {"sessionId": session_id, "leaseSeconds": lease_seconds}, None
+            "accept_session", queue_id, self._path(queue_id, "sessions/accept"),
+            {"sessionId": session_id, "leaseSeconds": lease_seconds}, None,
         )
 
         if response.status_code == 204:
@@ -194,6 +229,8 @@ class DaprMQClient:
         self, queue_id: str, session_id: str, lease_id: str, *, additional_seconds: int = 30
     ) -> SessionLease:
         response = await self._post_json(
+            "renew_session_lease",
+            queue_id,
             self._path(queue_id, f"sessions/{quote(session_id, safe='')}/renew"),
             {"leaseId": lease_id, "additionalSeconds": additional_seconds},
             None,
@@ -208,7 +245,8 @@ class DaprMQClient:
 
     async def release_session(self, queue_id: str, session_id: str, lease_id: str) -> None:
         response = await self._post_json(
-            self._path(queue_id, f"sessions/{quote(session_id, safe='')}/release"), {"leaseId": lease_id}, None
+            "release_session", queue_id, self._path(queue_id, f"sessions/{quote(session_id, safe='')}/release"),
+            {"leaseId": lease_id}, None,
         )
         if not response.is_success:
             raise InvalidLeaseIdError(self._error_message_from(response))
@@ -290,6 +328,37 @@ class DaprMQClient:
             except Exception:
                 pass  # best-effort - the stream may already be broken/cancelled
 
+    async def wait_for_ready(self, service: str = OPERATIONS_HEALTH_SERVICE) -> None:
+        """Wait until the server reports SERVING for ``service`` over the standard gRPC health
+        protocol (grpc.health.v1.Health/Watch). The default means queue operations can be served
+        end to end; ``"daprmq.DaprMQ"`` means just this server instance is ready. Reconnects while
+        the server isn't listening; has no deadline of its own, so bound it with
+        ``asyncio.wait_for`` / ``asyncio.timeout``.
+
+        Raises ``NotImplementedError`` if the server doesn't expose the health service.
+        """
+        if self._health_stub is None:
+            raise RuntimeError("This DaprMQClient was created without a gRPC channel or health stub.")
+
+        backoff = 0.25
+        while True:
+            try:
+                async for response in self._health_stub.Watch(health_pb2.HealthCheckRequest(service=service)):
+                    if response.status == health_pb2.HealthCheckResponse.SERVING:
+                        return
+                    backoff = 0.25
+                # Stream ended before SERVING (e.g. server shutting down) - reconnect.
+            except grpc.aio.AioRpcError as e:
+                if e.code() == grpc.StatusCode.UNIMPLEMENTED:
+                    raise NotImplementedError(
+                        "The DaprMQ server does not expose the gRPC health service; upgrade the server."
+                    ) from e
+                if e.code() != grpc.StatusCode.UNAVAILABLE:
+                    raise
+                # Server not listening yet - retry with backoff.
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 2.0)
+
     async def aclose(self) -> None:
         if self._owns_http_client:
             await self._http_client.aclose()
@@ -307,9 +376,70 @@ class DaprMQClient:
     def _path(self, queue_id: str, suffix: str) -> str:
         return f"{self._http_base_url}/queue/{quote(queue_id, safe='')}/{suffix}"
 
-    async def _post_json(self, path: str, body: dict[str, Any], lease_id: str | None) -> httpx.Response:
+    async def _post_json(
+        self, operation: str, queue_id: str, path: str, body: dict[str, Any], lease_id: str | None
+    ) -> httpx.Response:
         headers = {"lease-id": lease_id} if lease_id is not None else None
-        return await self._http_client.post(path, json=body, headers=headers)
+        return await self._send(operation, queue_id, "POST", path, json_body=body, headers=headers)
+
+    async def _send(
+        self,
+        operation: str,
+        queue_id: str,
+        method: str,
+        url: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        unknown_is_retryable: bool = False,
+        idempotency_keys: list[str | None] | None = None,
+    ) -> httpx.Response:
+        """One REST call under the retry contract (sdks/testing/RETRIES_AND_READINESS.md):
+        not-delivered failures are retried within the retry timeout, unknown outcomes only when
+        ``unknown_is_retryable``. Every attempt tells the server how much retry time is left
+        (daprmq-retry-timeout); it never cuts a delivered call short, which runs until the caller
+        cancels or the HTTP client's own timeout. Returns any other response for the caller to map."""
+        retry = self._retry
+        retries = retry.timeout > 0
+        deadline = time.monotonic() + retry.timeout
+        backoff = retry.initial_backoff
+
+        while True:
+            remaining = deadline - time.monotonic()
+            attempt_headers = dict(headers or {})
+            if retries:
+                attempt_headers[_RETRY_TIMEOUT_HEADER] = str(max(1, int(remaining * 1000)))
+
+            not_delivered: bool
+            try:
+                response = await self._http_client.request(method, url, json=json_body, headers=attempt_headers or None)
+                marker = response.headers.get(_DELIVERY_MARKER)
+                if marker not in (_NOT_DELIVERED, _UNKNOWN):
+                    return response
+                not_delivered = marker == _NOT_DELIVERED
+                reason = self._error_message_from(response)
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
+                not_delivered, reason = True, str(e) or type(e).__name__  # nothing was sent
+            except httpx.TransportError as e:
+                not_delivered, reason = False, str(e) or type(e).__name__  # sent, then broke or timed out
+
+            retryable = not_delivered or unknown_is_retryable
+            delay = random.uniform(0, backoff)
+            time_left = deadline - time.monotonic() - delay
+            if not retries or not retryable or time_left < retry.min_attempt_window:
+                if not_delivered:
+                    raise DaprMQUnavailableError(
+                        f"DaprMQ is unavailable; {operation} was not performed: {reason}", operation, queue_id
+                    )
+                raise DeliveryUnknownError(
+                    f"The outcome of {operation} is unknown: it may or may not have been performed ({reason})",
+                    operation,
+                    queue_id,
+                    idempotency_keys,
+                )
+
+            await asyncio.sleep(delay)
+            backoff = min(backoff * 2, retry.max_backoff)
 
     @staticmethod
     def _try_parse_json(response: httpx.Response) -> dict[str, Any] | None:

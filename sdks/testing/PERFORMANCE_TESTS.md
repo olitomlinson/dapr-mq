@@ -36,8 +36,8 @@ Each SDK's own Testcontainers fixture builds the perf stack. It's the integratio
   the replicas.
 - **Load balancer** (whenever replicas > 1). `nginx:1.27-alpine`, alias `api-lb`. Port 5000 proxies
   REST and port 5001 (`listen 5001 http2`) uses `grpc_pass` to every replica. Read/send timeouts are
-  1 h so `ConsumeSession` streams survive. The SDK connects to the LB. Readiness polls every replica's
-  `/health/ready` directly, not the LB.
+  1 h so `ConsumeSession` streams survive. The SDK connects to the LB, and waits for the stack by polling a
+  probe enqueue through it.
 
 The scheduler isn't on DaprMQ's hot paths (lock expiry has no reminders), so runs are grouped and
 compared by API replica count only. The scheduler replica count is recorded but not part of the key.

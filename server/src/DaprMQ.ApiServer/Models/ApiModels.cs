@@ -62,7 +62,10 @@ public record ApiAcknowledgeResponse(
 
 public record ApiErrorResponse(
     string Message,
-    bool Success = false
+    bool Success = false,
+    // Machine-readable reason where one exists (e.g. UNAVAILABLE, DELIVERY_UNKNOWN); omitted otherwise.
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    string? ErrorCode = null
 );
 
 public record ApiLockedResponse(

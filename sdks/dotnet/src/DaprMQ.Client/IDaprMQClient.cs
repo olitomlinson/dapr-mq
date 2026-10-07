@@ -22,5 +22,5 @@ public interface IDaprMQClient
         string queueId, string? sessionId, int leaseSeconds, int prefetchCount, CancellationToken ct = default,
         int sessionIdleTimeoutSeconds = 0);
 
-    Task WaitForReadyAsync(CancellationToken ct = default);
+    Task WaitForReadyAsync(string service = DaprMQClient.OperationsHealthService, CancellationToken ct = default);
 }

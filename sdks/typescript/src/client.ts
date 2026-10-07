@@ -1,7 +1,10 @@
 import * as grpc from "@grpc/grpc-js";
+import { randomUUID } from "node:crypto";
 import {
   ActorNotFoundError,
   DaprMQError,
+  DaprMQUnavailableError,
+  DeliveryUnknownError,
   InvalidLeaseIdError,
   LockExpiredError,
   LockNotFoundError,
@@ -18,6 +21,7 @@ import {
   type ConsumeSessionResponseMessage,
   type DaprMQGrpcClient,
 } from "./grpc/daprmqGrpcClient.js";
+import { createHealthGrpcClient, type HealthGrpcClient } from "./grpc/healthGrpcClient.js";
 import { AsyncMessageQueue } from "./asyncMessageQueue.js";
 import type { DequeueLockedResult, EnqueueItem, EnqueueResult, SessionDelivery, SessionLease } from "./types.js";
 import type {
@@ -30,6 +34,26 @@ import type {
   RenewSessionLeaseResponseWire,
 } from "./wireTypes.js";
 
+/** The health service `waitForReady` watches by default: queue operations can be served. */
+export const OPERATIONS_HEALTH_SERVICE = "daprmq.DaprMQ.operations";
+
+const DELIVERY_MARKER = "daprmq-delivery";
+const RETRY_TIMEOUT_HEADER = "daprmq-retry-timeout";
+/** Fetch failure causes that mean nothing was sent (the connection never opened). */
+const NOT_SENT_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "UND_ERR_CONNECT_TIMEOUT"]);
+
+/** How calls ride out a DaprMQ that can't serve them yet (sdks/testing/RETRIES_AND_READINESS.md). */
+export interface RetryOptions {
+  /** How long one call may keep retrying a DaprMQ that can't serve it; also sent to the server as its retry window. Never cuts a call that was delivered short. 0 = retries off. Default 30 000. */
+  timeoutMs?: number;
+  /** Give each enqueued item without an idempotencyKey a fresh one, so an enqueue whose outcome is unknown is retried safely. Costs the server one extra state write per item. */
+  autoIdempotencyKeys?: boolean;
+  /** Tuning (normally left alone): no attempt starts with less left, since the server takes ~5 s to report it can't serve. Default 6 000. */
+  minAttemptWindowMs?: number;
+  initialBackoffMs?: number;
+  maxBackoffMs?: number;
+}
+
 export interface DaprMQClientOptions {
   httpBaseUrl: string;
   /** Required unless `grpcClient` is supplied directly (e.g. in tests). */
@@ -39,6 +63,9 @@ export interface DaprMQClientOptions {
   fetch?: typeof fetch;
   /** Test/DI seam - substitute a pre-built (or mocked) gRPC client instead of dialing grpcAddress. */
   grpcClient?: DaprMQGrpcClient;
+  /** Test/DI seam - substitute a health client instead of dialing grpcAddress. */
+  healthClient?: HealthGrpcClient;
+  retry?: RetryOptions;
 }
 
 export class DaprMQClient {
@@ -46,10 +73,27 @@ export class DaprMQClient {
   private readonly fetchImpl: typeof fetch;
   private readonly grpcClient: DaprMQGrpcClient;
   private readonly ownsGrpcClient: boolean;
+  private readonly healthClient?: HealthGrpcClient;
+  private readonly ownsHealthClient: boolean;
+  private readonly retry: Required<RetryOptions>;
 
   constructor(options: DaprMQClientOptions) {
     this.httpBaseUrl = options.httpBaseUrl.replace(/\/+$/, "");
     this.fetchImpl = options.fetch ?? fetch;
+    this.retry = {
+      timeoutMs: 30_000,
+      autoIdempotencyKeys: false,
+      minAttemptWindowMs: 6_000,
+      initialBackoffMs: 100,
+      maxBackoffMs: 2_000,
+      ...options.retry,
+    };
+    this.healthClient = options.healthClient;
+    this.ownsHealthClient = false;
+    if (!options.healthClient && options.grpcAddress) {
+      this.healthClient = createHealthGrpcClient(options.grpcAddress, options.grpcCredentials ?? grpc.credentials.createInsecure());
+      this.ownsHealthClient = true;
+    }
 
     if (options.grpcClient) {
       this.grpcClient = options.grpcClient;
@@ -67,16 +111,24 @@ export class DaprMQClient {
   }
 
   async enqueue(queueId: string, items: EnqueueItem[], signal?: AbortSignal): Promise<EnqueueResult> {
+    // Keys are fixed before the first attempt, so a retry re-sends the same ones.
+    const keys = items.map((i) => i.idempotencyKey ?? (this.retry.autoIdempotencyKeys ? randomUUID().replaceAll("-", "") : undefined));
     const body = {
-      items: items.map((i) => ({
+      items: items.map((i, n) => ({
         item: i.item,
         priority: i.priority ?? 1,
-        idempotencyKey: i.idempotencyKey,
+        idempotencyKey: keys[n],
         sessionId: i.sessionId,
       })),
     };
 
-    const response = await this.postJson(this.path(queueId, "enqueue"), body, undefined, signal);
+    // An unknown outcome is only safe to repeat when the server can de-duplicate every item.
+    const response = await this.send("enqueue", queueId, this.path(queueId, "enqueue"), {
+      body,
+      signal,
+      unknownIsRetryable: keys.every((k) => k !== undefined),
+      idempotencyKeys: keys,
+    });
     if (!response.ok) {
       const text = await this.readBodyText(response);
       throw this.mapGenericError(response.status, text);
@@ -115,7 +167,7 @@ export class DaprMQClient {
       headers["allow-competing-consumers"] = "true";
     }
 
-    const response = await this.fetchImpl(this.path(queueId, "dequeue"), { method: "POST", headers, signal });
+    const response = await this.send("dequeueLocked", queueId, this.path(queueId, "dequeue"), { headers, signal });
 
     if (response.status === 204) {
       return null;
@@ -150,7 +202,7 @@ export class DaprMQClient {
     lockId: string,
     options: { leaseId?: string; signal?: AbortSignal } = {},
   ): Promise<void> {
-    const response = await this.postJson(this.path(queueId, "acknowledge"), { lockId }, options.leaseId, options.signal);
+    const response = await this.postJson("acknowledge", queueId, this.path(queueId, "acknowledge"), { lockId }, options.leaseId, options.signal);
     if (response.ok) {
       return;
     }
@@ -167,6 +219,8 @@ export class DaprMQClient {
     options: { leaseId?: string; signal?: AbortSignal } = {},
   ): Promise<void> {
     const response = await this.postJson(
+      "extendLock",
+      queueId,
       this.path(queueId, "extend-lock"),
       { lockId, additionalTtlSeconds },
       options.leaseId,
@@ -192,7 +246,7 @@ export class DaprMQClient {
     lockId: string,
     options: { leaseId?: string; signal?: AbortSignal } = {},
   ): Promise<void> {
-    const response = await this.postJson(this.path(queueId, "deadletter"), { lockId }, options.leaseId, options.signal);
+    const response = await this.postJson("deadLetter", queueId, this.path(queueId, "deadletter"), { lockId }, options.leaseId, options.signal);
     if (response.ok) {
       return;
     }
@@ -207,7 +261,7 @@ export class DaprMQClient {
     options: { sessionId?: string; leaseSeconds?: number; signal?: AbortSignal } = {},
   ): Promise<SessionLease | null> {
     const { sessionId, leaseSeconds = 30, signal } = options;
-    const response = await this.postJson(this.path(queueId, "sessions/accept"), { sessionId, leaseSeconds }, undefined, signal);
+    const response = await this.postJson("acceptSession", queueId, this.path(queueId, "sessions/accept"), { sessionId, leaseSeconds }, undefined, signal);
 
     if (response.status === 204) {
       return null;
@@ -241,6 +295,8 @@ export class DaprMQClient {
   ): Promise<SessionLease> {
     const { additionalSeconds = 30, signal } = options;
     const response = await this.postJson(
+      "renewSessionLease",
+      queueId,
       this.path(queueId, `sessions/${encodeURIComponent(sessionId)}/renew`),
       { leaseId, additionalSeconds },
       undefined,
@@ -260,6 +316,8 @@ export class DaprMQClient {
 
   async releaseSession(queueId: string, sessionId: string, leaseId: string, signal?: AbortSignal): Promise<void> {
     const response = await this.postJson(
+      "releaseSession",
+      queueId,
       this.path(queueId, `sessions/${encodeURIComponent(sessionId)}/release`),
       { leaseId },
       undefined,
@@ -347,9 +405,58 @@ export class DaprMQClient {
     }
   }
 
+  /**
+   * Waits until the server reports SERVING for `service` over the standard gRPC health protocol
+   * (grpc.health.v1.Health/Watch). The default means queue operations can be served end to end;
+   * "daprmq.DaprMQ" means just this server instance is ready. Reconnects while the server isn't
+   * listening; has no deadline of its own, so bound it with `signal`.
+   */
+  async waitForReady(options: { service?: string; signal?: AbortSignal } = {}): Promise<void> {
+    const { service = OPERATIONS_HEALTH_SERVICE, signal } = options;
+    const health = this.healthClient;
+    if (!health) {
+      throw new Error("This DaprMQClient was created without a gRPC address or health client.");
+    }
+
+    let backoffMs = 250;
+    while (true) {
+      signal?.throwIfAborted();
+      const call = health.watch(service);
+      const onAbort = () => call.cancel();
+      signal?.addEventListener("abort", onAbort, { once: true });
+      try {
+        for await (const response of call) {
+          if (response.status === "SERVING") {
+            return;
+          }
+          backoffMs = 250;
+        }
+        // Stream ended before SERVING (e.g. server shutting down) - reconnect.
+      } catch (err) {
+        signal?.throwIfAborted();
+        const code = (err as { code?: number }).code;
+        if (code === grpc.status.UNIMPLEMENTED) {
+          throw new Error("The DaprMQ server does not expose the gRPC health service; upgrade the server.", { cause: err });
+        }
+        if (code !== grpc.status.UNAVAILABLE) {
+          throw err;
+        }
+        // Server not listening yet - retry with backoff.
+      } finally {
+        signal?.removeEventListener("abort", onAbort);
+        call.cancel();
+      }
+      await sleep(backoffMs, signal);
+      backoffMs = Math.min(backoffMs * 2, 2_000);
+    }
+  }
+
   close(): void {
     if (this.ownsGrpcClient) {
       this.grpcClient.close();
+    }
+    if (this.ownsHealthClient) {
+      this.healthClient?.close();
     }
   }
 
@@ -357,12 +464,98 @@ export class DaprMQClient {
     return `${this.httpBaseUrl}/queue/${encodeURIComponent(queueId)}/${suffix}`;
   }
 
-  private async postJson(path: string, body: unknown, leaseId: string | undefined, signal: AbortSignal | undefined): Promise<Response> {
-    const headers: Record<string, string> = { "content-type": "application/json" };
+  private async postJson(
+    operation: string,
+    queueId: string,
+    path: string,
+    body: unknown,
+    leaseId: string | undefined,
+    signal: AbortSignal | undefined,
+  ): Promise<Response> {
+    const headers: Record<string, string> = {};
     if (leaseId != null) {
       headers["lease-id"] = leaseId;
     }
-    return this.fetchImpl(path, { method: "POST", headers, body: JSON.stringify(body), signal });
+    return this.send(operation, queueId, path, { body, headers, signal });
+  }
+
+  /**
+   * One REST call under the retry contract (sdks/testing/RETRIES_AND_READINESS.md): not-delivered
+   * failures are retried within the retry timeout, unknown outcomes only when `unknownIsRetryable`.
+   * Every attempt tells the server how much retry time is left (daprmq-retry-timeout); it never cuts
+   * a delivered call short, which runs until the caller aborts. Returns any other response to map.
+   */
+  private async send(
+    operation: string,
+    queueId: string,
+    path: string,
+    options: {
+      body?: unknown;
+      headers?: Record<string, string>;
+      signal?: AbortSignal;
+      unknownIsRetryable?: boolean;
+      idempotencyKeys?: (string | undefined)[];
+    },
+  ): Promise<Response> {
+    const { body, signal, unknownIsRetryable = false, idempotencyKeys } = options;
+    const retry = this.retry;
+    const retries = retry.timeoutMs > 0;
+    const deadline = Date.now() + retry.timeoutMs;
+    let backoffMs = retry.initialBackoffMs;
+
+    while (true) {
+      const remaining = deadline - Date.now();
+      const headers: Record<string, string> = { ...options.headers };
+      if (body !== undefined) {
+        headers["content-type"] = "application/json";
+      }
+      if (retries) {
+        headers[RETRY_TIMEOUT_HEADER] = String(Math.max(1, Math.floor(remaining)));
+      }
+      signal?.throwIfAborted();
+
+      let notDelivered: boolean;
+      let reason: string;
+      try {
+        const response = await this.fetchImpl(path, {
+          method: "POST",
+          headers,
+          body: body === undefined ? undefined : JSON.stringify(body),
+          signal,
+        });
+        const marker = response.headers.get(DELIVERY_MARKER);
+        if (marker !== "not-delivered" && marker !== "unknown") {
+          return response;
+        }
+        notDelivered = marker === "not-delivered";
+        const text = await this.readBodyText(response);
+        reason = this.errorMessageFrom(text, response.status);
+      } catch (err) {
+        if (signal?.aborted) {
+          throw err; // the caller gave up: cancellation, not a delivery failure
+        }
+        const code = ((err as { cause?: { code?: string } }).cause ?? {}).code;
+        notDelivered = code !== undefined && NOT_SENT_CODES.has(code); // otherwise sent, then broke or timed out
+        reason = code ?? (err as Error).message;
+      }
+
+      const retryable = notDelivered || unknownIsRetryable;
+      const delayMs = Math.random() * backoffMs;
+      const timeLeft = deadline - Date.now() - delayMs;
+      if (!retries || !retryable || timeLeft < retry.minAttemptWindowMs) {
+        throw notDelivered
+          ? new DaprMQUnavailableError(`DaprMQ is unavailable; ${operation} was not performed: ${reason}`, operation, queueId)
+          : new DeliveryUnknownError(
+              `The outcome of ${operation} is unknown: it may or may not have been performed (${reason})`,
+              operation,
+              queueId,
+              idempotencyKeys,
+            );
+      }
+
+      await sleep(delayMs, signal);
+      backoffMs = Math.min(backoffMs * 2, retry.maxBackoffMs);
+    }
   }
 
   private async readBodyText(response: Response): Promise<string> {
@@ -441,4 +634,22 @@ export class DaprMQClient {
         return new DaprMQError(message, errorCode);
     }
   }
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal!.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }

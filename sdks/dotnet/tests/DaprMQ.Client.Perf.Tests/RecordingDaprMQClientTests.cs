@@ -50,7 +50,7 @@ public class RecordingDaprMQClientTests
         public Task<SessionLease?> AcceptSessionAsync(string queueId, string? sessionId = null, int leaseSeconds = 30, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<SessionLease> RenewSessionLeaseAsync(string queueId, string sessionId, string leaseId, int additionalSeconds = 30, CancellationToken ct = default) => throw new NotSupportedException();
         public Task ReleaseSessionAsync(string queueId, string sessionId, string leaseId, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task WaitForReadyAsync(CancellationToken ct = default) => throw new NotSupportedException();
+        public Task WaitForReadyAsync(string service = DaprMQClient.OperationsHealthService, CancellationToken ct = default) => throw new NotSupportedException();
     }
 
     [Fact]

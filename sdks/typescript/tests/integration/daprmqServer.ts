@@ -11,7 +11,6 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
 import { GenericContainer, Network, type StartedNetwork, type StartedTestContainer } from "testcontainers";
 
 const API_IMAGE = process.env.DAPRMQ_API_IMAGE ?? "daprmq-api:test";
@@ -142,13 +141,10 @@ export async function startDaprMQServer(): Promise<DaprMQServer> {
     const httpUrl = `http://localhost:${api.getMappedPort(5000)}`;
     const grpcAddress = `localhost:${api.getMappedPort(5001)}`;
 
-    await waitFor("DaprMQ API + sidecar (actors registered)", async () => {
-      const response = await fetch(`${httpUrl}/queue/readiness-${randomUUID().replaceAll("-", "")}/enqueue`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items: [{ item: { probe: true }, priority: 1 }] }),
-        signal: AbortSignal.timeout(5000),
-      });
+    // The daprmq.DaprMQ.operations signal over HTTP: queue operations can be served. Doesn't write
+    // anything, unlike the probe enqueue it replaces.
+    await waitFor("DaprMQ API + sidecar (queue operations servable)", async () => {
+      const response = await fetch(`${httpUrl}/health/operations`, { signal: AbortSignal.timeout(5000) });
       return response.status === 200;
     });
 

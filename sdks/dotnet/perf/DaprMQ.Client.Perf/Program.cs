@@ -165,18 +165,19 @@ static async Task<int> RunStateReadsAsync(DaprTestEnvironment stack, DaprMQClien
     return options.Gate && comparisons.Any(c => c.Regressed) ? 3 : 0;
 }
 
-// Actors take a moment to register after the sidecar starts; wait on the gRPC health service.
+// Queues take a moment to become servable after the stack starts; wait on the gRPC health service
+// (daprmq.DaprMQ.operations) instead of writing a probe queue.
 static async Task WaitForServerAsync(DaprMQClient client, CancellationToken ct)
 {
     using var readyCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
     readyCts.CancelAfter(TimeSpan.FromMinutes(2));
     try
     {
-        await client.WaitForReadyAsync(readyCts.Token);
+        await client.WaitForReadyAsync(ct: readyCts.Token);
     }
     catch (OperationCanceledException) when (!ct.IsCancellationRequested)
     {
-        throw new TimeoutException("Server did not report ready within 2 minutes.");
+        throw new TimeoutException("Server did not report daprmq.DaprMQ.operations SERVING within 2 minutes.");
     }
 }
 

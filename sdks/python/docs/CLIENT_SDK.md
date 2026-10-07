@@ -45,7 +45,39 @@ finally:
 
 `grpc_address` is required unless you pass a pre-built `grpc_stub` (e.g. in tests - `http_client`/`grpc_stub` are both DI/test seams). `aclose()` only tears down the `httpx.AsyncClient`/gRPC channel this instance built itself; an `http_client` or `grpc_stub` you supplied yourself is left alone.
 
-Errors map to typed exceptions exported alongside the client (`LockNotFoundError`, `LockExpiredError`, `SessionNotFoundError`, `SessionLockedError`, `SessionLeaseExpiredError`, `InvalidLeaseIdError`, `SessionActorUnavailableError`, `NoSessionsAvailableError`, `SessionLostError`, `ValidationError`, `ActorNotFoundError`), all deriving from `DaprMQError`. A `204 No Content` (queue empty / no session available) is not an error - `dequeue_locked`/`accept_session` return `None` instead of raising.
+Errors map to typed exceptions exported alongside the client (`LockNotFoundError`, `LockExpiredError`, `SessionNotFoundError`, `SessionLockedError`, `SessionLeaseExpiredError`, `InvalidLeaseIdError`, `SessionActorUnavailableError`, `NoSessionsAvailableError`, `SessionLostError`, `ValidationError`, `ActorNotFoundError`, `DaprMQUnavailableError`, `DeliveryUnknownError`), all deriving from `DaprMQError`. A `204 No Content` (queue empty / no session available) is not an error - `dequeue_locked`/`accept_session` return `None` instead of raising.
+
+## Retries, failures and waiting for a server
+
+Calls ride out a DaprMQ that briefly can't serve them, such as a worker restarting, under the shared
+contract in [RETRIES_AND_READINESS.md](../../testing/RETRIES_AND_READINESS.md). [docs/TIMEOUTS_AND_RETRIES.md](../../../docs/TIMEOUTS_AND_RETRIES.md) covers what to program for, across all SDKs:
+
+```python
+client = DaprMQClient(
+    http_base_url=..., grpc_address=...,
+    retry=RetryOptions(
+        timeout=30.0,                # default, in seconds: how long to keep retrying an outage. 0 = off
+        auto_idempotency_keys=True,  # optional: makes every enqueue safe to retry
+    ),
+)
+```
+
+- **Slow is not failed.** A call that reached a busy queue waits its turn for as long as it takes, up to your own cancellation (and a 100 s per-call safety limit). The retry timeout never cuts it short.
+- **Certainly not performed** (the server reports it couldn't serve the call, or the connection was
+  refused): retried until `timeout`, then `DaprMQUnavailableError`. Always safe to repeat later.
+- **Outcome unknown** (the connection broke after sending, or no response arrived in time): an
+  `enqueue` whose items all have an `idempotency_key` is retried; anything else raises
+  `DeliveryUnknownError` straight away. It carries the `operation`, the `queue_id` and, for enqueue,
+  the items' `idempotency_keys`. What to do next:
+  - **Enqueue without keys:** re-send and accept a possible duplicate.
+  - **`dequeue_locked`:** don't re-send. If it ran, the items come back when their locks expire.
+  - **Acknowledge / extend_lock / dead_letter:** re-sending is safe in effect. A `LockNotFoundError`
+    then means the first attempt worked.
+- **Cancelling the task** (e.g. `asyncio.wait_for`) stops retrying as normal cancellation.
+
+`await client.wait_for_ready()` waits until queue operations can be served (gRPC health service
+`daprmq.DaprMQ.operations`), without writing anything. Bound it with `asyncio.wait_for`. Pass
+`"daprmq.DaprMQ"` to wait only for the server instance itself.
 
 ## Basic queue operations
 

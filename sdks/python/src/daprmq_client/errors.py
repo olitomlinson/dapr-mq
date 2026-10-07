@@ -62,3 +62,26 @@ class SessionLostError(DaprMQError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message, "SESSION_LOST")
+
+
+class DaprMQUnavailableError(DaprMQError):
+    """The operation was certainly not performed - DaprMQ couldn't serve it - and retrying ran out
+    of ``RetryOptions.timeout``. Always safe to repeat later."""
+
+    def __init__(self, message: str, operation: str, queue_id: str) -> None:
+        super().__init__(message, "UNAVAILABLE")
+        self.operation = operation
+        self.queue_id = queue_id
+
+
+class DeliveryUnknownError(DaprMQError):
+    """The operation may or may not have been performed (e.g. the connection broke after it was
+    sent), and it isn't safe to repeat automatically. See sdks/testing/RETRIES_AND_READINESS.md for
+    what to do per operation; an enqueue whose items all carry an idempotency key is retried instead."""
+
+    def __init__(self, message: str, operation: str, queue_id: str, idempotency_keys: list[str | None] | None = None) -> None:
+        super().__init__(message, "DELIVERY_UNKNOWN")
+        self.operation = operation
+        self.queue_id = queue_id
+        #: For enqueue: each item's key, in order (None where the item had none).
+        self.idempotency_keys = idempotency_keys or []

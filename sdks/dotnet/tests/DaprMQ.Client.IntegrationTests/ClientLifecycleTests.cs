@@ -1,3 +1,4 @@
+using DaprMQ.Client.Exceptions;
 using DaprMQ.Client.IntegrationTests.Infrastructure;
 using DaprMQ.IntegrationTests.Fixtures;
 using Grpc.Core;
@@ -5,7 +6,7 @@ using Grpc.Core;
 namespace DaprMQ.Client.IntegrationTests;
 
 /// <summary>
-/// X-01..X-04 from sdks/testing/INTEGRATION_TESTS.md - constructing, disposing, and failing to
+/// X-01..X-03 from sdks/testing/INTEGRATION_TESTS.md - constructing, disposing, and failing to
 /// reach a DaprMQClient. Unlike the rest of the suite these build their own clients (and own
 /// their transports), since ownership is exactly what's under test.
 /// </summary>
@@ -94,7 +95,7 @@ public class ClientLifecycleTests(DaprTestFixture fixture) : IntegrationTestBase
     }
 
     [Fact]
-    public async Task X03_ServerUnreachable_SurfacesATransportError_NotAHangOrADomainError()
+    public async Task X03_R04_ServerUnreachable_SurfacesUnavailable_NotAHangOrADomainError()
     {
         AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
 
@@ -102,17 +103,18 @@ public class ClientLifecycleTests(DaprTestFixture fixture) : IntegrationTestBase
         await using var client = new DaprMQClient(new DaprMQClientOptions
         {
             HttpBaseAddress = new Uri("http://127.0.0.1:1/"),
-            GrpcAddress = "http://127.0.0.1:1"
+            GrpcAddress = "http://127.0.0.1:1",
+            Retry = new DaprMQRetryOptions { Timeout = TimeSpan.FromSeconds(2) }
         });
 
         var queueId = NewQueueId();
 
-        // REST: a connection failure, not a DaprMQException - an unreachable server is a
-        // transport problem, never a queue-domain outcome.
+        // REST: a refused connection certainly delivered nothing, so it's retried until RetryTimeout
+        // runs out and then reported as unavailable - never a queue-domain outcome, never a hang.
         var restFailure = await Record.ExceptionAsync(
             () => client.EnqueueAsync(queueId, [new EnqueueItemDto(new { seq = 1 })]).WaitAsync(TimeSpan.FromSeconds(30)));
-        Assert.NotNull(restFailure);
-        Assert.IsAssignableFrom<HttpRequestException>(restFailure);
+        var unavailable = Assert.IsType<DaprMQUnavailableException>(restFailure);
+        Assert.Equal("Enqueue", unavailable.Operation);
 
         // gRPC: likewise an RpcException rather than one of the mapped session errors.
         var grpcFailure = await Record.ExceptionAsync(async () =>
@@ -127,17 +129,5 @@ public class ClientLifecycleTests(DaprTestFixture fixture) : IntegrationTestBase
         Assert.NotNull(grpcFailure);
         Assert.IsType<RpcException>(grpcFailure);
         Assert.Equal(StatusCode.Unavailable, ((RpcException)grpcFailure).StatusCode);
-    }
-
-    [Fact]
-    public async Task X04_WaitForReady_RunningStack_ReturnsAndEnqueueSucceeds()
-    {
-        var client = CreateClient();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-
-        await client.WaitForReadyAsync(cts.Token);
-
-        var result = await client.EnqueueAsync(NewQueueId(), [new EnqueueItemDto(new { seq = 1 })]);
-        Assert.Equal(1, result.ItemsEnqueued);
     }
 }

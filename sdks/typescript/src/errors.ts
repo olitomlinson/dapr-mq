@@ -89,3 +89,36 @@ export class SessionLostError extends DaprMQError {
     this.name = "SessionLostError";
   }
 }
+
+/**
+ * The operation was certainly not performed - DaprMQ couldn't serve it - and retrying ran out of
+ * `RetryOptions.timeoutMs`. Always safe to repeat later.
+ */
+export class DaprMQUnavailableError extends DaprMQError {
+  constructor(
+    message: string,
+    readonly operation: string,
+    readonly queueId: string,
+  ) {
+    super(message, "UNAVAILABLE");
+    this.name = "DaprMQUnavailableError";
+  }
+}
+
+/**
+ * The operation may or may not have been performed (e.g. the connection broke after it was sent),
+ * and it isn't safe to repeat automatically. See sdks/testing/RETRIES_AND_READINESS.md for what to do
+ * per operation; an enqueue whose items all carry an idempotency key is retried instead.
+ */
+export class DeliveryUnknownError extends DaprMQError {
+  constructor(
+    message: string,
+    readonly operation: string,
+    readonly queueId: string,
+    /** For enqueue: each item's key, in order (undefined where the item had none). */
+    readonly idempotencyKeys: (string | undefined)[] = [],
+  ) {
+    super(message, "DELIVERY_UNKNOWN");
+    this.name = "DeliveryUnknownError";
+  }
+}

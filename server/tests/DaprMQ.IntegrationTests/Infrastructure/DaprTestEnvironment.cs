@@ -12,6 +12,9 @@ namespace DaprMQ.IntegrationTests.Infrastructure;
 ///
 /// To enable container logs output to console, set the environment variable:
 /// ENABLE_CONTAINER_LOGS=true dotnet test
+///
+/// DAPRMQ_TEST_TOPOLOGY=split puts the API behind a gateway in front of a separate actor-hosting
+/// worker, as Helm deploys it, instead of one process doing both (see <see cref="DaprTopology"/>).
 /// </summary>
 public class DaprTestEnvironment : IAsyncLifetime
 {
@@ -26,6 +29,12 @@ public class DaprTestEnvironment : IAsyncLifetime
     private IContainer? _operatorContainer;
     private IContainer? _operatorSidecarContainer;
     private string _componentsPath = string.Empty;
+
+    // Containers hosting the actors (the workers when split), for tests that take them down.
+    private readonly List<(IContainer App, IContainer Sidecar)> _actorHosts = [];
+
+    private const string WorkerAppId = "daprmq-api";
+    private const string GatewayAppId = "daprmq-gateway";
 
     // Exposed endpoints and connection strings
     public string PostgresConnectionString { get; private set; } = string.Empty;
@@ -77,12 +86,14 @@ public class DaprTestEnvironment : IAsyncLifetime
         InitializeAsync(extraApiServerEnvironment, apiServerImage, false);
 
     public Task InitializeAsync(IReadOnlyDictionary<string, string>? extraApiServerEnvironment, string? apiServerImage, bool enableQueryInstrumentation) =>
-        InitializeAsync(extraApiServerEnvironment, apiServerImage, enableQueryInstrumentation, DaprTopology.Default);
+        InitializeAsync(extraApiServerEnvironment, apiServerImage, enableQueryInstrumentation, DaprTopology.FromEnvironment());
 
     /// <summary>
     /// <paramref name="topology"/> scales the stack out for the perf harness: N API replicas (each
     /// with its own sidecar) behind an nginx load balancer, and a scheduler HA cluster.
     /// <see cref="ApiServerUrl"/>/<see cref="ApiServerGrpcUrl"/> then point at the load balancer.
+    /// When split, the API replicas are gateways and the actors live on separate workers;
+    /// <paramref name="extraApiServerEnvironment"/> applies to both.
     /// </summary>
     public async Task InitializeAsync(IReadOnlyDictionary<string, string>? extraApiServerEnvironment, string? apiServerImage, bool enableQueryInstrumentation, DaprTopology topology)
     {
@@ -184,23 +195,26 @@ public class DaprTestEnvironment : IAsyncLifetime
         // Wait a bit for scheduler to be ready
         await Task.Delay(TimeSpan.FromSeconds(2));
 
-        // 5./6. API server replicas, each with its own Dapr sidecar
+        // 5./6. API server replicas (and, when split, workers), each with its own Dapr sidecar
         var testProjectRoot = Path.Combine(Directory.GetCurrentDirectory(), "..", "..", "..");
         var componentsPath = Path.GetFullPath(Path.Combine(testProjectRoot, "dapr-components"));
         _componentsPath = componentsPath;
 
-        await Task.WhenAll(Enumerable.Range(0, topology.ApiReplicas).Select(replica =>
-            StartReplicaAsync(replica, topology, apiServerImage, extraApiServerEnvironment, componentsPath, enableContainerLogs)));
+        var apiRole = topology.IsSplit ? ReplicaRole.Gateway : ReplicaRole.Combined;
+        var replicas = await Task.WhenAll(
+            Enumerable.Range(0, topology.ApiReplicas).Select(replica =>
+                StartReplicaAsync(apiRole, replica, topology, apiServerImage, extraApiServerEnvironment, componentsPath, enableContainerLogs))
+            .Concat(Enumerable.Range(0, topology.Workers).Select(worker =>
+                StartReplicaAsync(ReplicaRole.Worker, worker, topology, apiServerImage, extraApiServerEnvironment, componentsPath, enableContainerLogs))));
 
-        var api = _apiServerContainers[0];
+        var (api, sidecar) = replicas[0];
         ApiServerUrl = $"http://localhost:{api.GetMappedPublicPort(5000)}";
         ApiServerGrpcUrl = $"http://localhost:{api.GetMappedPublicPort(5001)}";
 
-        var sidecar = _daprSidecarContainers[0];
         DaprHttpEndpoint = $"http://localhost:{sidecar.GetMappedPublicPort(3500)}";
         DaprGrpcEndpoint = $"http://localhost:{sidecar.GetMappedPublicPort(50001)}";
 
-        // Wait until every sidecar is connected to placement and hosts our actor types
+        // Wait until every replica (gateways and workers) reports its own readiness
         await WaitForReadyAsync(TimeSpan.FromMinutes(2));
 
         // 7. Load balancer in front of the replicas. nginx resolves its upstreams at startup, so it
@@ -228,12 +242,27 @@ public class DaprTestEnvironment : IAsyncLifetime
         DaprSidecarClient = new HttpClient { BaseAddress = new Uri(DaprHttpEndpoint) };
     }
 
-    private async Task StartReplicaAsync(int replica, DaprTopology topology, string? apiServerImage,
-        IReadOnlyDictionary<string, string>? extraApiServerEnvironment, string componentsPath, bool enableContainerLogs)
+    private enum ReplicaRole
     {
-        // Replica 0 also answers to the historical single-instance aliases.
-        var apiAliases = replica == 0 ? new[] { DaprTopology.ApiServerAlias(replica), "api-server" } : [DaprTopology.ApiServerAlias(replica)];
-        var sidecarAliases = replica == 0 ? new[] { DaprTopology.SidecarAlias(replica), "dapr-sidecar" } : [DaprTopology.SidecarAlias(replica)];
+        /// <summary>Serves the API and hosts the actors (the single-process default).</summary>
+        Combined,
+
+        /// <summary>Serves the API only (REGISTER_ACTORS=false), as the Helm gateway.</summary>
+        Gateway,
+
+        /// <summary>Hosts the actors only (ENABLE_API=false), as the Helm worker.</summary>
+        Worker,
+    }
+
+    /// <summary>Starts one app container and its sidecar.</summary>
+    private async Task<(IContainer App, IContainer Sidecar)> StartReplicaAsync(ReplicaRole role, int replica, DaprTopology topology,
+        string? apiServerImage, IReadOnlyDictionary<string, string>? extraApiServerEnvironment, string componentsPath, bool enableContainerLogs)
+    {
+        // API replica 0 also answers to the historical single-instance aliases.
+        string[] apiAliases = role == ReplicaRole.Worker ? [DaprTopology.WorkerAlias(replica)]
+            : replica == 0 ? [DaprTopology.ApiServerAlias(replica), "api-server"] : [DaprTopology.ApiServerAlias(replica)];
+        string[] sidecarAliases = role == ReplicaRole.Worker ? [DaprTopology.WorkerSidecarAlias(replica)]
+            : replica == 0 ? [DaprTopology.SidecarAlias(replica), "dapr-sidecar"] : [DaprTopology.SidecarAlias(replica)];
         var sidecarHost = sidecarAliases[0];
 
         // API server starts WITHOUT a wait strategy (it's ready only after its sidecar starts)
@@ -244,7 +273,10 @@ public class DaprTestEnvironment : IAsyncLifetime
             .WithPortBinding(5000, true) // HTTP/1.1 REST endpoint
             .WithPortBinding(5001, true) // HTTP/2 gRPC endpoint
             .WithEnvironment("ASPNETCORE_URLS", "http://+:5000")
-            .WithEnvironment("REGISTER_ACTORS", "true")
+            .WithEnvironment("REGISTER_ACTORS", role == ReplicaRole.Gateway ? "false" : "true")
+            .WithEnvironment("ENABLE_API", role == ReplicaRole.Worker ? "false" : "true")
+            // Gateways find the workers for the daprmq.DaprMQ.operations signal by app-id.
+            .WithEnvironment("WORKER_APP_ID", WorkerAppId)
             // Tell the API server where to find its own Dapr sidecar on the Docker network using FULL endpoint URLs
             .WithEnvironment("DAPR_HTTP_ENDPOINT", $"http://{sidecarHost}:3500")
             .WithEnvironment("DAPR_GRPC_ENDPOINT", $"http://{sidecarHost}:50001")
@@ -292,7 +324,8 @@ public class DaprTestEnvironment : IAsyncLifetime
             .WithNetwork(_network)
             .WithNetworkAliases(sidecarAliases)
             .WithCommand("./daprd",
-                "--app-id", "daprmq-api",
+                // Actor state is keyed by the hosting app-id, so actor hosts keep "daprmq-api".
+                "--app-id", role == ReplicaRole.Gateway ? GatewayAppId : WorkerAppId,
                 "--app-channel-address", apiAliases[0],  // Connect to API server via Docker network
                 "--app-port", "5000",
                 "--dapr-http-port", "3500",
@@ -317,22 +350,28 @@ public class DaprTestEnvironment : IAsyncLifetime
         lock (_daprSidecarContainers)
         {
             _daprSidecarContainers.Add(sidecar);
+            if (role != ReplicaRole.Gateway)
+            {
+                _actorHosts.Add((apiServer, sidecar));
+            }
         }
 
         await sidecar.StartAsync();
+        return (apiServer, sidecar);
     }
 
     /// <summary>
     /// Polls every replica's own /health/ready (not the load balancer, which would answer as soon
-    /// as any one replica is up).
+    /// as any one replica is up). Actor hosts are ready once they host QueueActor, gateways once
+    /// their sidecar is connected to placement.
     /// </summary>
-    private async Task WaitForReadyAsync(TimeSpan timeout)
+    public async Task WaitForReadyAsync(TimeSpan timeout)
     {
         using var probe = new HttpClient();
         var deadline = DateTime.UtcNow + timeout;
-        foreach (var api in _apiServerContainers)
+        foreach (var app in _apiServerContainers)
         {
-            var readyUrl = $"http://localhost:{api.GetMappedPublicPort(5000)}/health/ready";
+            var readyUrl = $"http://localhost:{app.GetMappedPublicPort(5000)}/health/ready";
             while (true)
             {
                 try
@@ -347,7 +386,7 @@ public class DaprTestEnvironment : IAsyncLifetime
 
                 if (DateTime.UtcNow >= deadline)
                 {
-                    throw new TimeoutException($"API server did not report ready at {readyUrl} within {timeout}.");
+                    throw new TimeoutException($"Replica did not report ready at {readyUrl} within {timeout}.");
                 }
 
                 await Task.Delay(250);
@@ -374,9 +413,44 @@ public class DaprTestEnvironment : IAsyncLifetime
     /// contains "||", so filtering lines containing the container's app-id prefix (e.g.
     /// "daprmq-api||") isolates real traffic cleanly.
     /// </summary>
-    public async Task<string> GetPostgresLogsAsync()
+    public Task<string> GetPostgresLogsAsync() => DockerAsync($"logs {_postgresContainer!.Id}");
+
+    /// <summary>Full log of the first API replica (the gateway when split); see <see cref="GetPostgresLogsAsync"/>.</summary>
+    public Task<string> GetApiServerLogsAsync() => DockerAsync($"logs {_apiServerContainers[0].Id}");
+
+    /// <summary>Freezes every actor-hosting app (its sidecar keeps running): a hung worker.</summary>
+    public async Task PauseWorkerAppsAsync()
     {
-        var psi = new System.Diagnostics.ProcessStartInfo("docker", $"logs {_postgresContainer!.Id}")
+        foreach (var (app, _) in _actorHosts)
+        {
+            await app.PauseAsync();
+        }
+    }
+
+    public async Task UnpauseWorkerAppsAsync()
+    {
+        foreach (var (app, _) in _actorHosts)
+        {
+            await app.UnpauseAsync();
+        }
+    }
+
+    /// <summary>SIGKILLs every actor-hosting app (or its sidecar): a crash, not a graceful stop.</summary>
+    public async Task KillWorkersAsync(bool sidecar)
+    {
+        foreach (var (app, side) in _actorHosts)
+        {
+            await DockerAsync($"kill {(sidecar ? side : app).Id}");
+        }
+    }
+
+    public Task StopPlacementAsync() => _daprPlacementContainer!.StopAsync();
+
+    public Task StartPlacementAsync() => _daprPlacementContainer!.StartAsync();
+
+    private static async Task<string> DockerAsync(string arguments)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo("docker", arguments)
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -388,7 +462,7 @@ public class DaprTestEnvironment : IAsyncLifetime
         var stderrTask = process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync();
 
-        // Postgres (like most well-behaved container images) logs to stderr, not stdout.
+        // Most images (Postgres included) log to stderr, not stdout.
         return (await stdoutTask) + (await stderrTask);
     }
 
@@ -456,6 +530,26 @@ public class DaprTestEnvironment : IAsyncLifetime
         await _operatorSidecarContainer.StartAsync();
 
         return $"http://localhost:{_operatorContainer.GetMappedPublicPort(5001)}";
+    }
+
+    /// <summary>Stops every actor host (app and sidecar), leaving placement and any gateway up.</summary>
+    public async Task StopWorkersAsync()
+    {
+        foreach (var (app, sidecar) in _actorHosts)
+        {
+            await sidecar.StopAsync();
+            await app.StopAsync();
+        }
+    }
+
+    /// <summary>Restarts the actor hosts stopped by <see cref="StopWorkersAsync"/>; host ports are re-mapped.</summary>
+    public async Task StartWorkersAsync()
+    {
+        foreach (var (app, sidecar) in _actorHosts)
+        {
+            await app.StartAsync();
+            await sidecar.StartAsync();
+        }
     }
 
     public async Task DisposeAsync()

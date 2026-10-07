@@ -1,4 +1,4 @@
-export { DaprMQClient, type DaprMQClientOptions } from "./client.js";
+export { DaprMQClient, OPERATIONS_HEALTH_SERVICE, type DaprMQClientOptions, type RetryOptions } from "./client.js";
 export {
   SessionQueueConsumer,
   type SessionQueueConsumerOptions,
@@ -16,6 +16,8 @@ export type {
 } from "./types.js";
 export {
   DaprMQError,
+  DaprMQUnavailableError,
+  DeliveryUnknownError,
   LockNotFoundError,
   LockExpiredError,
   ActorNotFoundError,

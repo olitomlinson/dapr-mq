@@ -6,6 +6,8 @@ namespace DaprMQ.IntegrationTests.Infrastructure;
 /// Shape of the Testcontainers stack. <see cref="Default"/> is the single-everything integration
 /// stack. <see cref="Perf"/> matches production: a 3-member scheduler HA cluster and, with more than
 /// one API replica, an nginx load balancer in front of them (REST and gRPC).
+/// With <see cref="Workers"/> > 0 the stack is split like Helm: the API replicas become gateways
+/// (REGISTER_ACTORS=false) in front of that many actor-hosting workers (ENABLE_API=false).
 /// See sdks/testing/PERFORMANCE_TESTS.md#scales-and-topology.
 /// </summary>
 public sealed record DaprTopology
@@ -13,13 +15,20 @@ public sealed record DaprTopology
     public const int SchedulerPort = 50006;
     public const string LoadBalancerAlias = "api-lb";
 
+    /// <summary>Selects the integration stack's shape: "combined" (default) or "split".</summary>
+    public const string EnvironmentVariable = "DAPRMQ_TEST_TOPOLOGY";
+
     public int ApiReplicas { get; }
     public int SchedulerReplicas { get; }
 
-    public DaprTopology(int ApiReplicas = 1, int SchedulerReplicas = 1)
+    /// <summary>Actor-hosting workers behind the API replicas; 0 = the API replicas host the actors.</summary>
+    public int Workers { get; }
+
+    public DaprTopology(int ApiReplicas = 1, int SchedulerReplicas = 1, int Workers = 0)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(ApiReplicas, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(SchedulerReplicas, 1);
+        ArgumentOutOfRangeException.ThrowIfNegative(Workers);
         if (SchedulerReplicas % 2 == 0)
         {
             throw new ArgumentOutOfRangeException(nameof(SchedulerReplicas), SchedulerReplicas, "etcd needs an odd member count.");
@@ -27,9 +36,27 @@ public sealed record DaprTopology
 
         this.ApiReplicas = ApiReplicas;
         this.SchedulerReplicas = SchedulerReplicas;
+        this.Workers = Workers;
     }
 
     public static DaprTopology Default { get; } = new();
+
+    /// <summary>One gateway in front of one worker: the smallest production-shaped stack.</summary>
+    public static DaprTopology Split { get; } = new(Workers: 1);
+
+    /// <summary>The stack named by <see cref="EnvironmentVariable"/> (or <paramref name="value"/>).</summary>
+    public static DaprTopology FromEnvironment(string? value = null)
+    {
+        value ??= Environment.GetEnvironmentVariable(EnvironmentVariable);
+        return value?.Trim().ToLowerInvariant() switch
+        {
+            null or "" or "combined" => Default,
+            "split" => Split,
+            _ => throw new ArgumentException($"{EnvironmentVariable} must be 'combined' or 'split', got '{value}'.")
+        };
+    }
+
+    public bool IsSplit => Workers > 0;
 
     public static DaprTopology Perf(int apiReplicas) => new(apiReplicas, SchedulerReplicas: 3);
 
@@ -40,6 +67,10 @@ public sealed record DaprTopology
     public static string ApiServerAlias(int replica) => $"api-server-{replica}";
 
     public static string SidecarAlias(int replica) => $"dapr-sidecar-{replica}";
+
+    public static string WorkerAlias(int worker) => $"daprmq-worker-{worker}";
+
+    public static string WorkerSidecarAlias(int worker) => $"daprmq-worker-sidecar-{worker}";
 
     public string SchedulerAlias(int member) => SchedulerHa ? $"dapr-scheduler-{member}" : "dapr-scheduler";
 

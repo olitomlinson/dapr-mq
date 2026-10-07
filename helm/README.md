@@ -441,7 +441,7 @@ Readiness (sidecar up and connected to placement; on workers, also hosting `Queu
 kubectl exec -n <namespace> <pod-name> -c daprmq -- curl http://localhost:8080/health/ready
 ```
 
-**Note:** Liveness uses `/health` (the process is up) and readiness uses `/health/ready`, both on the HTTP port (8080). The same readiness check is also served on the gRPC port (8081) as the standard `grpc.health.v1.Health` service. A gateway's readiness doesn't prove any worker is ready; check the worker pods for that.
+**Note:** Liveness uses `/health` (the process is up) and readiness uses `/health/ready`, both on the HTTP port (8080). The same readiness check is also served on the gRPC port (8081) as the standard `grpc.health.v1.Health` service. A gateway's readiness deliberately doesn't depend on the workers, so a worker outage doesn't take every gateway out of rotation. Whether queue operations can be served is a separate signal, `/health/operations` (gRPC health service `daprmq.DaprMQ.operations`): on a gateway it reports whether any worker answers; use it for monitoring, never as a probe (see `proposals/readiness-and-retries.md`).
 
 ## Uninstallation
 

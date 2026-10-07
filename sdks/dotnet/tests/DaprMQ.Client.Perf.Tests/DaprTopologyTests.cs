@@ -64,4 +64,40 @@ public class DaprTopologyTests
         // ConsumeSession streams stay open for minutes.
         Assert.Contains("grpc_read_timeout 1h;", config);
     }
+
+    [Fact]
+    public void CombinedByDefault_SplitPutsAGatewayInFrontOfAWorker()
+    {
+        Assert.False(DaprTopology.Default.IsSplit);
+        Assert.Equal(0, DaprTopology.Default.Workers);
+
+        var split = DaprTopology.Split;
+        Assert.True(split.IsSplit);
+        Assert.Equal(1, split.ApiReplicas);
+        Assert.Equal(1, split.Workers);
+        Assert.Equal("daprmq-worker-1", DaprTopology.WorkerAlias(1));
+        Assert.Equal("daprmq-worker-sidecar-1", DaprTopology.WorkerSidecarAlias(1));
+    }
+
+    [Fact]
+    public void RejectsNegativeWorkers()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new DaprTopology(Workers: -1));
+    }
+
+    [Theory]
+    [InlineData("", false)]
+    [InlineData("combined", false)]
+    [InlineData("split", true)]
+    [InlineData(" SPLIT ", true)]
+    public void FromEnvironment_PicksCombinedOrSplit(string value, bool split)
+    {
+        Assert.Equal(split, DaprTopology.FromEnvironment(value).IsSplit);
+    }
+
+    [Fact]
+    public void FromEnvironment_RejectsUnknownValues()
+    {
+        Assert.Throws<ArgumentException>(() => DaprTopology.FromEnvironment("gateway"));
+    }
 }

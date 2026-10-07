@@ -31,7 +31,7 @@
 
 **Use segmented storage pattern:** 100 items per segment. Batch state changes, single `SaveStateAsync()` call.
 
-**Error handling:** Check `ErrorCode.HasValue` first. Map to HTTP status in controller ([QueueController.cs](server/src/DaprMQ.ApiServer/Controllers/QueueController.cs)).
+**Error handling:** Actor results carry `ErrorCode` as a string (null on success); check it first and map it to an HTTP status in the controller ([QueueController.cs](server/src/DaprMQ.ApiServer/Controllers/QueueController.cs)) and a gRPC status in [DaprMQGrpcService.cs](server/src/DaprMQ.ApiServer/Services/DaprMQGrpcService.cs). Transport failures of the actor call itself arrive as `ActorCallException` and map via [DeliveryFailures.cs](server/src/DaprMQ.ApiServer/Services/DeliveryFailures.cs).
 
 **Actor invocation:** Use `ActorMethodNames` constants, never strings ([ActorMethodNames.cs](server/src/DaprMQ.ApiServer/Constants/ActorMethodNames.cs)).
 
@@ -57,9 +57,9 @@
 An expired lock's item returns to the position it was taken from, not the tail: every item carries a monotonic
 `Sequence` stamped at enqueue, and the expiry sweep merges reclaimed items back into the head segment by it.
 
-**Error codes:** `QueueEmpty`, `Locked`, `LockNotFound`, `LockExpired`, `ValidationError`, `ActorNotFound` ([Models.cs](server/src/DaprMQ.Interfaces/Models.cs))
+**Error codes:** strings on the result models ([Models.cs](server/src/DaprMQ.Interfaces/Models.cs)), e.g. `LOCK_NOT_FOUND`, `LOCK_EXPIRED`, `INVALID_LOCK_ID`, `VALIDATION_ERROR`, `SESSION_LEASE_EXPIRED`, `SESSION_LOCKED`, `SESSION_NOT_FOUND`. An empty or locked queue is a result flag (`IsEmpty`, `Locked`), not a code. Delivery failures add `UNAVAILABLE` (not performed) and `DELIVERY_UNKNOWN` (may have been) - see [readiness-and-retries.md](proposals/readiness-and-retries.md).
 
-**HTTP mappings:** Empty→204, Locked→423, NotFound/Expired→410, Validation→400, ActorNotFound→404
+**HTTP mappings:** Empty→204, Locked→423, LOCK_EXPIRED/SESSION_LEASE_EXPIRED→410, LOCK_NOT_FOUND→404, validation→400, UNAVAILABLE→503 (+Retry-After), DELIVERY_UNKNOWN→504, other failures→500
 
 **State keys:** `metadata` (one blob per actor), `queue_{priority}_seg_{segmentNum}`, `{lockId}-lock`, `idem_{key}`, plus the lock index: `locks_exp_{bucket}` on a plain queue, `locks_session` on a session actor
 
