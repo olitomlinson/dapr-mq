@@ -1,7 +1,7 @@
 # Where DaprMQ's actor state reads and writes come from
 
 As of 2026-10-04. Numbers from the perf harness's `state-reads` benchmark
-(`./run-session-perf-test.sh --benchmark state-reads`, see [sdks/dotnet/perf/README.md](../sdks/dotnet/perf/README.md#state-reads-benchmark)).
+(`./run-perf-test.sh --benchmark state-reads`, see [sdks/dotnet/perf/README.md](../sdks/dotnet/perf/README.md#state-reads-benchmark)).
 
 ## How to read this
 

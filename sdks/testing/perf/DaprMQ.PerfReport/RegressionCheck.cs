@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json.Nodes;
 
-namespace DaprMQ.Client.Perf;
+namespace DaprMQ.PerfReport;
 
 public enum ComparisonStatus { Ok, Regressed, Improved, NoBaseline }
 
@@ -14,13 +14,13 @@ public sealed record RunComparison(string Profile, string ScenarioKey, int Basel
 }
 
 /// <summary>
-/// Compares a run against the median of the last few runs of the same scenario, in the same
-/// environment, on the baseline branch. Shared CI runners are noisy, so a change only counts once
-/// it clears both a relative tolerance and an absolute floor.
+/// Compares a run against the median of the last few passing runs of the same SDK, scenario key,
+/// environment and API replica count on the baseline branch. Shared CI runners are noisy, so a
+/// change only counts once it clears both a relative tolerance and an absolute floor.
 /// </summary>
 public static class RegressionCheck
 {
-    internal const int Window = 10;
+    public const int Window = 10;
     private const int MinBaselineRuns = 3;
 
     /// <summary>Below this the peak window (and so utilisation over it) is too short to be signal.</summary>
@@ -28,7 +28,7 @@ public static class RegressionCheck
 
     private sealed record Rule(string Name, string[] Path, bool HigherIsWorse, double RelativeTolerance, double AbsoluteFloor);
 
-    private static readonly Rule[] Rules =
+    private static readonly Rule[] SessionDrainRules =
     [
         new("Wall clock (s)", ["wallClockSeconds"], HigherIsWorse: true, 0.25, 2),
         new("Efficiency", ["efficiency"], HigherIsWorse: false, 0.15, 0.03),
@@ -38,22 +38,31 @@ public static class RegressionCheck
         new("Delivery p95 (ms)", ["deliveryLatencyMs", "p95"], HigherIsWorse: true, 0.5, 100),
     ];
 
+    /// <summary>P-01..P-03: closed-loop load.</summary>
+    private static readonly Rule[] LoadRules =
+    [
+        new("Messages/s", ["messagesPerSecond"], HigherIsWorse: false, 0.2, 20),
+        new("Latency p95 (ms)", ["latencyMs", "p95"], HigherIsWorse: true, 0.5, 5),
+        new("Latency p99 (ms)", ["latencyMs", "p99"], HigherIsWorse: true, 1.0, 10),
+    ];
+
     public static RunComparison Compare(JsonObject current, IReadOnlyList<JsonObject> history, string baselineBranch)
     {
         var key = Str(current, "scenario", "key");
-        var env = Str(current, "environment", "label");
         var runId = Str(current, "runId");
 
         var baseline = history
             .Where(r => Str(r, "runId") != runId
                         && Str(r, "scenario", "key") == key
-                        && Str(r, "environment", "label") == env
-                        && Str(r, "environment", "gitBranch") == baselineBranch)
+                        && SeriesKey(r) == SeriesKey(current)
+                        && Str(r, "environment", "gitBranch") == baselineBranch
+                        && r["checks"]?["passed"]?.GetValue<bool>() != false)
             .TakeLast(Window)
             .ToList();
 
+        var rules = Str(current, "scenario", "name") == "session-drain" ? SessionDrainRules : LoadRules;
         var metrics = new List<MetricComparison>();
-        foreach (var rule in Rules)
+        foreach (var rule in rules)
         {
             if (Num(current["metrics"], rule.Path) is not { } value)
             {
@@ -69,14 +78,18 @@ public static class RegressionCheck
             metrics.Add(Assess(rule.Name, value, values, rule.HigherIsWorse, rule.RelativeTolerance, rule.AbsoluteFloor));
         }
 
-        return new RunComparison(Str(current, "profile") ?? "", key ?? "", baseline.Count, metrics);
+        return new RunComparison(Str(current, "scenario", "profile") ?? "", key ?? "", baseline.Count, metrics);
     }
+
+    /// <summary>Runs are only comparable within one SDK, environment and API replica count.</summary>
+    public static string SeriesKey(JsonObject run) =>
+        $"{Str(run, "sdk", "name")}|{Str(run, "environment", "label")}|{Num(run["topology"], ["apiReplicas"]) ?? 1}";
 
     /// <summary>
     /// Judges <paramref name="value"/> against the median of <paramref name="baseline"/>: a change
     /// only counts once it clears both the relative tolerance and the absolute floor.
     /// </summary>
-    internal static MetricComparison Assess(string name, double value, IReadOnlyList<double> baseline,
+    public static MetricComparison Assess(string name, double value, IReadOnlyList<double> baseline,
         bool higherIsWorse, double relativeTolerance, double absoluteFloor)
     {
         if (baseline.Count < MinBaselineRuns)
@@ -96,7 +109,7 @@ public static class RegressionCheck
     }
 
     public static string ToMarkdown(IEnumerable<RunComparison> comparisons, string baselineBranch,
-        string title = "Session drain perf", string firstColumn = "Profile")
+        string title = "Perf", string firstColumn = "Profile")
     {
         var md = new StringBuilder()
             .AppendLine($"### {title} vs `{baselineBranch}` (median of last ≤{Window} runs)")
@@ -136,9 +149,9 @@ public static class RegressionCheck
         return sorted.Length % 2 == 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
     }
 
-    internal static string? Str(JsonNode? node, params string[] path) => Walk(node, path)?.GetValue<string>();
+    public static string? Str(JsonNode? node, params string[] path) => Walk(node, path)?.GetValue<string>();
 
-    internal static double? Num(JsonNode? node, string[] path) => Walk(node, path) is JsonValue v && v.TryGetValue<double>(out var d) ? d : null;
+    public static double? Num(JsonNode? node, string[] path) => Walk(node, path) is JsonValue v && v.TryGetValue<double>(out var d) ? d : null;
 
     private static JsonNode? Walk(JsonNode? node, string[] path)
     {
