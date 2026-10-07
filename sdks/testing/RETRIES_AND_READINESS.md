@@ -2,7 +2,7 @@
 
 The behaviour every DaprMQ client SDK implements for failed requests and for waiting on a server.
 It is phase 5 of [readiness-and-retries.md](../../proposals/readiness-and-retries.md), which has the
-reasoning; this is the contract. Names are language-neutral. Each SDK maps them to its own
+reasoning; this is the contract. The guide for application developers is [docs/TIMEOUTS_AND_RETRIES.md](../../docs/TIMEOUTS_AND_RETRIES.md). Names are language-neutral. Each SDK maps them to its own
 conventions, e.g. `RetryTimeout` / `retry_timeout` / `retryTimeout`.
 
 ## Options

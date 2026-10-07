@@ -44,7 +44,7 @@ Errors map to typed exceptions under `com.daprmq.client.errors` (`LockNotFoundEx
 ## Retries, failures and waiting for a server
 
 Calls ride out a DaprMQ that briefly can't serve them, such as a worker restarting, under the shared
-contract in [RETRIES_AND_READINESS.md](../../testing/RETRIES_AND_READINESS.md):
+contract in [RETRIES_AND_READINESS.md](../../testing/RETRIES_AND_READINESS.md). [docs/TIMEOUTS_AND_RETRIES.md](../../../docs/TIMEOUTS_AND_RETRIES.md) covers what to program for, across all SDKs:
 
 ```java
 DaprMQClient client = DaprMQClient.create(httpBaseUrl, grpcTarget, RetryOptions.defaults()
