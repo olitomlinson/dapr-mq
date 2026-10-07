@@ -125,16 +125,26 @@ A `500` goes back to meaning a bug. Messages never mention actors.
 fails, and the SDKs' session consumers retry it. Phase 0 must establish whether that failure is
 always "not delivered". If it isn't, it needs splitting the same way.
 
-## 3. Server retries: not delivered only, bounded by the deadline
+## 3. Server retries: not delivered only, within a retry window
 
-The gateway retries **not-delivered** failures for every operation. Retries stop at whichever of
-these comes first:
+The gateway retries **not-delivered** failures for every operation. Two limits apply, and they are
+deliberately separate:
 
-- **the caller's deadline:** gRPC `context.Deadline`, or for REST a `daprmq-timeout` request header
-  (milliseconds), since HTTP has no standard deadline. The SDKs always send one.
-- **the server cap** `DELIVERY_RETRY_MAX_SECONDS` (default 30, kept below typical ingress
-  timeouts). Without a caller deadline, the cap alone applies.
-- **the caller going away** (`RequestAborted` / `context.CancellationToken`).
+| Limit | Bounds | Set by | Default |
+|---|---|---|---|
+| **Retry window** | How long a call that certainly wasn't delivered is repeated | `daprmq-retry-timeout` (REST header or gRPC metadata, ms), capped by `DELIVERY_RETRY_MAX_SECONDS` | 30 s |
+| **Call deadline** | Everything, including a delivered call that is still running | `daprmq-timeout` (REST header, ms) or the gRPC deadline. Optional: none by default | none |
+
+A **delivered call is never cut off by the retry window.** It runs until the caller goes away
+(`RequestAborted` / `context.CancellationToken`), its explicit call deadline, or the per-attempt safety
+limit `DELIVERY_ATTEMPT_MAX_SECONDS` (default 100 s, for genuinely hung workers).
+
+Why separate (found on the split stack under load): 10,000 parallel acks on one queue wait in line for
+the actor's turn. That is slow, but it makes progress. When one limit served both purposes, the slowest
+acks were cut off at 30 s and reported `DELIVERY_UNKNOWN`, even though they were about to run (and
+probably did, after the cut). Cutting off a delivered call turns a slow success into the one outcome a
+caller can't act on safely. A bounded retry window is still right: it limits how long requests pile up
+during an outage.
 
 Backoff starts at 100 ms, doubles, is capped at 2 s, and uses full jitter, so requests queued during
 an outage don't all reach the returning workers at the same moment. **Unknown** failures are never
@@ -143,27 +153,31 @@ retried on the server: only the caller knows whether its operation is idempotent
 How it's built:
 
 - **Retries happen only in API requests, never inside an actor turn.** The invokers are shared with
-  actor code, and retrying there would hold an actor's turn. A `DeliveryBudget` (deadline plus the
-  caller's cancellation) is set for each API request in an async-local: by `DeliveryBudgetFilter`
-  (REST, every controller action) and `DeliveryBudgetInterceptor` (gRPC unary calls). `ActorCall`
-  retries only when a budget is present. Actor callbacks arrive as separate requests, so they never
-  inherit one. ([ActorCall.cs](../server/src/DaprMQ.Interfaces/ActorCall.cs),
+  actor code, and retrying there would hold an actor's turn. A `DeliveryBudget` (retry deadline,
+  optional call deadline, per-attempt limit, and the caller's cancellation) is set for each API
+  request in an async-local: by `DeliveryBudgetFilter` (REST, every controller action) and
+  `DeliveryBudgetInterceptor` (gRPC unary calls). `ActorCall` retries only when a budget is present.
+  Actor callbacks arrive as separate requests, so they never inherit one.
+  ([ActorCall.cs](../server/src/DaprMQ.Interfaces/ActorCall.cs),
   [DeliveryBudgetSources.cs](../server/src/DaprMQ.ApiServer/Services/DeliveryBudgetSources.cs))
-- **Each attempt is bounded by the remaining budget** (phase-0 finding 4), not by the actor
-  client's 100 s timeout. An attempt that our own deadline cuts off is reported as
-  `DELIVERY_UNKNOWN`, because it may have reached the actor.
-- **No new attempt starts with less than 6 s left.** daprd takes about 5 s to report "no host"
-  (finding 3), so a shorter attempt would only be cut off and reported as unknown. The caller gets
-  the last `UNAVAILABLE` instead. An outage that outlasts the deadline therefore returns `503` a
-  little *before* the deadline, never a misleading `504`.
-- **A deadline that has already passed** gets `UNAVAILABLE` without an attempt.
+- **Each attempt is bounded by the call deadline, or the safety limit** (phase-0 finding 4: not the
+  actor client's 100 s default alone). An attempt cut off this way is reported as `DELIVERY_UNKNOWN`,
+  because it may have reached the actor.
+- **No new attempt starts with less than 6 s of retry time left.** daprd takes about 5 s to report "no
+  host" (finding 3), so a later attempt would only report "unavailable" after the window had passed.
+  The caller gets the last `UNAVAILABLE` instead.
+- **A call deadline that has already passed** gets `UNAVAILABLE` without an attempt.
 - **Metrics** (meter `DaprMQ.Delivery`): `daprmq.delivery.retries`, and
   `daprmq.delivery.failures{outcome=not-delivered|unknown}`.
-- **An invalid `daprmq-timeout`** (not a positive integer) gets a `400`.
+- **An invalid `daprmq-timeout` or `daprmq-retry-timeout`** (not a positive integer) gets a `400`.
 
 This is the piece that changes behaviour during a full worker outage. Gateways stay ready (section
-1), accept requests, and hold each one until a worker returns or its deadline passes. Callers wait
+1), accept requests, and hold each one until a worker returns or the retry window passes. Callers wait
 instead of failing straight away.
+
+Not yet addressed: the fan-in itself. Thousands of concurrent calls on one queue still queue at the
+actor. A bulk acknowledge, or per-queue concurrency limits at the gateway (rejecting early with `503`
++ `Retry-After` instead of queueing), would need their own design (open question 9).
 
 **Dapr Resiliency** can also retry actor calls, but it decides by Dapr error code and per target,
 not by whether a call was delivered, so it would retry unknown dequeues. A Resiliency **circuit
@@ -185,8 +199,9 @@ TypeScript and Java:
 
 Options (names illustrative):
 
-- **`RetryTimeout`**: how long one call may keep retrying, which is also the deadline sent to the
-  server. Default 30 s. `0` turns retries off.
+- **`RetryTimeout`**: how long one call may keep retrying a DaprMQ that can't serve it, sent to the
+  server as `daprmq-retry-timeout`. It never cuts a delivered call short (section 3). Default 30 s.
+  `0` turns retries off.
 - **`AutoIdempotencyKeys`**: generate a key for any enqueued item that has none, so enqueue retries
   are always safe. Off by default, because each key is an extra state write (`idem_{key}`) per item.
   Recommended for producers that can't tolerate duplicates.
@@ -352,7 +367,8 @@ every caller.
 
 1. **The phase-0 catalogue.** Which daprd 1.18 errors mean "not delivered"? In particular, does
    daprd's own wait for the placement table time out with a distinct code?
-2. **REST deadline header.** Is `daprmq-timeout` (milliseconds) right, or should we also accept the
+2. **REST deadline headers.** `daprmq-timeout` (call deadline) and `daprmq-retry-timeout` (retry
+   window), both in milliseconds. Should we also accept the
    `grpc-timeout` format?
 3. **Circuit breaker.** Should we add a Dapr Resiliency circuit breaker on the actor targets,
    alongside the application-level retries?
@@ -375,6 +391,10 @@ every caller.
    `SessionActorUnavailableException` / `SESSION_ACTOR_UNAVAILABLE` (502) already expose actors in the
    public API. Renaming them breaks callers, so it's a separate change; it could keep the old names as
    aliases for one release.
+
+9. **Fan-in on one queue.** Thousands of concurrent calls on one queue wait in line at its actor.
+   Should there be a bulk acknowledge, or per-queue concurrency limits at the gateway that reject early
+   with `503` + `Retry-After` rather than queueing?
 
 ## Verification
 

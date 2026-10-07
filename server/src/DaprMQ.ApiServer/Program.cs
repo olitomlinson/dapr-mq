@@ -56,12 +56,15 @@ builder.Services.AddCors(options =>
     });
 });
 
-// Server retries of undelivered actor calls run inside each API request's delivery budget: its
-// deadline (REST daprmq-timeout header / gRPC deadline) capped by DELIVERY_RETRY_MAX_SECONDS.
-// Never inside an actor turn. See proposals/readiness-and-retries.md, section 3.
+// Each API request's actor calls run inside a delivery budget (never inside an actor turn):
+// undelivered calls are retried for up to DELIVERY_RETRY_MAX_SECONDS (or the caller's shorter
+// daprmq-retry-timeout); a delivered call runs until the caller goes away, its own deadline
+// (daprmq-timeout / gRPC deadline), or the DELIVERY_ATTEMPT_MAX_SECONDS safety limit.
+// See proposals/readiness-and-retries.md, section 3.
 builder.Services.AddSingleton(new DeliveryBudgetOptions
 {
-    MaxDuration = TimeSpan.FromSeconds(builder.Configuration.GetValue("DELIVERY_RETRY_MAX_SECONDS", 30))
+    RetryMax = TimeSpan.FromSeconds(builder.Configuration.GetValue("DELIVERY_RETRY_MAX_SECONDS", 30)),
+    AttemptMax = TimeSpan.FromSeconds(builder.Configuration.GetValue("DELIVERY_ATTEMPT_MAX_SECONDS", 100)),
 });
 
 // Add services to the container

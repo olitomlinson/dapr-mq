@@ -54,23 +54,36 @@ public static class ActorCallClassifier
 }
 
 /// <summary>
-/// The time an API request allows for its actor calls: until the caller's deadline (capped by the
-/// server), or until the caller goes away. Set per API request (never inside an actor turn), and
-/// only then does <see cref="ActorCall"/> retry. See proposals/readiness-and-retries.md, section 3.
+/// The limits an API request puts on its actor calls, set per API request (never inside an actor
+/// turn); only then does <see cref="ActorCall"/> retry. Two separate limits
+/// (proposals/readiness-and-retries.md, section 3):
+/// <list type="bullet">
+/// <item><see cref="RetryDeadline"/>: how long a call that certainly wasn't delivered may be repeated.</item>
+/// <item>A delivered call runs until the caller goes away, its explicit <see cref="CallDeadline"/>, or
+/// <see cref="MaxAttempt"/> (a safety limit for hung workers) - never cut off by the retry window, so a
+/// slow but progressing call (e.g. queued behind a busy actor) isn't turned into an unknown outcome.</item>
+/// </list>
 /// </summary>
-public sealed class DeliveryBudget(DateTimeOffset deadline, CancellationToken callerCancelled)
+public sealed class DeliveryBudget(DateTimeOffset retryDeadline, DateTimeOffset? callDeadline, TimeSpan maxAttempt, CancellationToken callerCancelled)
 {
     private static readonly AsyncLocal<DeliveryBudget?> CurrentBudget = new();
 
     public static DeliveryBudget? Current => CurrentBudget.Value;
 
-    public DateTimeOffset Deadline { get; } = deadline;
+    /// <summary>No new attempt of an undelivered call starts after this (less <see cref="MinAttemptWindow"/>).</summary>
+    public DateTimeOffset RetryDeadline { get; } = retryDeadline;
+
+    /// <summary>The caller's own deadline, if it gave one: bounds every attempt and every retry.</summary>
+    public DateTimeOffset? CallDeadline { get; } = callDeadline;
+
+    /// <summary>Longest a single attempt may run when the caller gave no tighter deadline.</summary>
+    public TimeSpan MaxAttempt { get; } = maxAttempt;
 
     public CancellationToken CallerCancelled { get; } = callerCancelled;
 
     /// <summary>
-    /// No new attempt starts with less than this left: daprd takes ~5 s to report "no host", so a
-    /// shorter attempt would be cut off by the deadline and reported as unknown instead of not delivered.
+    /// No new attempt starts with less retry time than this: daprd takes ~5 s to report "no host", so
+    /// starting later only reports not-delivered later.
     /// </summary>
     public TimeSpan MinAttemptWindow { get; init; } = TimeSpan.FromSeconds(6);
 
@@ -78,7 +91,11 @@ public sealed class DeliveryBudget(DateTimeOffset deadline, CancellationToken ca
 
     public TimeSpan MaxBackoff { get; init; } = TimeSpan.FromSeconds(2);
 
-    public TimeSpan Remaining => Deadline - DateTimeOffset.UtcNow;
+    internal TimeSpan RetryRemaining =>
+        (CallDeadline is { } call && call < RetryDeadline ? call : RetryDeadline) - DateTimeOffset.UtcNow;
+
+    internal TimeSpan AttemptLimit =>
+        CallDeadline is { } call && call - DateTimeOffset.UtcNow < MaxAttempt ? call - DateTimeOffset.UtcNow : MaxAttempt;
 
     /// <summary>Makes <paramref name="budget"/> current for this async flow until disposed.</summary>
     public static IDisposable Begin(DeliveryBudget budget)
@@ -96,8 +113,9 @@ public sealed class DeliveryBudget(DateTimeOffset deadline, CancellationToken ca
 
 /// <summary>
 /// Runs an actor call, turning delivery failures into <see cref="ActorCallException"/>. Inside a
-/// <see cref="DeliveryBudget"/>, not-delivered failures are retried (capped, jittered backoff) and
-/// every attempt is bounded by the remaining budget; outside one, it makes a single attempt.
+/// <see cref="DeliveryBudget"/>, not-delivered failures are retried (capped, jittered backoff) within
+/// its retry window, and each attempt is bounded by the caller's deadline or the safety limit;
+/// outside one, it makes a single attempt.
 /// </summary>
 public static class ActorCall
 {
@@ -114,7 +132,7 @@ public static class ActorCall
             return await AttemptAsync(call, cancellationToken);
         }
 
-        if (budget.Remaining <= TimeSpan.Zero)
+        if (budget.CallDeadline is { } callDeadline && callDeadline <= DateTimeOffset.UtcNow)
         {
             throw Failed(DeliveryOutcome.NotDelivered, new TimeoutException("The request's deadline passed before the call was attempted."));
         }
@@ -123,20 +141,21 @@ public static class ActorCall
         while (true)
         {
             using var attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, budget.CallerCancelled);
-            attempt.CancelAfter(budget.Remaining);
+            attempt.CancelAfter(budget.AttemptLimit is { } limit && limit > TimeSpan.Zero ? limit : TimeSpan.FromMilliseconds(1));
             try
             {
                 return await AttemptAsync(call, attempt.Token);
             }
             catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && !budget.CallerCancelled.IsCancellationRequested)
             {
-                // Our deadline cut the attempt off mid-flight: it may have reached the actor.
+                // The caller's deadline or the safety limit cut the attempt off mid-flight: it may have
+                // reached the actor.
                 throw Failed(DeliveryOutcome.Unknown, ex);
             }
             catch (ActorCallException ex) when (ex.Outcome == DeliveryOutcome.NotDelivered)
             {
                 var delay = TimeSpan.FromTicks((long)(Random.Shared.NextDouble() * backoff.Ticks));
-                if (budget.Remaining - delay < budget.MinAttemptWindow)
+                if (budget.RetryRemaining - delay < budget.MinAttemptWindow)
                 {
                     Failures.Add(1, new KeyValuePair<string, object?>("outcome", "not-delivered"));
                     throw;

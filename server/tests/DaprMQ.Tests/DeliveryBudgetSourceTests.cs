@@ -18,15 +18,15 @@ namespace DaprMQ.Tests;
 /// </summary>
 public class DeliveryBudgetSourceTests
 {
-    private static readonly DeliveryBudgetOptions Options = new() { MaxDuration = TimeSpan.FromSeconds(30) };
+    private static readonly DeliveryBudgetOptions Options = new() { RetryMax = TimeSpan.FromSeconds(30), AttemptMax = TimeSpan.FromSeconds(100) };
 
     /// <summary>Runs the filter around an action that records the budget it saw.</summary>
-    private static async Task<(DeliveryBudget? Seen, IActionResult? Result)> RunFilterAsync(string? timeoutHeader)
+    private static async Task<(DeliveryBudget? Seen, IActionResult? Result)> RunFilterAsync(params (string Name, string Value)[] headers)
     {
         var httpContext = new DefaultHttpContext();
-        if (timeoutHeader != null)
+        foreach (var (name, value) in headers)
         {
-            httpContext.Request.Headers["daprmq-timeout"] = timeoutHeader;
+            httpContext.Request.Headers[name] = value;
         }
 
         var actionContext = new ActionContext(httpContext, new RouteData(), new ActionDescriptor());
@@ -42,74 +42,90 @@ public class DeliveryBudgetSourceTests
         return (seen, executing.Result);
     }
 
+    private static TimeSpan Until(DateTimeOffset at) => at - DateTimeOffset.UtcNow;
+
     [Fact]
-    public async Task Rest_TimeoutHeader_SetsTheDeadline()
+    public async Task Rest_NoHeaders_RetriesForTheServerWindow_AndSetsNoCallDeadline()
     {
-        var (seen, _) = await RunFilterAsync("5000");
+        var (seen, _) = await RunFilterAsync();
 
-        Assert.NotNull(seen);
-        Assert.InRange(seen.Remaining, TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(5));
+        Assert.InRange(Until(seen!.RetryDeadline), TimeSpan.FromSeconds(29), TimeSpan.FromSeconds(30));
+        Assert.Null(seen.CallDeadline);
+        Assert.Equal(TimeSpan.FromSeconds(100), seen.MaxAttempt);
+    }
+
+    [Fact]
+    public async Task Rest_RetryTimeout_ShortensTheRetryWindowOnly_CappedByTheServer()
+    {
+        var (shorter, _) = await RunFilterAsync(("daprmq-retry-timeout", "5000"));
+        var (longer, _) = await RunFilterAsync(("daprmq-retry-timeout", "600000"));
+
+        Assert.InRange(Until(shorter!.RetryDeadline), TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(5));
+        Assert.Null(shorter.CallDeadline);
+        Assert.InRange(Until(longer!.RetryDeadline), TimeSpan.FromSeconds(29), TimeSpan.FromSeconds(30));
+    }
+
+    [Fact]
+    public async Task Rest_Timeout_IsTheCallersDeadline_AndIsHonouredInFull()
+    {
+        var (seen, _) = await RunFilterAsync(("daprmq-timeout", "600000"));
+
+        Assert.InRange(Until(seen!.CallDeadline!.Value), TimeSpan.FromSeconds(599), TimeSpan.FromSeconds(600));
     }
 
     [Theory]
-    [InlineData(null)]
-    [InlineData("600000")]
-    public async Task Rest_NoOrLongerTimeout_IsCappedByTheServer(string? header)
+    [InlineData("daprmq-timeout", "abc")]
+    [InlineData("daprmq-timeout", "0")]
+    [InlineData("daprmq-retry-timeout", "-5")]
+    public async Task Rest_InvalidTimeout_Returns400_WithoutRunningTheAction(string header, string value)
     {
-        var (seen, _) = await RunFilterAsync(header);
-
-        Assert.InRange(seen!.Remaining, TimeSpan.FromSeconds(29), TimeSpan.FromSeconds(30));
-    }
-
-    [Theory]
-    [InlineData("abc")]
-    [InlineData("0")]
-    [InlineData("-5")]
-    public async Task Rest_InvalidTimeout_Returns400_WithoutRunningTheAction(string header)
-    {
-        var (seen, result) = await RunFilterAsync(header);
+        var (seen, result) = await RunFilterAsync((header, value));
 
         Assert.Null(seen);
         var badRequest = Assert.IsType<BadRequestObjectResult>(result);
-        Assert.Contains("daprmq-timeout", Assert.IsType<ApiErrorResponse>(badRequest.Value).Message);
+        Assert.Contains(header, Assert.IsType<ApiErrorResponse>(badRequest.Value).Message);
     }
 
     [Fact]
     public async Task Rest_BudgetEndsWithTheRequest()
     {
-        await RunFilterAsync("5000");
+        await RunFilterAsync(("daprmq-timeout", "5000"));
 
         Assert.Null(DeliveryBudget.Current);
     }
 
-    private static ServerCallContext GrpcContext(DateTime deadline, CancellationToken cancelled = default)
+    private static ServerCallContext GrpcContext(DateTime deadline, Metadata? headers = null)
     {
         var context = new Mock<ServerCallContext>();
         context.Protected().Setup<DateTime>("DeadlineCore").Returns(deadline);
-        context.Protected().Setup<CancellationToken>("CancellationTokenCore").Returns(cancelled);
+        context.Protected().Setup<CancellationToken>("CancellationTokenCore").Returns(CancellationToken.None);
+        context.Protected().Setup<Metadata>("RequestHeadersCore").Returns(headers ?? new Metadata());
         return context.Object;
     }
 
-    [Fact]
-    public async Task Grpc_Deadline_SetsTheBudget()
+    private static async Task<DeliveryBudget> RunInterceptorAsync(ServerCallContext context)
     {
         DeliveryBudget? seen = null;
-
         await new DeliveryBudgetInterceptor(Options).UnaryServerHandler<string, string>(
-            "req", GrpcContext(DateTime.UtcNow.AddSeconds(5)), (_, _) => { seen = DeliveryBudget.Current; return Task.FromResult("ok"); });
-
-        Assert.InRange(seen!.Remaining, TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(5));
+            "req", context, (_, _) => { seen = DeliveryBudget.Current; return Task.FromResult("ok"); });
         Assert.Null(DeliveryBudget.Current);
+        return seen!;
     }
 
     [Fact]
-    public async Task Grpc_NoDeadline_IsCappedByTheServer()
+    public async Task Grpc_Deadline_IsTheCallersDeadline()
     {
-        DeliveryBudget? seen = null;
+        var seen = await RunInterceptorAsync(GrpcContext(DateTime.UtcNow.AddSeconds(5)));
 
-        await new DeliveryBudgetInterceptor(Options).UnaryServerHandler<string, string>(
-            "req", GrpcContext(DateTime.MaxValue), (_, _) => { seen = DeliveryBudget.Current; return Task.FromResult("ok"); });
+        Assert.InRange(Until(seen.CallDeadline!.Value), TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(5));
+    }
 
-        Assert.InRange(seen!.Remaining, TimeSpan.FromSeconds(29), TimeSpan.FromSeconds(30));
+    [Fact]
+    public async Task Grpc_NoDeadline_SetsNoCallDeadline_AndRetryTimeoutMetadataShortensRetries()
+    {
+        var seen = await RunInterceptorAsync(GrpcContext(DateTime.MaxValue, new Metadata { { "daprmq-retry-timeout", "5000" } }));
+
+        Assert.Null(seen.CallDeadline);
+        Assert.InRange(Until(seen.RetryDeadline), TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(5));
     }
 }
