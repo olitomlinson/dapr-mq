@@ -48,6 +48,8 @@ if (result is not null)
 }
 ```
 
+**Competing consumers.** By default a queue serves one lock at a time - while any item is locked, further locked dequeues come back `locked` (HTTP 423). When several consumers share a queue (e.g. replicas scaled out by KEDA), pass `allowCompetingConsumers: true` so each can hold its own locks concurrently.
+
 ## Sessions - manual (unary) API
 
 For sticky routing, admin tooling, or callers who don't want a managed consume loop:

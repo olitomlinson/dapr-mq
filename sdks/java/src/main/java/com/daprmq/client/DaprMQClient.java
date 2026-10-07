@@ -103,12 +103,24 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
     }
 
     public DequeueLockedResult dequeueLocked(String queueId, int count, int ttlSeconds, String leaseId) {
+        return dequeueLocked(queueId, count, ttlSeconds, leaseId, false);
+    }
+
+    /**
+     * {@code allowCompetingConsumers} lets several consumers hold locks on the queue at once (the
+     * server otherwise answers 423 Locked while any lock is outstanding) - needed when scaling a
+     * consumer out to multiple replicas.
+     */
+    public DequeueLockedResult dequeueLocked(String queueId, int count, int ttlSeconds, String leaseId, boolean allowCompetingConsumers) {
         Map<String, String> headers = new LinkedHashMap<>();
         headers.put("require-ack", "true");
         headers.put("count", String.valueOf(count));
         headers.put("ttl-seconds", String.valueOf(ttlSeconds));
         if (leaseId != null) {
             headers.put("lease-id", leaseId);
+        }
+        if (allowCompetingConsumers) {
+            headers.put("allow-competing-consumers", "true");
         }
 
         HttpResponse<String> response = postNoBody(path(queueId, "dequeue"), headers);

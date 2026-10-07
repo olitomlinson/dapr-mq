@@ -18,7 +18,7 @@ public class QueueActorStateReaderTests
         var mockFactory = new Mock<IHttpClientFactory>();
         mockFactory.Setup(f => f.CreateClient(It.IsAny<string>())).Returns(httpClient);
 
-        return new QueueActorStateReader(mockFactory.Object, "QueueActor", "http://localhost:3500");
+        return new QueueActorStateReader(mockFactory.Object, "QueueActor", "http://localhost:3500", "SessionCoordinatorActor");
     }
 
     private static HttpResponseMessage JsonResponse(ActorMetadata metadata)
@@ -118,6 +118,83 @@ public class QueueActorStateReaderTests
         var reader = CreateReader(response, out _);
 
         await Assert.ThrowsAnyAsync<Exception>(() => reader.ReadSessionStateAsync(new ActorId("orders-session-42")));
+    }
+
+    [Fact]
+    public async Task ReadQueueDepthAsync_SumsReadyAcrossPrioritiesAndReportsLocked()
+    {
+        var metadata = new ActorMetadata
+        {
+            Queues = new Dictionary<int, QueueMetadata>
+            {
+                [0] = new QueueMetadata { Count = 2 },
+                [1] = new QueueMetadata { Count = 5 }
+            },
+            LockCount = 3
+        };
+        var reader = CreateReader(JsonResponse(metadata), out _);
+
+        var depth = await reader.ReadQueueDepthAsync(new ActorId("orders"));
+
+        Assert.Equal(new QueueDepth(7, 3), depth);
+    }
+
+    [Fact]
+    public async Task ReadQueueDepthAsync_NoContent_ReportsZero()
+    {
+        // Dapr answers 204 for a key that was never written - a queue nothing has enqueued to yet
+        // has no depth, unlike the session sweep where a missing key is "unknown".
+        var reader = CreateReader(new HttpResponseMessage(HttpStatusCode.NoContent), out _);
+
+        var depth = await reader.ReadQueueDepthAsync(new ActorId("never-used"));
+
+        Assert.Equal(new QueueDepth(0, 0), depth);
+    }
+
+    [Fact]
+    public async Task ReadQueueDepthAsync_NonSuccessStatusCode_Throws()
+    {
+        var reader = CreateReader(new HttpResponseMessage(HttpStatusCode.InternalServerError), out _);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => reader.ReadQueueDepthAsync(new ActorId("orders")));
+    }
+
+    [Fact]
+    public async Task ReadSessionDirectoryAsync_ReturnsDirectorySessionIds()
+    {
+        var coordinator = new SessionCoordinatorMetadata
+        {
+            SessionDirectory = new Dictionary<string, SweepCandidate>
+            {
+                ["a"] = new SweepCandidate(),
+                ["b"] = new SweepCandidate()
+            }
+        };
+        var json = System.Text.Json.JsonSerializer.Serialize(coordinator);
+        var reader = CreateReader(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
+        }, out var mockHandler);
+
+        var sessions = await reader.ReadSessionDirectoryAsync("orders");
+
+        Assert.Equal(new[] { "a", "b" }, sessions.OrderBy(s => s));
+        mockHandler.Protected().Verify(
+            "SendAsync",
+            Times.Once(),
+            ItExpr.Is<HttpRequestMessage>(r =>
+                r.RequestUri!.ToString() == "http://localhost:3500/v1.0/actors/SessionCoordinatorActor/orders/state/metadata"),
+            ItExpr.IsAny<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ReadSessionDirectoryAsync_NoContent_ReturnsEmpty()
+    {
+        var reader = CreateReader(new HttpResponseMessage(HttpStatusCode.NoContent), out _);
+
+        var sessions = await reader.ReadSessionDirectoryAsync("orders");
+
+        Assert.Empty(sessions);
     }
 
     [Fact]

@@ -116,6 +116,30 @@ Logs each call's `itemsEnqueued`/`itemsDeduplicated` counts so the dedup outcome
 
 ---
 
+## `autoscale` — KEDA consumer autoscaling (dotnet only so far)
+
+Suffix: `autoscale` (e.g. `examples-dotnet-autoscale`). Not part of the default scenario run: it needs KEDA and the main
+chart's operator (`operator.enabled=true`), and the examples chart installed with `autoscale.enabled=true`. Driven by
+`k8s-deploy-and-test.sh --keda`.
+
+**Producer** (`POST /scenarios/autoscale/run`): enqueues 300 items `{"n": 1..300}` in one `Enqueue` call — more backlog
+than one worker can clear quickly.
+
+**Consumer** (`POST /scenarios/autoscale/run`): deliberately a no-op that logs a `skip` step — the scenario's items are
+consumed by the separate, KEDA-scaled `<lang>-worker` Deployment, and the control-API consumer pod must not compete
+with it.
+
+**Worker** (`<lang>-worker` Deployment — the consumer image with `WORKER_QUEUE_SUFFIX=autoscale`): loops forever —
+dequeue with ack (`count=WORKER_BATCH_SIZE`, **competing consumers enabled** so every replica gets its own locks
+instead of `423 Locked`), sleep `WORKER_ITEM_DELAY_MS` per item to simulate work, acknowledge, log
+`processed N items from <queueId> (total T)`. A batch already dequeued is finished even during shutdown (KEDA
+scaling in), so its locks aren't left to expire. Idle queue → 1s back-off.
+
+**KEDA**: a `ScaledObject` (`external-push` trigger → the operator) scales the worker `0..maxReplicaCount` at
+`targetValue` items per replica, and back to 0 `cooldownPeriod` seconds after the queue is empty.
+
+---
+
 ## Per-language method cheat sheet
 
 Exact calls to use (see each SDK's `docs/CLIENT_SDK.md` for full context — these are pulled from there):

@@ -1,0 +1,77 @@
+{{- if .Values.operator.enabled }}
+{{- if not .Values.worker.enabled }}
+{{- fail "operator.enabled requires worker.enabled: the operator reads queue depth through the workers" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "daprmq.fullname" . }}-operator
+  labels:
+    {{- include "daprmq.operator.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.operator.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "daprmq.operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # Own app-id: it can't read actor state directly (Dapr keys that by the caller's app-id),
+        # so it reads depth from the workers via service invocation.
+        dapr.io/enabled: "true"
+        dapr.io/app-id: "{{ .Release.Name }}-daprmq-operator"
+        dapr.io/config: {{ include "daprmq.fullname" . }}-dapr-config
+        dapr.io/log-level: {{ .Values.dapr.logLevel | quote }}
+        {{- with .Values.operator.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "daprmq.operator.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.operator.podSecurityContext | nindent 8 }}
+      containers:
+      - name: operator
+        image: {{ include "daprmq.operator.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.operator.httpPort }}
+          protocol: TCP
+        - name: grpc
+          containerPort: {{ .Values.operator.grpcPort }}
+          protocol: TCP
+        env:
+        - name: ASPNETCORE_URLS
+          value: "http://+:{{ .Values.operator.httpPort }}"
+        - name: WORKER_APP_ID
+          value: "{{ .Release.Name }}-daprmq-worker"
+        - name: DEPTH_CACHE_TTL_MS
+          value: {{ .Values.operator.depthCacheTtlMs | quote }}
+        - name: STREAM_POLL_INTERVAL_MS
+          value: {{ .Values.operator.streamPollIntervalMs | quote }}
+        livenessProbe:
+          {{- toYaml .Values.operator.livenessProbe | nindent 10 }}
+        readinessProbe:
+          {{- toYaml .Values.operator.readinessProbe | nindent 10 }}
+        resources:
+          {{- toYaml .Values.operator.resources | nindent 10 }}
+        securityContext:
+          {{- toYaml .Values.operator.securityContext | nindent 10 }}
+      {{- with .Values.operator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

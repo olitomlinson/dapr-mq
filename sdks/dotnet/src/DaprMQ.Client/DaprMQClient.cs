@@ -92,7 +92,7 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
         return new EnqueueResult(result.Success, result.Message, result.ItemsEnqueued, result.ItemsDeduplicated);
     }
 
-    public async Task<DequeueLockedResult?> DequeueLockedAsync(string queueId, int count = 1, int ttlSeconds = 30, string? leaseId = null, CancellationToken ct = default)
+    public async Task<DequeueLockedResult?> DequeueLockedAsync(string queueId, int count = 1, int ttlSeconds = 30, string? leaseId = null, bool allowCompetingConsumers = false, CancellationToken ct = default)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, Path(queueId, "dequeue"));
         request.Headers.Add("require-ack", "true");
@@ -101,6 +101,11 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
         if (leaseId != null)
         {
             request.Headers.Add("lease-id", leaseId);
+        }
+
+        if (allowCompetingConsumers)
+        {
+            request.Headers.Add("allow-competing-consumers", "true");
         }
 
         using var response = await _httpClient.SendAsync(request, ct);

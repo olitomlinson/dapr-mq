@@ -53,7 +53,7 @@
 
 **Priority:** 0=fast lane, 1+=normal. Lower first.
 
-**Locks:** In-place with `LockId`. Enables DLQ routing (`{id}-deadletter`), lock extension, FIFO preservation.
+**Locks:** A locked item moves out of the queue into `{lockId}-lock` (`LockCount` tracks them). Enables DLQ routing (`{id}-deadletter`), lock extension, FIFO preservation. Default mode blocks further locked dequeues (423) while `LockCount > 0`; `AllowCompetingConsumers` lets each caller hold its own locks (all 4 SDKs expose it). `MaxConcurrency` caps total in-flight locks - set only via HTTP sink config, not a public dequeue parameter.
 An expired lock's item returns to the position it was taken from, not the tail: every item carries a monotonic
 `Sequence` stamped at enqueue, and the expiry sweep merges reclaimed items back into the head segment by it.
 
@@ -63,7 +63,7 @@ An expired lock's item returns to the position it was taken from, not the tail: 
 
 **State keys:** `metadata` (one blob per actor), `queue_{priority}_seg_{segmentNum}`, `{lockId}-lock`, `idem_{key}`, plus the lock index: `locks_exp_{bucket}` on a plain queue, `locks_session` on a session actor
 
-**Lock expiry:** no reminder or timer. Locks are swept lazily at the top of Dequeue/DequeueLocked/SetSessionLease and on activation, using the index to find them. Plain queues expire per-item TTL and requeue to the tail; session actors hold locks for the life of the lease and bulk-restore to the *front* when it lapses. `DeliveryCount` increments per expiry, and past `MaxDeliveryCount` the item is dead-lettered.
+**Lock expiry:** no reminder or timer. Locks are swept lazily at the top of Dequeue/DequeueLocked/SetSessionLease and on activation, using the index to find them. Plain queues expire per-item TTL and restore the item to its original position (by `Sequence`); session actors hold locks for the life of the lease and bulk-restore to the *front* when it lapses. `DeliveryCount` increments per expiry, and past `MaxDeliveryCount` the item is dead-lettered.
 
 **Sessions:** AcceptSession/RenewSessionLease/ReleaseSession, actor id `{queueId}-session-{sessionId}`. Lease via `LeaseId` header on Dequeue/Ack/ExtendLock/DeadLetter.
 

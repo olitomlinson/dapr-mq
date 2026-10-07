@@ -1,0 +1,18 @@
+{{- if .Values.operator.enabled }}
+# KEDA connects here (trigger metadata scalerAddress: <this name>.<namespace>:<grpc port>)
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "daprmq.fullname" . }}-operator
+  labels:
+    {{- include "daprmq.operator.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+  - port: {{ .Values.operator.grpcPort }}
+    targetPort: {{ .Values.operator.grpcPort }}
+    protocol: TCP
+    name: grpc
+  selector:
+    {{- include "daprmq.operator.selectorLabels" . | nindent 4 }}
+{{- end }}

@@ -94,9 +94,15 @@ export class DaprMQClient {
 
   async dequeueLocked(
     queueId: string,
-    options: { count?: number; ttlSeconds?: number; leaseId?: string; signal?: AbortSignal } = {},
+    options: {
+      count?: number;
+      ttlSeconds?: number;
+      leaseId?: string;
+      allowCompetingConsumers?: boolean;
+      signal?: AbortSignal;
+    } = {},
   ): Promise<DequeueLockedResult | null> {
-    const { count = 1, ttlSeconds = 30, leaseId, signal } = options;
+    const { count = 1, ttlSeconds = 30, leaseId, allowCompetingConsumers = false, signal } = options;
     const headers: Record<string, string> = {
       "require-ack": "true",
       count: String(count),
@@ -104,6 +110,9 @@ export class DaprMQClient {
     };
     if (leaseId != null) {
       headers["lease-id"] = leaseId;
+    }
+    if (allowCompetingConsumers) {
+      headers["allow-competing-consumers"] = "true";
     }
 
     const response = await this.fetchImpl(this.path(queueId, "dequeue"), { method: "POST", headers, signal });

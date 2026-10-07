@@ -33,11 +33,17 @@
 #                                Only reach for this to reproduce/test against a specific
 #                                Dapr release; it can both upgrade and downgrade the
 #                                existing control-plane release.
+#   --keda                      Also test KEDA autoscaling: installs KEDA (kedacore/keda, namespace
+#                                `keda`), deploys DaprMQ with operator.enabled=true and the examples
+#                                with autoscale.enabled=true, then for each autoscale language runs
+#                                the producer's `autoscale` scenario and asserts the KEDA-scaled
+#                                worker Deployment scales out, consumes in parallel, and returns to 0.
+#                                Only dotnet implements the worker so far; others are skipped.
 #   -h, --help                  Show this help and exit
 #
 # Environment overrides (same effect as the matching flag, flags win if both are set):
 #   NAMESPACE, EXAMPLES_NAMESPACE, DAPR_NAMESPACE, KUBE_CONTEXT, IMAGE_TAG,
-#   LANGUAGES, POSTGRES_PASSWORD, DAPR_VERSION
+#   LANGUAGES, POSTGRES_PASSWORD, DAPR_VERSION, KEDA
 
 set -euo pipefail
 
@@ -56,11 +62,16 @@ IMAGE_TAG="${IMAGE_TAG:-dev}"
 LANGUAGES="${LANGUAGES:-dotnet,java,python,typescript}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-daprmq_secret_123}"
 DAPR_VERSION="${DAPR_VERSION:-}"
+KEDA="${KEDA:-false}"
 
 DAPR_RELEASE="dapr"
 POSTGRES_RELEASE="postgres"
 DAPRMQ_RELEASE="daprmq"
 EXAMPLES_RELEASE="daprmq-examples"
+KEDA_RELEASE="keda"
+KEDA_NAMESPACE="keda"
+# Languages whose consumer image implements worker mode (examples chart autoscale.languages).
+AUTOSCALE_LANGUAGES=(dotnet)
 STATESTORE_NAME="statestore"
 
 ALL_SCENARIOS=(basic ack-deadletter priority sessions idempotency)
@@ -116,6 +127,7 @@ while [[ $# -gt 0 ]]; do
         --skip-e2e) SKIP_E2E="true"; shift ;;
         --skip-build) SKIP_BUILD="true"; shift ;;
         --dapr-version) DAPR_VERSION="$2"; shift 2 ;;
+        --keda) KEDA="true"; shift ;;
         -h|--help) show_help; exit 0 ;;
         *) log_error "Unknown option: $1"; show_help; exit 1 ;;
     esac
@@ -146,18 +158,28 @@ record_fail() {
 }
 
 # ---------------------------------------------------------------------------
-# Port-forward helper - opens a forward, waits until it accepts connections,
-# runs the callback, always tears the forward down afterward (even on error).
+# Port-forward helper - opens a forward on a kubectl-chosen free local port (exported as PF_PORT)
+# and waits until it answers. Callers tear it down with stop_port_forward.
+#
+# The local port is never fixed: a process already listening on a fixed port (e.g. an example
+# app run locally with `java -jar`, which binds IPv6 while kubectl binds 127.0.0.1) silently
+# answers `localhost` requests instead of the cluster. Requests also target 127.0.0.1, the
+# address kubectl actually binds.
 # ---------------------------------------------------------------------------
 
 PF_PID=""
+PF_PORT=""
+PF_LOG=""
 
 start_port_forward() {
-    local ns="$1" svc="$2" local_port="$3" remote_port="$4"
-    kubectl port-forward -n "$ns" "svc/$svc" "${local_port}:${remote_port}" >/dev/null 2>&1 &
+    local ns="$1" svc="$2" remote_port="$3"
+
+    PF_LOG="$(mktemp)"
+    kubectl port-forward -n "$ns" "svc/$svc" --address 127.0.0.1 ":${remote_port}" >"$PF_LOG" 2>&1 &
     PF_PID=$!
+    PF_PORT=""
     local tries=0
-    until curl -s -o /dev/null -m 1 "http://localhost:${local_port}/health" 2>/dev/null; do
+    until [[ -n "$PF_PORT" ]] && curl -s -o /dev/null -m 1 "http://127.0.0.1:${PF_PORT}/health" 2>/dev/null; do
         tries=$((tries + 1))
         if [[ $tries -ge 30 ]]; then
             log_error "Port-forward to ${ns}/${svc} never became reachable"
@@ -165,9 +187,12 @@ start_port_forward() {
             return 1
         fi
         if ! kill -0 "$PF_PID" 2>/dev/null; then
-            log_error "kubectl port-forward to ${ns}/${svc} exited unexpectedly"
+            log_error "kubectl port-forward to ${ns}/${svc} exited unexpectedly: $(head -c 300 "$PF_LOG")"
+            PF_PID=""
             return 1
         fi
+        # "Forwarding from 127.0.0.1:54321 -> 8080"
+        PF_PORT="$(sed -nE 's/^Forwarding from 127\.0\.0\.1:([0-9]+) .*/\1/p' "$PF_LOG" | head -n1)"
         sleep 0.5
     done
 }
@@ -178,6 +203,9 @@ stop_port_forward() {
         wait "$PF_PID" 2>/dev/null || true
     fi
     PF_PID=""
+    PF_PORT=""
+    [[ -n "$PF_LOG" ]] && rm -f "$PF_LOG"
+    PF_LOG=""
 }
 
 cleanup() {
@@ -201,7 +229,7 @@ run_scenario_with_retry() {
     local attempt=1 response
 
     while true; do
-        response="$(curl -s -w '\n%{http_code}' -m "$curl_timeout" -X POST "http://localhost:${port}/scenarios/${scenario}/run" || echo -e "\n000")"
+        response="$(curl -s -w '\n%{http_code}' -m "$curl_timeout" -X POST "http://127.0.0.1:${port}/scenarios/${scenario}/run" || echo -e "\n000")"
         RS_STATUS="$(echo "$response" | tail -n1)"
         RS_BODY="$(echo "$response" | sed '$d')"
 
@@ -311,6 +339,11 @@ else
     docker build -t "daprmq:${IMAGE_TAG}" ./server
     log_success "Built daprmq:${IMAGE_TAG}"
 
+    if [[ "$KEDA" == "true" ]]; then
+        docker build -t "daprmq-operator:${IMAGE_TAG}" -f ./server/Dockerfile.operator ./server
+        log_success "Built daprmq-operator:${IMAGE_TAG}"
+    fi
+
     ./examples/shared/build-images.sh
     log_success "Built all 8 example images"
 fi
@@ -358,6 +391,21 @@ fi
 helm "${dapr_helm_args[@]}"
 
 log_success "Dapr control plane deployed/upgraded in namespace $DAPR_NAMESPACE"
+
+# ---------------------------------------------------------------------------
+# Step 4b: KEDA (--keda only)
+# ---------------------------------------------------------------------------
+
+if [[ "$KEDA" == "true" ]]; then
+    log_section "Deploying KEDA"
+
+    if ! helm repo list 2>/dev/null | awk '{print $1}' | grep -qx "kedacore"; then
+        helm repo add kedacore https://kedacore.github.io/charts
+    fi
+    helm repo update kedacore >/dev/null
+    helm upgrade --install "$KEDA_RELEASE" kedacore/keda -n "$KEDA_NAMESPACE" --create-namespace --wait --timeout 5m0s
+    log_success "KEDA deployed/upgraded in namespace $KEDA_NAMESPACE"
+fi
 
 # ---------------------------------------------------------------------------
 # Step 5: Postgres state store (left alone if it already exists)
@@ -412,12 +460,17 @@ fi
 
 log_section "Deploying DaprMQ"
 
-helm upgrade --install "$DAPRMQ_RELEASE" ./helm \
-    -n "$NAMESPACE" \
-    --set dapr.stateStoreName="$STATESTORE_NAME" \
-    --set image.tag="$IMAGE_TAG" \
-    --set image.pullPolicy=Never \
-    --wait --timeout 5m0s
+daprmq_helm_args=(upgrade --install "$DAPRMQ_RELEASE" ./helm
+    -n "$NAMESPACE"
+    --set dapr.stateStoreName="$STATESTORE_NAME"
+    --set image.tag="$IMAGE_TAG"
+    --set image.pullPolicy=Never
+    --wait --timeout 5m0s)
+if [[ "$KEDA" == "true" ]]; then
+    # The operator hosts the KEDA external scaler the example worker ScaledObjects point at.
+    daprmq_helm_args+=(--set operator.enabled=true --set operator.image.tag="$IMAGE_TAG")
+fi
+helm "${daprmq_helm_args[@]}"
 
 log_success "DaprMQ deployed/upgraded in namespace $NAMESPACE"
 
@@ -438,11 +491,15 @@ fi
 
 log_section "Deploying Example Apps"
 
-helm upgrade --install "$EXAMPLES_RELEASE" ./examples/helm \
-    -n "$EXAMPLES_NAMESPACE" \
-    --set daprmq.namespace="$NAMESPACE" \
-    --set daprmq.releaseName="$DAPRMQ_RELEASE" \
-    --wait --timeout 5m0s
+examples_helm_args=(upgrade --install "$EXAMPLES_RELEASE" ./examples/helm
+    -n "$EXAMPLES_NAMESPACE"
+    --set daprmq.namespace="$NAMESPACE"
+    --set daprmq.releaseName="$DAPRMQ_RELEASE"
+    --wait --timeout 5m0s)
+if [[ "$KEDA" == "true" ]]; then
+    examples_helm_args+=(--set autoscale.enabled=true)
+fi
+helm "${examples_helm_args[@]}"
 
 log_success "Example apps deployed/upgraded in namespace $EXAMPLES_NAMESPACE"
 
@@ -478,14 +535,14 @@ else
         consumer_log_before="$(kubectl logs -n "$EXAMPLES_NAMESPACE" "deploy/daprmq-examples-${lang}-consumer" --tail=-1 2>/dev/null | wc -l | tr -d ' ')"
 
         # Producer: run every scenario against the producer control API.
-        if start_port_forward "$EXAMPLES_NAMESPACE" "daprmq-examples-${lang}-producer" 18080 8080; then
-            health="$(curl -s -o /dev/null -w '%{http_code}' -m 5 http://localhost:18080/health || echo "000")"
+        if start_port_forward "$EXAMPLES_NAMESPACE" "daprmq-examples-${lang}-producer" 8080; then
+            health="$(curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1:${PF_PORT}/health || echo "000")"
             if [[ "$health" != "200" ]]; then
                 record_fail "${lang} producer /health" "got HTTP $health"
             fi
 
             for scenario in "${SCENARIOS[@]}"; do
-                if run_scenario_with_retry 18080 "$scenario" 30 && echo "$RS_BODY" | grep -q '"steps"'; then
+                if run_scenario_with_retry "$PF_PORT" "$scenario" 30 && echo "$RS_BODY" | grep -q '"steps"'; then
                     record_pass "${lang} producer scenario '${scenario}'"
                 else
                     record_fail "${lang} producer scenario '${scenario}'" "HTTP $RS_STATUS: $(echo "$RS_BODY" | head -c 200)"
@@ -497,15 +554,15 @@ else
         fi
 
         # Consumer: run the same scenarios against the matching consumer.
-        if start_port_forward "$EXAMPLES_NAMESPACE" "daprmq-examples-${lang}-consumer" 18081 8080; then
-            health="$(curl -s -o /dev/null -w '%{http_code}' -m 5 http://localhost:18081/health || echo "000")"
+        if start_port_forward "$EXAMPLES_NAMESPACE" "daprmq-examples-${lang}-consumer" 8080; then
+            health="$(curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1:${PF_PORT}/health || echo "000")"
             if [[ "$health" != "200" ]]; then
                 record_fail "${lang} consumer /health" "got HTTP $health"
             fi
 
             for scenario in "${SCENARIOS[@]}"; do
                 # ack-deadletter deliberately sleeps ~11s for a lock to expire.
-                if run_scenario_with_retry 18081 "$scenario" 60 && echo "$RS_BODY" | grep -q '"steps"'; then
+                if run_scenario_with_retry "$PF_PORT" "$scenario" 60 && echo "$RS_BODY" | grep -q '"steps"'; then
                     record_pass "${lang} consumer scenario '${scenario}'"
                 else
                     record_fail "${lang} consumer scenario '${scenario}'" "HTTP $RS_STATUS: $(echo "$RS_BODY" | head -c 200)"
@@ -538,6 +595,112 @@ else
         done
 
         unset queue_ids
+    done
+fi
+
+# ---------------------------------------------------------------------------
+# Step 10: KEDA autoscaling (--keda only)
+#
+# Real producer -> real consumers: the producer's `autoscale` scenario enqueues a backlog one worker
+# can't keep up with; the operator reports the queue depth to KEDA, which scales the
+# `<lang>-worker` Deployment out from 0; every replica consumes with competing consumers; once the
+# queue is drained KEDA scales it back to 0. Asserted from the Deployment's replica count and from
+# the worker pods' own logs (several distinct pods must have processed items).
+# ---------------------------------------------------------------------------
+
+worker_replicas() {
+    local replicas
+    replicas="$(kubectl get deploy "$1" -n "$EXAMPLES_NAMESPACE" -o jsonpath='{.status.replicas}' 2>/dev/null || true)"
+    echo "${replicas:-0}"
+}
+
+# Pod names that have logged a processed batch, appended to the file in $2 (pods vanish on
+# scale-in, so this is sampled while they're alive).
+record_processing_pods() {
+    kubectl logs -n "$EXAMPLES_NAMESPACE" -l "app.kubernetes.io/component=$1" --prefix --tail=-1 --max-log-requests=20 2>/dev/null \
+        | grep "processed [0-9]* items" | sed -E 's#^\[pod/([^/]+)/.*#\1#' >> "$2" || true
+}
+
+if [[ "$KEDA" == "true" && "$SKIP_E2E" != "true" ]]; then
+    log_section "KEDA Autoscaling"
+
+    for lang in "${LANGUAGE_LIST[@]}"; do
+        if [[ ! " ${AUTOSCALE_LANGUAGES[*]} " =~ " ${lang} " ]]; then
+            log_warning "Skipping KEDA autoscaling for ${lang} - its consumer doesn't implement worker mode yet"
+            continue
+        fi
+
+        worker="daprmq-examples-${lang}-worker"
+        log_info "--- ${lang} (${worker}) ---"
+
+        # Baseline: idle queue, so KEDA should have the worker at 0 (allow for cooldown and for a
+        # previous run's leftovers to drain).
+        deadline=$((SECONDS + 180))
+        while [[ "$(worker_replicas "$worker")" != "0" && $SECONDS -lt $deadline ]]; do sleep 5; done
+        if [[ "$(worker_replicas "$worker")" == "0" ]]; then
+            record_pass "${lang} worker idle at 0 replicas before load"
+        else
+            record_fail "${lang} worker idle at 0 replicas before load" "still at $(worker_replicas "$worker") replicas after 180s"
+            continue
+        fi
+
+        if start_port_forward "$EXAMPLES_NAMESPACE" "daprmq-examples-${lang}-producer" 8080; then
+            if run_scenario_with_retry "$PF_PORT" autoscale 60 && echo "$RS_BODY" | grep -q '"steps"'; then
+                record_pass "${lang} producer scenario 'autoscale'"
+            else
+                record_fail "${lang} producer scenario 'autoscale'" "HTTP $RS_STATUS: $(echo "$RS_BODY" | head -c 200)"
+                stop_port_forward
+                continue
+            fi
+            stop_port_forward
+        else
+            record_fail "${lang} producer port-forward" "could not reach service"
+            continue
+        fi
+
+        pods_file="$(mktemp)"
+        scale_start=$SECONDS
+        max_replicas=0
+        scaled_out_at=""
+        deadline=$((SECONDS + 150))
+        while [[ $SECONDS -lt $deadline ]]; do
+            replicas="$(worker_replicas "$worker")"
+            (( replicas > max_replicas )) && max_replicas=$replicas
+            if [[ -z "$scaled_out_at" && $replicas -ge 2 ]]; then
+                scaled_out_at=$((SECONDS - scale_start))
+            fi
+            record_processing_pods "${lang}-worker" "$pods_file"
+            [[ -n "$scaled_out_at" && $max_replicas -ge 2 && $((SECONDS - scale_start)) -ge $((scaled_out_at + 20)) ]] && break
+            sleep 3
+        done
+        if [[ -n "$scaled_out_at" ]]; then
+            record_pass "${lang} worker scaled out from 0 (>=2 replicas after ${scaled_out_at}s, peak ${max_replicas})"
+        else
+            record_fail "${lang} worker scaled out from 0" "peak ${max_replicas} replicas within 150s"
+        fi
+
+        deadline=$((SECONDS + 300))
+        while [[ $SECONDS -lt $deadline ]]; do
+            replicas="$(worker_replicas "$worker")"
+            (( replicas > max_replicas )) && max_replicas=$replicas
+            [[ "$replicas" == "0" ]] && break
+            record_processing_pods "${lang}-worker" "$pods_file"
+            sleep 3
+        done
+
+        processing_pods="$(sort -u "$pods_file" | grep -c . || true)"
+        rm -f "$pods_file"
+        if [[ ${processing_pods:-0} -ge 2 ]]; then
+            record_pass "${lang} workers consumed in parallel (${processing_pods} pods processed items)"
+        else
+            record_fail "${lang} workers consumed in parallel" "only ${processing_pods:-0} pod(s) logged processed items"
+        fi
+
+        if [[ "$(worker_replicas "$worker")" == "0" ]]; then
+            record_pass "${lang} queue drained and worker scaled back to 0 ($((SECONDS - scale_start))s after load)"
+        else
+            record_fail "${lang} queue drained and worker scaled back to 0" "still at $(worker_replicas "$worker") replicas after 300s"
+        fi
     done
 fi
 

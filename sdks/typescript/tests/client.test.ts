@@ -61,6 +61,17 @@ describe("DaprMQClient.dequeueLocked", () => {
     expect(fake.lastRequest!.headers["lease-id"]).toBe("lease-1");
   });
 
+  it("sends the competing-consumers header only when enabled", async () => {
+    const fake = fakeFetch(204);
+    const client = createClient(fake.fetch);
+
+    await client.dequeueLocked("q");
+    expect(fake.lastRequest!.headers["allow-competing-consumers"]).toBeUndefined();
+
+    await client.dequeueLocked("q", { allowCompetingConsumers: true });
+    expect(fake.lastRequest!.headers["allow-competing-consumers"]).toBe("true");
+  });
+
   it("returns null on 204", async () => {
     const fake = fakeFetch(204);
     const client = createClient(fake.fetch);

@@ -43,7 +43,7 @@ public class RecordingDaprMQClientTests
         }
 
         public Task<EnqueueResult> EnqueueAsync(string queueId, IEnumerable<EnqueueItemDto> items, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task<DequeueLockedResult?> DequeueLockedAsync(string queueId, int count = 1, int ttlSeconds = 30, string? leaseId = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<DequeueLockedResult?> DequeueLockedAsync(string queueId, int count = 1, int ttlSeconds = 30, string? leaseId = null, bool allowCompetingConsumers = false, CancellationToken ct = default) => throw new NotSupportedException();
         public Task AcknowledgeAsync(string queueId, string lockId, string? leaseId = null, CancellationToken ct = default) => throw new NotSupportedException();
         public Task ExtendLockAsync(string queueId, string lockId, int additionalTtlSeconds, string? leaseId = null, CancellationToken ct = default) => throw new NotSupportedException();
         public Task DeadLetterAsync(string queueId, string lockId, string? leaseId = null, CancellationToken ct = default) => throw new NotSupportedException();
