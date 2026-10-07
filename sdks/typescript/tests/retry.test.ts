@@ -45,14 +45,27 @@ describe("retries", () => {
     expect(requests).toHaveLength(3);
   });
 
-  it("sends the remaining time as the deadline on every attempt", async () => {
+  it("sends the remaining retry time on every attempt, not a call deadline", async () => {
     const { fetchImpl, requests } = sequence(ok(OK));
 
     await client(fetchImpl).enqueue("q", [{ item: { n: 1 } }]);
 
-    const ms = Number(requests[0].headers["daprmq-timeout"]);
+    const ms = Number(requests[0].headers["daprmq-retry-timeout"]);
     expect(ms).toBeGreaterThanOrEqual(4000);
     expect(ms).toBeLessThanOrEqual(5000);
+    expect(requests[0].headers["daprmq-timeout"]).toBeUndefined();
+  });
+
+  it("lets a slow response outlive the retry timeout", async () => {
+    // e.g. queued behind thousands of calls on one busy queue: slow, but progressing.
+    const fetchImpl = (async () => {
+      await new Promise((r) => setTimeout(r, 300));
+      return json(200, OK);
+    }) as typeof fetch;
+
+    const result = await client(fetchImpl, { ...FAST, timeoutMs: 50 }).enqueue("q", [{ item: { n: 1 } }]);
+
+    expect(result.success).toBe(true);
   });
 
   it("throws DaprMQUnavailableError when time runs out", async () => {
@@ -162,7 +175,7 @@ describe("retries", () => {
 
     await expect(client(fetchImpl, { timeoutMs: 0 }).acknowledge("q", "L1")).rejects.toBeInstanceOf(DaprMQUnavailableError);
     expect(requests).toHaveLength(1);
-    expect(requests[0].headers["daprmq-timeout"]).toBeUndefined();
+    expect(requests[0].headers["daprmq-retry-timeout"]).toBeUndefined();
   });
 
   it("stops retrying when the caller aborts, as an abort", async () => {

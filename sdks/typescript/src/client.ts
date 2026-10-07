@@ -38,13 +38,13 @@ import type {
 export const OPERATIONS_HEALTH_SERVICE = "daprmq.DaprMQ.operations";
 
 const DELIVERY_MARKER = "daprmq-delivery";
-const TIMEOUT_HEADER = "daprmq-timeout";
+const RETRY_TIMEOUT_HEADER = "daprmq-retry-timeout";
 /** Fetch failure causes that mean nothing was sent (the connection never opened). */
 const NOT_SENT_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "UND_ERR_CONNECT_TIMEOUT"]);
 
 /** How calls ride out a DaprMQ that can't serve them yet (sdks/testing/RETRIES_AND_READINESS.md). */
 export interface RetryOptions {
-  /** How long one call may keep retrying; also the deadline sent to the server. 0 = retries off, no deadline. Default 30 000. */
+  /** How long one call may keep retrying a DaprMQ that can't serve it; also sent to the server as its retry window. Never cuts a call that was delivered short. 0 = retries off. Default 30 000. */
   timeoutMs?: number;
   /** Give each enqueued item without an idempotencyKey a fresh one, so an enqueue whose outcome is unknown is retried safely. Costs the server one extra state write per item. */
   autoIdempotencyKeys?: boolean;
@@ -482,8 +482,8 @@ export class DaprMQClient {
   /**
    * One REST call under the retry contract (sdks/testing/RETRIES_AND_READINESS.md): not-delivered
    * failures are retried within the retry timeout, unknown outcomes only when `unknownIsRetryable`.
-   * Every attempt carries the remaining time as the server's deadline. Returns any other response
-   * for the caller to map.
+   * Every attempt tells the server how much retry time is left (daprmq-retry-timeout); it never cuts
+   * a delivered call short, which runs until the caller aborts. Returns any other response to map.
    */
   private async send(
     operation: string,
@@ -509,14 +509,8 @@ export class DaprMQClient {
       if (body !== undefined) {
         headers["content-type"] = "application/json";
       }
-      // One controller per attempt: aborted by the caller's signal, or by our own deadline.
-      const attempt = new AbortController();
-      const onCallerAbort = () => attempt.abort(signal!.reason);
-      signal?.addEventListener("abort", onCallerAbort, { once: true });
-      let timer: ReturnType<typeof setTimeout> | undefined;
       if (retries) {
-        headers[TIMEOUT_HEADER] = String(Math.max(1, Math.floor(remaining)));
-        timer = setTimeout(() => attempt.abort(new Error("retry timeout")), Math.max(remaining, 1));
+        headers[RETRY_TIMEOUT_HEADER] = String(Math.max(1, Math.floor(remaining)));
       }
       signal?.throwIfAborted();
 
@@ -527,7 +521,7 @@ export class DaprMQClient {
           method: "POST",
           headers,
           body: body === undefined ? undefined : JSON.stringify(body),
-          signal: attempt.signal,
+          signal,
         });
         const marker = response.headers.get(DELIVERY_MARKER);
         if (marker !== "not-delivered" && marker !== "unknown") {
@@ -543,9 +537,6 @@ export class DaprMQClient {
         const code = ((err as { cause?: { code?: string } }).cause ?? {}).code;
         notDelivered = code !== undefined && NOT_SENT_CODES.has(code); // otherwise sent, then broke or timed out
         reason = code ?? (err as Error).message;
-      } finally {
-        clearTimeout(timer);
-        signal?.removeEventListener("abort", onCallerAbort);
       }
 
       const retryable = notDelivered || unknownIsRetryable;
