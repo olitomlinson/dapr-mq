@@ -61,7 +61,7 @@ DaprMQClient client = DaprMQClient.create(httpBaseUrl, grpcTarget, RetryOptions.
   enqueue, `getIdempotencyKeys()`. What to do next:
   - **Enqueue without keys:** re-send and accept a possible duplicate.
   - **`dequeueLocked`:** don't re-send. If it ran, the items come back when their locks expire.
-  - **acknowledge / extendLock / deadLetter:** re-sending is safe in effect. A
+  - **acknowledge / extendLock / deadLetter / nack:** re-sending is safe in effect. A
     `LockNotFoundException` then means the first attempt worked.
 - **Interrupting the calling thread** stops retrying with a `CancellationException`, and the
   interrupt flag stays set.

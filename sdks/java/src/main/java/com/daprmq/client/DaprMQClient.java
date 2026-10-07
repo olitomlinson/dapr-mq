@@ -276,7 +276,7 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
      */
     public NackResult nack(String queueId, String lockId, String leaseId) {
         Map<String, Object> body = Map.of("lockId", lockId);
-        HttpResponse<String> response = postJson(path(queueId, "nack"), body, leaseId);
+        HttpResponse<String> response = postJson("nack", queueId, path(queueId, "nack"), body, leaseId);
         JsonNode parsed = Json.tryParse(response.body());
         if (isSuccess(response.statusCode())) {
             return new NackResult(
