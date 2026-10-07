@@ -12,6 +12,34 @@ public record DequeueLockedResult(IReadOnlyList<DequeueLockedItemDto> Items, boo
 
 public record NackResult(bool DeadLettered, int DeliveryCount, string? DlqId);
 
+/// <summary>
+/// Result of <see cref="IDaprMQClient.AcknowledgeBatchAsync"/>: one entry per requested lock, in
+/// request order.
+/// </summary>
+public record AcknowledgeBatchResult(int ItemsAcknowledged, IReadOnlyList<LockAcknowledgeResult> Results);
+
+/// <summary>Outcome of one lock in a batch acknowledge; see <see cref="AcknowledgeOutcomes"/>.</summary>
+public record LockAcknowledgeResult(string LockId, string Outcome);
+
+/// <summary>Per-lock outcomes of a batch acknowledge.</summary>
+public static class AcknowledgeOutcomes
+{
+    /// <summary>Settled by this call.</summary>
+    public const string Acknowledged = "ACKNOWLEDGED";
+
+    /// <summary>
+    /// No such lock: never existed, or already settled. After the client retried a batch whose
+    /// outcome was unknown, this can mean the earlier attempt acknowledged it.
+    /// </summary>
+    public const string LockNotFound = "LOCK_NOT_FOUND";
+
+    /// <summary>Plain queue only: the lock's TTL passed, so the item is returning to the queue.</summary>
+    public const string LockExpired = "LOCK_EXPIRED";
+
+    /// <summary>Empty lock id.</summary>
+    public const string InvalidLockId = "INVALID_LOCK_ID";
+}
+
 public record SessionLease(string SessionId, string LeaseId, double LeaseExpiresAt);
 
 /// <summary>

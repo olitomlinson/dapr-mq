@@ -451,8 +451,14 @@ public class BulkDequeueTests(DaprTestFixture fixture)
         Assert.True(elapsedSeconds < 30, $"Test took {elapsedSeconds:F2}s (expected <30s for {totalItems} items with parallel dequeues)");
     }
 
-    [Fact]
-    public async Task BulkOperations_10000Messages_SingleEnqueue_ParallelDequeue()
+    /// <summary>
+    /// batchAck=false keeps 10,000 concurrent single acks as the server's fan-in stress test;
+    /// batchAck=true settles the same locks in 10 batch calls, one per bulk dequeue.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BulkOperations_10000Messages_SingleEnqueue_ParallelDequeue(bool batchAck)
     {
         var queueId = $"{fixture.QueueId}-bulk10000-parallel-{Guid.NewGuid():N}";
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -477,6 +483,7 @@ public class BulkDequeueTests(DaprTestFixture fixture)
 
         // Act - Dequeue 10000 items in 10 parallel batches of 1000
         var lockIds = new ConcurrentBag<string>();
+        var lockBatches = new ConcurrentBag<List<string>>();
         var dequeueTasks = Enumerable.Range(0, 10).Select(async batch =>
         {
             var dequeueRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/dequeue");
@@ -502,6 +509,7 @@ public class BulkDequeueTests(DaprTestFixture fixture)
             {
                 lockIds.Add(item.LockId);
             }
+            lockBatches.Add(result.Items.Select(i => i.LockId).ToList());
 
             return result.Items.Count;
         });
@@ -509,15 +517,34 @@ public class BulkDequeueTests(DaprTestFixture fixture)
         var dequeuedCounts = await Task.WhenAll(dequeueTasks);
         var totalDequeued = dequeuedCounts.Sum();
 
-        // Acknowledge all locks in parallel
-        var ackTasks = lockIds.Select(async lockId =>
+        HttpStatusCode[] ackStatuses;
+        int totalAcknowledged;
+        if (batchAck)
         {
-            var ackResponse = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/acknowledge",
-                new ApiAcknowledgeRequest(lockId));
-            return ackResponse.StatusCode;
-        });
-
-        var ackStatuses = await Task.WhenAll(ackTasks);
+            // Acknowledge each bulk dequeue's locks in one batch call, batches in parallel
+            var batchResults = await Task.WhenAll(lockBatches.Select(async batch =>
+            {
+                var ackResponse = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/acknowledge-batch",
+                    new ApiAcknowledgeBatchRequest(batch));
+                var result = ackResponse.IsSuccessStatusCode
+                    ? await ackResponse.Content.ReadFromJsonAsync<ApiAcknowledgeBatchResponse>()
+                    : null;
+                return (ackResponse.StatusCode, Acknowledged: result?.ItemsAcknowledged ?? 0);
+            }));
+            ackStatuses = batchResults.Select(r => r.StatusCode).ToArray();
+            totalAcknowledged = batchResults.Sum(r => r.Acknowledged);
+        }
+        else
+        {
+            // Acknowledge all locks in parallel
+            ackStatuses = await Task.WhenAll(lockIds.Select(async lockId =>
+            {
+                var ackResponse = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/acknowledge",
+                    new ApiAcknowledgeRequest(lockId));
+                return ackResponse.StatusCode;
+            }));
+            totalAcknowledged = ackStatuses.Count(s => s == HttpStatusCode.OK);
+        }
 
         stopwatch.Stop();
 
@@ -525,6 +552,7 @@ public class BulkDequeueTests(DaprTestFixture fixture)
         Assert.Equal(totalItems, totalDequeued);
         Assert.Equal(totalItems, lockIds.Distinct().Count());
         Assert.All(ackStatuses, status => Assert.Equal(HttpStatusCode.OK, status));
+        Assert.Equal(totalItems, totalAcknowledged);
 
         var elapsedSeconds = stopwatch.Elapsed.TotalSeconds;
         // Throughput ceiling is overridable (DAPRMQ_BULK_TEST_MAX_SECONDS) so slower shared CI runners

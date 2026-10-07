@@ -163,6 +163,8 @@ public class QueueActor : Actor, IQueueActor
 
     /// <summary>Index of a session actor's lease-scoped locks; see ActorMetadata.LockExpiryBuckets.</summary>
     private const string SessionLockIndexKey = "locks_session";
+    /// <summary>Matches the bulk DequeueLocked cap, so one batch settles what one bulk dequeue produced.</summary>
+    private const int MaxAcknowledgeBatchSize = 1000;
     private const int LockIdLength = 11;
     private const int MaxIdempotencyKeyLength = 128;
 
@@ -242,7 +244,12 @@ public class QueueActor : Actor, IQueueActor
     /// long-lived lease it would accumulate an entry per message ever delivered. Its length is bounded
     /// by the consumer's outstanding prefetch instead, which is small, so pruning here is cheap.
     /// </summary>
-    private async Task DeindexSessionLockAsync(string lockId)
+    private Task DeindexSessionLockAsync(string lockId) => DeindexSessionLocksAsync([lockId]);
+
+    /// <summary>
+    /// Batch form of DeindexSessionLockAsync: one rewrite of the index however many locks settle.
+    /// </summary>
+    private async Task DeindexSessionLocksAsync(IReadOnlyCollection<string> lockIds)
     {
         if (!IsSessionActor())
         {
@@ -255,8 +262,9 @@ public class QueueActor : Actor, IQueueActor
             return;
         }
 
+        var removing = lockIds.ToHashSet();
         var ids = new List<string>(existing.Value);
-        if (!ids.Remove(lockId))
+        if (ids.RemoveAll(removing.Contains) == 0)
         {
             return;
         }
@@ -1635,7 +1643,8 @@ public class QueueActor : Actor, IQueueActor
     }
 
     /// <summary>
-    /// Acknowledge dequeued items using lock ID.
+    /// Acknowledge dequeued items using lock ID. Delegates to the batch settlement path with one id,
+    /// keeping this endpoint's response and error codes as they were.
     /// </summary>
     public async Task<AcknowledgeResponse> Acknowledge(AcknowledgeRequest request)
     {
@@ -1652,67 +1661,19 @@ public class QueueActor : Actor, IQueueActor
                 };
             }
 
-            // Validate lock_id
-            if (string.IsNullOrEmpty(request.LockId))
+            var outcome = (await SettleLocksAsync(metadata, [request.LockId]))[0].Outcome;
+
+            return outcome switch
             {
-                return new AcknowledgeResponse
+                AckOutcomeAcknowledged => new AcknowledgeResponse
                 {
-                    Success = false,
-                    Message = "lock_id cannot be empty",
-                    ErrorCode = "INVALID_LOCK_ID"
-                };
-            }
-
-            string lockId = request.LockId;
-
-            // Get lock state
-            var lockState = await StateManager.TryGetStateAsync<LockState>($"{lockId}-lock");
-            if (!lockState.HasValue)
-            {
-                return new AcknowledgeResponse
-                {
-                    Success = false,
-                    Message = "Lock not found",
-                    ErrorCode = "LOCK_NOT_FOUND"
-                };
-            }
-
-            // On a plain queue the per-item TTL is the authority, so an expired lock can no longer be
-            // settled - its item is already on its way back to the queue. Matches ExtendLock and
-            // DeadLetter, which have always refused here. Session actors are exempt: their locks are
-            // governed by the lease (checked above), and LockState.ExpiresAt is only informational,
-            // so a renewed lease must not be second-guessed by a stale per-item value.
-            if (!IsSessionActor() && DateTimeOffset.UtcNow.ToUnixTimeSeconds() >= lockState.Value.ExpiresAt)
-            {
-                return new AcknowledgeResponse
-                {
-                    Success = false,
-                    Message = "Lock has expired",
-                    ErrorCode = "LOCK_EXPIRED"
-                };
-            }
-
-            // Note: Item already dequeued during DequeueLocked - just remove lock state
-            // Remove lock and decrement counter
-            await StateManager.RemoveStateAsync($"{lockId}-lock");
-
-            await DeindexSessionLockAsync(lockId);
-            await SetMetadataAsync(metadata with { LockCount = metadata.LockCount - 1 });
-
-            await StateManager.SaveStateAsync();
-
-
-            // Acknowledge is the finalization point for DequeueLocked items - if the item's payload
-            // was offloaded to an object store, schedule deletion of the underlying blob.
-            await ScheduleBlobReapingIfNeeded(lockState.Value.ItemJson);
-
-            Logger.LogDebug($"Acknowledged lock {lockId}, 1 item processed");
-
-            return new AcknowledgeResponse
-            {
-                Success = true,
-                Message = "Successfully acknowledged 1 item",
-                ItemsAcknowledged = 1
+                    Success = true,
+                    Message = "Successfully acknowledged 1 item",
+                    ItemsAcknowledged = 1
+                },
+                "INVALID_LOCK_ID" => new AcknowledgeResponse { Success = false, Message = "lock_id cannot be empty", ErrorCode = outcome },
+                "LOCK_NOT_FOUND" => new AcknowledgeResponse { Success = false, Message = "Lock not found", ErrorCode = outcome },
+                _ => new AcknowledgeResponse { Success = false, Message = "Lock has expired", ErrorCode = outcome }
             };
         }
         catch (Exception ex)
@@ -1725,6 +1686,138 @@ public class QueueActor : Actor, IQueueActor
                 ErrorCode = "INTERNAL_ERROR"
             };
         }
+    }
+
+    /// <summary>
+    /// Acknowledge up to MaxAcknowledgeBatchSize locks in one turn and one state transaction. Each lock
+    /// gets its own outcome; only an invalid request or a bad session lease fails the whole call.
+    /// </summary>
+    public async Task<AcknowledgeBatchResponse> AcknowledgeBatch(AcknowledgeBatchRequest request)
+    {
+        try
+        {
+            var lockIds = request.LockIds ?? [];
+            if (lockIds.Count == 0 || lockIds.Count > MaxAcknowledgeBatchSize)
+            {
+                return new AcknowledgeBatchResponse
+                {
+                    Success = false,
+                    Message = $"lockIds must contain between 1 and {MaxAcknowledgeBatchSize} ids",
+                    ErrorCode = "VALIDATION_ERROR"
+                };
+            }
+
+            if (lockIds.Distinct().Count() != lockIds.Count)
+            {
+                return new AcknowledgeBatchResponse
+                {
+                    Success = false,
+                    Message = "lockIds must not contain duplicates",
+                    ErrorCode = "VALIDATION_ERROR"
+                };
+            }
+
+            var metadata = await GetMetadataAsync();
+            if (!TryAuthorizeSessionLease(metadata, request.LeaseId, out var leaseErrorCode, out var leaseErrorMessage))
+            {
+                return new AcknowledgeBatchResponse
+                {
+                    Success = false,
+                    Message = leaseErrorMessage ?? string.Empty,
+                    ErrorCode = leaseErrorCode
+                };
+            }
+
+            var results = await SettleLocksAsync(metadata, lockIds);
+            int settled = results.Count(r => r.Outcome == AckOutcomeAcknowledged);
+
+            return new AcknowledgeBatchResponse
+            {
+                Success = true,
+                Message = $"Acknowledged {settled} of {lockIds.Count} locks",
+                ItemsAcknowledged = settled,
+                Results = results
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error in AcknowledgeBatch");
+            return new AcknowledgeBatchResponse
+            {
+                Success = false,
+                Message = $"Error: {ex.Message}",
+                ErrorCode = "INTERNAL_ERROR"
+            };
+        }
+    }
+
+    private const string AckOutcomeAcknowledged = "ACKNOWLEDGED";
+
+    /// <summary>
+    /// The one settlement implementation behind Acknowledge and AcknowledgeBatch. The caller has
+    /// already authorised the session lease. Every settled lock is removed in a single save, so
+    /// either all ACKNOWLEDGED outcomes are durable or the call throws and none are.
+    /// </summary>
+    private async Task<List<AcknowledgeResult>> SettleLocksAsync(ActorMetadata metadata, IReadOnlyList<string> lockIds)
+    {
+        var results = new List<AcknowledgeResult>(lockIds.Count);
+        var settledIds = new List<string>();
+        var settledItemJson = new List<string>();
+        double now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+        foreach (var lockId in lockIds)
+        {
+            string outcome;
+            if (string.IsNullOrEmpty(lockId))
+            {
+                outcome = "INVALID_LOCK_ID";
+            }
+            else
+            {
+                var lockState = await StateManager.TryGetStateAsync<LockState>($"{lockId}-lock");
+                if (!lockState.HasValue)
+                {
+                    outcome = "LOCK_NOT_FOUND";
+                }
+                // On a plain queue the per-item TTL is the authority, so an expired lock can no longer be
+                // settled - its item is already on its way back to the queue. Matches ExtendLock and
+                // DeadLetter, which have always refused here. Session actors are exempt: their locks are
+                // governed by the lease (checked by the caller), and LockState.ExpiresAt is only
+                // informational, so a renewed lease must not be second-guessed by a stale per-item value.
+                else if (!IsSessionActor() && now >= lockState.Value.ExpiresAt)
+                {
+                    outcome = "LOCK_EXPIRED";
+                }
+                else
+                {
+                    // Item already dequeued during DequeueLocked - just remove lock state.
+                    await StateManager.RemoveStateAsync($"{lockId}-lock");
+                    settledIds.Add(lockId);
+                    settledItemJson.Add(lockState.Value.ItemJson);
+                    outcome = AckOutcomeAcknowledged;
+                }
+            }
+
+            results.Add(new AcknowledgeResult { LockId = lockId ?? string.Empty, Outcome = outcome });
+        }
+
+        if (settledIds.Count == 0)
+        {
+            return results;
+        }
+
+        await DeindexSessionLocksAsync(settledIds);
+        await SetMetadataAsync(metadata with { LockCount = metadata.LockCount - settledIds.Count });
+
+        await StateManager.SaveStateAsync();
+
+        // Acknowledge is the finalization point for DequeueLocked items - if an item's payload was
+        // offloaded to an object store, schedule deletion of the underlying blob. Best-effort.
+        await Task.WhenAll(settledItemJson.Select(ScheduleBlobReapingIfNeeded));
+
+        Logger.LogDebug("Acknowledged {Count} lock(s)", settledIds.Count);
+
+        return results;
     }
 
     public async Task<ExtendLockResponse> ExtendLock(ExtendLockRequest request)

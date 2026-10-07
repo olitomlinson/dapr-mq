@@ -365,6 +365,59 @@ public class DaprMQGrpcServiceTests
     }
 
     [Fact]
+    public async Task AcknowledgeBatch_Success_ReturnsPerLockResultsInOrder()
+    {
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        mockInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.AcknowledgeBatchRequest, ActorModels.AcknowledgeBatchResponse>(
+                It.IsAny<ActorId>(),
+                "AcknowledgeBatch",
+                It.Is<ActorModels.AcknowledgeBatchRequest>(r => r.LockIds.SequenceEqual(new[] { "a", "b" }) && r.LeaseId == "lease-1"),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.AcknowledgeBatchResponse
+            {
+                Success = true,
+                Message = "Acknowledged 1 of 2 locks",
+                ItemsAcknowledged = 1,
+                Results =
+                [
+                    new ActorModels.AcknowledgeResult { LockId = "a", Outcome = "ACKNOWLEDGED" },
+                    new ActorModels.AcknowledgeResult { LockId = "b", Outcome = "LOCK_NOT_FOUND" }
+                ]
+            });
+
+        var service = new DaprMQGrpcService(_mockLogger.Object, mockInvoker.Object, _mockSessionCoordinatorActorInvoker.Object);
+
+        var request = new ApiServer.Grpc.AcknowledgeBatchRequest { QueueId = "test-queue", LeaseId = "lease-1" };
+        request.LockIds.Add(["a", "b"]);
+        var response = await service.AcknowledgeBatch(request, _mockContext.Object);
+
+        Assert.True(response.Success);
+        Assert.Equal(1, response.ItemsAcknowledged);
+        Assert.Equal(["a", "b"], response.Results.Select(r => r.LockId));
+        Assert.Equal(["ACKNOWLEDGED", "LOCK_NOT_FOUND"], response.Results.Select(r => r.Outcome));
+    }
+
+    [Theory]
+    [InlineData("SESSION_LEASE_EXPIRED", StatusCode.FailedPrecondition)]
+    [InlineData("INVALID_LEASE_ID", StatusCode.InvalidArgument)]
+    [InlineData("VALIDATION_ERROR", StatusCode.InvalidArgument)]
+    [InlineData("INTERNAL_ERROR", StatusCode.Internal)]
+    public async Task AcknowledgeBatch_WholeCallError_MapsToStatusCode(string errorCode, StatusCode expected)
+    {
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        mockInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.AcknowledgeBatchRequest, ActorModels.AcknowledgeBatchResponse>(
+                It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<ActorModels.AcknowledgeBatchRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.AcknowledgeBatchResponse { Success = false, ErrorCode = errorCode, Message = "nope" });
+
+        var service = new DaprMQGrpcService(_mockLogger.Object, mockInvoker.Object, _mockSessionCoordinatorActorInvoker.Object);
+
+        var request = new ApiServer.Grpc.AcknowledgeBatchRequest { QueueId = "test-queue" };
+        request.LockIds.Add("a");
+        var ex = await Assert.ThrowsAsync<RpcException>(async () => await service.AcknowledgeBatch(request, _mockContext.Object));
+        Assert.Equal(expected, ex.StatusCode);
+    }
+
+    [Fact]
     public async Task ExtendLock_Success_ReturnsNewExpiry()
     {
         // Arrange

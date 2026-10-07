@@ -98,13 +98,14 @@ Two cases look like errors but aren't: an empty queue (dequeue returns null or `
 
 ## What to do after DeliveryUnknown
 
-The safe response depends on whether repeating the operation could do harm. The SDK retries only the one case it can prove is harmless.
+The safe response depends on whether repeating the operation could do harm. The SDK retries only the cases it can prove are harmless.
 
 | Operation | Retried by the SDK? | What your code should do |
 | --- | --- | --- |
 | Enqueue, every item keyed | Yes, within `RetryTimeout` | Nothing: the server drops duplicates by key. Keys are remembered for 24 hours by default. |
 | Enqueue, some items unkeyed | No | Re-send if a duplicate is acceptable, or check downstream first. The error lists which items had keys. |
 | Dequeue with a lock | No | **Don't re-send.** If it ran, the items are locked to a lock id you never received. They return to the queue when the lock expires (the TTL you asked for), with their delivery count raised. |
+| Acknowledge batch | Yes, within `RetryTimeout` | Nothing. Locks the earlier attempt settled come back `LOCK_NOT_FOUND`: treat that as success. |
 | Acknowledge, extend lock, dead-letter, nack | No | Re-sending is safe in effect. If the first attempt worked, the re-send gets `LockNotFound`: treat that as success. |
 | Accept, renew or release a session | No | Accept: try again; a session claimed but unseen expires with its lease. Renew: re-send while the lease is still valid. Release: safe to re-send; an invalid lease id means it already worked. |
 
@@ -147,23 +148,33 @@ Don't send a test enqueue to check readiness. It leaves a queue behind in the st
 
 ### Patterns
 
-- **Cap concurrent calls per queue.** A queue handles one operation at a time, so 10,000 acknowledges
-  sent at once all wait in a single line, and the last ones wait tens of seconds. Keep the line in your
+- **Acknowledge in batches.** A queue handles one operation at a time, so 10,000 single acknowledges
+  each take a turn on it. A batch acknowledge settles up to 1,000 locks in one turn and one state
+  save, so settle what a bulk dequeue returned with one call:
+
+  ```csharp
+  // .NET: one call for everything one bulk dequeue returned
+  var locked = await client.DequeueLockedAsync(queueId, count: 1000);
+  var result = await client.AcknowledgeBatchAsync(queueId, locked!.Items.Select(i => i.LockId).ToList());
+  ```
+
+  Python: `acknowledge_batch`. TypeScript and Java: `acknowledgeBatch`. Check each lock's outcome:
+  the call succeeds even when some locks had expired.
+- **Cap concurrent calls per queue.** For everything else, the same single line applies: 10,000 calls
+  sent at once all wait on one queue, and the last ones wait tens of seconds. Keep the line in your
   own process instead: allow at most 50 to 100 calls in flight per queue. Total time is the same, but
   each call waits a fraction of a second, nothing approaches the 100-second limit, and connections
   aren't held open through the gateway. With many consumer instances on one queue, divide the cap
   between them.
 
   ```csharp
-  // .NET: at most 100 acknowledges in flight
+  // .NET: at most 100 extends in flight
   await Parallel.ForEachAsync(lockIds, new ParallelOptions { MaxDegreeOfParallelism = 100 },
-      async (lockId, ct) => await client.AcknowledgeAsync(queueId, lockId, ct: ct));
+      async (lockId, ct) => await client.ExtendLockAsync(queueId, lockId, 30, ct: ct));
   ```
 
   Python: an `asyncio.Semaphore(100)` around each call. TypeScript: run the calls in chunks of 100, or
-  use a concurrency limiter. Java: a fixed thread pool of 100, or a `Semaphore(100)`. A batch
-  acknowledge, settling many locks in one call, is proposed in
-  [batch-acknowledge.md](../proposals/batch-acknowledge.md).
+  use a concurrency limiter. Java: a fixed thread pool of 100, or a `Semaphore(100)`.
 - **Match timeouts from the outside in.** Your request handler's deadline should be longer than `RetryTimeout` plus a typical call. A gateway or ingress in front of DaprMQ should allow longer than the server's 100-second call limit, or your callers will see the proxy's error instead of DaprMQ's.
 - **Shorten `RetryTimeout` for interactive paths.** A user waiting on a web request may prefer a fast `DaprMQUnavailable` after 5 seconds to a 30-second wait. Values under about 6 seconds give a single attempt, because the server takes about 5 seconds to report that no worker is available.
 - **Lengthen it for background producers.** A batch job that can wait gains nothing from failing early. Retries stop at the server's cap, 30 seconds by default, so ask your operator if you need longer.
@@ -178,6 +189,7 @@ Don't send a test enqueue to check readiness. It leaves a queue behind in the st
 - [ ] `DaprMQUnavailable` handled: back off, buffer, or fail upstream
 - [ ] `DeliveryUnknown` handled per operation, never by blindly re-sending a dequeue
 - [ ] Consumers are idempotent, since items can be delivered more than once
+- [ ] Bulk dequeues are settled with one batch acknowledge, not one acknowledge per lock
 - [ ] Concurrent calls per queue are capped (50 to 100 in flight), not fired all at once
 - [ ] Lock TTLs cover the slowest handler, or locks are extended
 - [ ] Proxy and ingress timeouts are longer than DaprMQ's 100-second call limit
@@ -192,7 +204,7 @@ Don't send a test enqueue to check readiness. It leaves a queue behind in the st
 
 **Can I retry after `DaprMQUnavailable`?** Yes, always: the operation was not performed.
 
-**Can I retry after `DeliveryUnknown`?** Only where repeating is harmless: a keyed enqueue, an acknowledge, an extend, a dead-letter, a nack. Never re-send a dequeue to recover from it.
+**Can I retry after `DeliveryUnknown`?** Only where repeating is harmless: a keyed enqueue, an acknowledge or batch acknowledge, an extend, a dead-letter, a nack. Never re-send a dequeue to recover from it.
 
 **Does `AutoIdempotencyKeys` stop duplicates from my own retries?** No. It covers the SDK's retries within one call; your own re-send is a new call with new keys. Use business keys for that.
 

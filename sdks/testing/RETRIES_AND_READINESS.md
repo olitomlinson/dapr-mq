@@ -45,6 +45,7 @@ Only the marker decides the class. A `503` or `UNAVAILABLE` without the marker i
 |---|---|---|
 | not delivered | any | yes |
 | unknown | Enqueue where **every** item has an `IdempotencyKey`, given or generated | yes. The server de-duplicates on the key |
+| unknown | AcknowledgeBatch | yes. Locks an earlier attempt settled come back `LOCK_NOT_FOUND`; pass that through unchanged |
 | unknown | anything else | **no**. Throw `DeliveryUnknown` straight away |
 
 - **Backoff:** start at 100 ms, double each time, cap at 2 s, with full jitter (a uniformly random

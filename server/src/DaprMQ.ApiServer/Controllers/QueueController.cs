@@ -619,6 +619,66 @@ public class QueueController : ControllerBase
     }
 
     /// <summary>
+    /// Acknowledge up to 1,000 locks in one call. Returns 200 whenever the request is valid, with an
+    /// outcome per lock; only whole-call failures (lease, validation) return an error status.
+    /// </summary>
+    [HttpPost("{queueId}/acknowledge-batch")]
+    public async Task<IActionResult> AcknowledgeBatch(
+        string queueId,
+        [FromBody] ApiAcknowledgeBatchRequest request,
+        [FromHeader(Name = "lease-id")] string? lease_id = null)
+    {
+        if (request.LockIds == null)
+        {
+            return BadRequest(new ApiErrorResponse("lockIds is required"));
+        }
+
+        try
+        {
+            _logger.LogDebug($"AcknowledgeBatch request for queue {queueId} with {request.LockIds.Count} lock ids");
+
+            var result = await _actorInvoker.InvokeMethodAsync<AcknowledgeBatchRequest, AcknowledgeBatchResponse>(
+                new ActorId(queueId),
+                ActorMethodNames.AcknowledgeBatch,
+                new AcknowledgeBatchRequest
+                {
+                    LockIds = request.LockIds,
+                    LeaseId = lease_id
+                });
+
+            var response = new ApiAcknowledgeBatchResponse(
+                result.Success,
+                result.Message,
+                result.ItemsAcknowledged,
+                result.Results.Select(r => new ApiAcknowledgeResult(r.LockId, r.Outcome)).ToList(),
+                result.ErrorCode
+            );
+
+            if (!result.Success)
+            {
+                return result.ErrorCode switch
+                {
+                    "SESSION_LEASE_EXPIRED" => StatusCode(410, response),
+                    "VALIDATION_ERROR" or "INVALID_LEASE_ID" => BadRequest(response),
+                    _ => StatusCode(500, response)
+                };
+            }
+
+            return Ok(response);
+        }
+        catch (ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error acknowledging batch for queue {queueId}");
+            return new DeliveryFailureResult(ex);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Error acknowledging batch for queue {queueId}");
+            return StatusCode(500, new ApiErrorResponse($"Internal error: {ex.Message}"));
+        }
+    }
+
+    /// <summary>
     /// Return a locked item to its original position in the queue and void the lock. Past the
     /// max delivery count the item is dead-lettered instead (DeadLettered=true in the response).
     /// </summary>

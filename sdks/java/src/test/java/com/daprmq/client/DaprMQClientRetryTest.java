@@ -53,6 +53,19 @@ class DaprMQClientRetryTest {
     }
 
     @Test
+    void acknowledgeBatchUnknownIsRetriedBecauseResendingIsHarmless() {
+        // The retry reports LOCK_NOT_FOUND for locks the first attempt settled: after a retry that
+        // outcome means "already acknowledged", and the SDK passes it through unchanged.
+        try (ScriptedHttpServer server = new ScriptedHttpServer(UNKNOWN,
+                ok("{\"success\":true,\"itemsAcknowledged\":0,\"results\":[{\"lockId\":\"L1\",\"outcome\":\"LOCK_NOT_FOUND\"}]}"))) {
+            var result = client(server.baseUrl(), FAST).acknowledgeBatch("q", List.of("L1"));
+
+            assertEquals(2, server.requests().size());
+            assertEquals("LOCK_NOT_FOUND", result.results().get(0).outcome());
+        }
+    }
+
+    @Test
     void nackNotDeliveredIsRetriedUntilItSucceeds() {
         try (ScriptedHttpServer server = new ScriptedHttpServer(NOT_DELIVERED, ok("{\"success\":true,\"deadLettered\":false,\"deliveryCount\":1}"))) {
             NackResult result = client(server.baseUrl(), FAST).nack("q", "L1");

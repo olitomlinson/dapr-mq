@@ -28,7 +28,7 @@ var client = new DaprMQClient(new DaprMQClientOptions
 var client = new DaprMQClient(httpClient, grpcChannel);
 ```
 
-`IDaprMQClient` is REST-backed for every operation except `ConsumeSessionAsync`, which is the one method built on the `ConsumeSession` gRPC streaming RPC - everything else (`Enqueue`, `DequeueLocked`, `Acknowledge`, `ExtendLock`, `Nack`, `DeadLetter`, `AcceptSession`, `RenewSessionLease`, `ReleaseSession`) is a plain HTTP call under the hood.
+`IDaprMQClient` is REST-backed for every operation except `ConsumeSessionAsync`, which is the one method built on the `ConsumeSession` gRPC streaming RPC - everything else (`Enqueue`, `DequeueLocked`, `Acknowledge`, `AcknowledgeBatch`, `ExtendLock`, `Nack`, `DeadLetter`, `AcceptSession`, `RenewSessionLease`, `ReleaseSession`) is a plain HTTP call under the hood.
 
 Errors map to typed exceptions under `DaprMQ.Client.Exceptions` (`LockNotFoundException`, `LockExpiredException`, `SessionNotFoundException`, `SessionLockedException`, `SessionLeaseExpiredException`, `InvalidLeaseIdException`, `SessionActorUnavailableException`, `NoSessionsAvailableException`, `SessionLostException`, `ValidationException`, `ActorNotFoundException`, `DaprMQUnavailableException`, `DeliveryUnknownException`), all deriving from `DaprMQException`. A `204 No Content` (queue empty / no session available) is not an error - `DequeueLockedAsync`/`AcceptSessionAsync` return `null` instead of throwing.
 
@@ -50,7 +50,7 @@ var client = new DaprMQClient(httpClient, grpcChannel, new DaprMQRetryOptions
 - **Certainly not performed** (the server reports it couldn't serve the call, or the connection was
   refused): retried until `Timeout`, then `DaprMQUnavailableException`. Always safe to repeat later.
 - **Outcome unknown** (the connection broke after sending, or no response arrived in time): an
-  `EnqueueAsync` whose items all have an `IdempotencyKey` is retried; anything else throws
+  `EnqueueAsync` whose items all have an `IdempotencyKey`, and `AcknowledgeBatchAsync`, are retried; anything else throws
   `DeliveryUnknownException` straight away. It carries the `Operation`, the `QueueId` and, for
   Enqueue, the items' `IdempotencyKeys`. What to do next:
   - **Enqueue without keys:** re-send and accept a possible duplicate.
@@ -123,6 +123,8 @@ await consumer.StopAsync(); // stops claiming, drains in-flight handlers, closes
 ```
 
 `OnHandlerException` is one of `DeadLetterMessage` (default), `NackMessage` (return the item to the front of the session for redelivery - counts toward the server's max delivery count, past which it is dead-lettered), `AbandonSession`, or `Both`. Session ordering holds only at the default prefetch of 1: with a larger prefetch, items already delivered are handled before a nacked item comes back.
+
+`AcknowledgeBatchAsync(queueId, lockIds, leaseId?)` settles up to 1,000 locks in one call (one actor turn, one state save), typically everything a bulk `DequeueLockedAsync(count: n)` returned. It returns `AcknowledgeBatchResult(ItemsAcknowledged, Results)` with one `LockAcknowledgeResult(LockId, Outcome)` per lock in request order; `Outcome` is one of the `AcknowledgeOutcomes` constants (`ACKNOWLEDGED`, `LOCK_NOT_FOUND`, `LOCK_EXPIRED`, `INVALID_LOCK_ID`). A lock that can't be settled never fails the others; only a whole-call problem throws (`SessionLeaseExpiredException`, `InvalidLeaseIdException`, `ValidationException` for an empty list, more than 1,000 ids or duplicates). An unknown outcome is retried automatically, so after a retry `LOCK_NOT_FOUND` can mean the first attempt already settled that lock.
 
 `NackAsync(queueId, lockId, leaseId?)` on the client (and `NackAsync` on a `SessionDelivery`) returns a locked item to its original position; it returns `NackResult(DeadLettered, DeliveryCount, DlqId)`.
 

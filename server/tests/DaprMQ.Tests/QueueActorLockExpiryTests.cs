@@ -681,6 +681,110 @@ public class QueueActorLockExpiryTests
         Assert.Equal("LOCK_EXPIRED", ack.ErrorCode);
     }
 
+    private static Mock<IActorStateManager> StateManagerOf(QueueActor actor) =>
+        Mock.Get((IActorStateManager)typeof(Actor).GetProperty("StateManager")!.GetValue(actor)!);
+
+    [Fact]
+    public async Task AcknowledgeBatch_SettlesEveryLock_InOneSave()
+    {
+        var (actor, state) = await CreateActorAsync();
+        await EnqueueAsync(actor, "{\"id\":\"A\"}", "{\"id\":\"B\"}", "{\"id\":\"C\"}");
+        var locked = await actor.DequeueLocked(new DequeueLockedRequest { Count = 3, TtlSeconds = 30, AllowCompetingConsumers = true });
+        var lockIds = locked.Items.Select(i => i.LockId).ToList();
+        var stateManager = StateManagerOf(actor);
+        stateManager.Invocations.Clear();
+
+        var result = await actor.AcknowledgeBatch(new AcknowledgeBatchRequest { LockIds = lockIds });
+
+        Assert.True(result.Success);
+        Assert.Null(result.ErrorCode);
+        Assert.Equal(3, result.ItemsAcknowledged);
+        Assert.Equal(lockIds, result.Results.Select(r => r.LockId));
+        Assert.All(result.Results, r => Assert.Equal("ACKNOWLEDGED", r.Outcome));
+        Assert.All(lockIds, id => Assert.False(state.ContainsKey($"{id}-lock")));
+        Assert.Equal(0, ((ActorMetadata)state["metadata"]).LockCount);
+        stateManager.Verify(m => m.SaveStateAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task AcknowledgeBatch_ReportsAnOutcomePerLock_InRequestOrder()
+    {
+        var (actor, state) = await CreateActorAsync();
+        await EnqueueAsync(actor, "{\"id\":\"A\"}", "{\"id\":\"B\"}");
+        var locked = await actor.DequeueLocked(new DequeueLockedRequest { Count = 2, TtlSeconds = 30, AllowCompetingConsumers = true });
+        var valid = locked.Items[0].LockId;
+        var expired = locked.Items[1].LockId;
+        state[$"{expired}-lock"] = ((LockState)state[$"{expired}-lock"]) with { ExpiresAt = Now() - 1 };
+
+        var result = await actor.AcknowledgeBatch(new AcknowledgeBatchRequest { LockIds = ["missing", expired, "", valid] });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.ItemsAcknowledged);
+        Assert.Equal(["missing", expired, "", valid], result.Results.Select(r => r.LockId));
+        Assert.Equal(["LOCK_NOT_FOUND", "LOCK_EXPIRED", "INVALID_LOCK_ID", "ACKNOWLEDGED"], result.Results.Select(r => r.Outcome));
+        // The expired lock is left for the sweep to return to the queue.
+        Assert.True(state.ContainsKey($"{expired}-lock"));
+        Assert.Equal(1, ((ActorMetadata)state["metadata"]).LockCount);
+    }
+
+    [Fact]
+    public async Task AcknowledgeBatch_NothingToSettle_DoesNotSave()
+    {
+        var (actor, _) = await CreateActorAsync();
+        var stateManager = StateManagerOf(actor);
+        stateManager.Invocations.Clear();
+
+        var result = await actor.AcknowledgeBatch(new AcknowledgeBatchRequest { LockIds = ["missing"] });
+
+        Assert.True(result.Success);
+        Assert.Equal("LOCK_NOT_FOUND", Assert.Single(result.Results).Outcome);
+        stateManager.Verify(m => m.SaveStateAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    public static TheoryData<List<string>> InvalidBatches => new()
+    {
+        new List<string>(),
+        Enumerable.Range(0, 1001).Select(i => $"lock-{i}").ToList(),
+        new List<string> { "lock-1", "lock-1" }
+    };
+
+    [Theory]
+    [MemberData(nameof(InvalidBatches))]
+    public async Task AcknowledgeBatch_EmptyOversizedOrDuplicateIds_IsAValidationError(List<string> lockIds)
+    {
+        var (actor, _) = await CreateActorAsync();
+
+        var result = await actor.AcknowledgeBatch(new AcknowledgeBatchRequest { LockIds = lockIds });
+
+        Assert.False(result.Success);
+        Assert.Equal("VALIDATION_ERROR", result.ErrorCode);
+        Assert.Empty(result.Results);
+    }
+
+    [Fact]
+    public async Task AcknowledgeBatch_OnSessionActor_ChecksTheLeaseOnce_AndRewritesTheIndexOnce()
+    {
+        var (actor, state) = await CreateActorAsync(actorId: SessionActorId);
+        await EnqueueAsync(actor, "{\"id\":\"A\"}", "{\"id\":\"B\"}", "{\"id\":\"C\"}");
+        var locked = await LeaseAndLockAsync(actor, "lease-1", Now() + 600, 3);
+        var lockIds = locked.Items.Select(i => i.LockId).ToList();
+
+        var wrongLease = await actor.AcknowledgeBatch(new AcknowledgeBatchRequest { LockIds = lockIds, LeaseId = "other" });
+        Assert.False(wrongLease.Success);
+        Assert.Equal("INVALID_LEASE_ID", wrongLease.ErrorCode);
+        Assert.Empty(wrongLease.Results);
+
+        var stateManager = StateManagerOf(actor);
+        stateManager.Invocations.Clear();
+
+        var result = await actor.AcknowledgeBatch(new AcknowledgeBatchRequest { LockIds = lockIds.Take(2).ToList(), LeaseId = "lease-1" });
+
+        Assert.Equal(2, result.ItemsAcknowledged);
+        Assert.Equal([lockIds[2]], Assert.IsType<List<string>>(state["locks_session"]));
+        stateManager.Verify(m => m.SetStateAsync("locks_session", It.IsAny<List<string>>(), It.IsAny<CancellationToken>()), Times.Once);
+        Assert.Equal(1, ((ActorMetadata)state["metadata"]).LockCount);
+    }
+
     [Fact]
     public async Task Nack_RestoresTheItemToItsOriginalPosition()
     {

@@ -175,6 +175,23 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
         throw MapLockError(body?.ErrorCode, body?.Message ?? await ReadErrorMessageAsync(response, ct));
     }
 
+    public async Task<AcknowledgeBatchResult> AcknowledgeBatchAsync(string queueId, IReadOnlyList<string> lockIds, string? leaseId = null, CancellationToken ct = default)
+    {
+        // Re-sending is harmless: locks an earlier attempt settled come back LOCK_NOT_FOUND.
+        using var response = await SendAsync("AcknowledgeBatch", queueId,
+            () => BuildJsonRequest(Path(queueId, "acknowledge-batch"), new { lockIds }, leaseId), unknownIsRetryable: true, null, ct);
+        if (response.IsSuccessStatusCode)
+        {
+            var result = await ReadRequiredAsync<AcknowledgeBatchResponseWire>(response, ct);
+            return new AcknowledgeBatchResult(
+                result.ItemsAcknowledged,
+                (result.Results ?? []).Select(r => new LockAcknowledgeResult(r.LockId, r.Outcome)).ToList());
+        }
+
+        var body = await response.Content.ReadFromJsonAsync<AcknowledgeBatchResponseWire>(JsonOptions, ct);
+        throw MapLockError(body?.ErrorCode, body?.Message ?? await ReadErrorMessageAsync(response, ct));
+    }
+
     public async Task ExtendLockAsync(string queueId, string lockId, int additionalTtlSeconds, string? leaseId = null, CancellationToken ct = default)
     {
         using var response = await SendAsync("ExtendLock", queueId,
@@ -612,7 +629,7 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
         "LOCK_EXPIRED" => new LockExpiredException(message),
         "SESSION_LEASE_EXPIRED" => new SessionLeaseExpiredException(message),
         "INVALID_LEASE_ID" => new InvalidLeaseIdException(message),
-        "INVALID_LOCK_ID" or "INVALID_TTL" => new ValidationException(message),
+        "INVALID_LOCK_ID" or "INVALID_TTL" or "VALIDATION_ERROR" => new ValidationException(message),
         _ => new DaprMQException(message, errorCode)
     };
 

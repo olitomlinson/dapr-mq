@@ -36,6 +36,34 @@ class DequeueLockedResult:
     message: str | None = None
 
 
+class AcknowledgeOutcome:
+    """Per-lock outcomes of a batch acknowledge."""
+
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    """Settled by this call."""
+    LOCK_NOT_FOUND = "LOCK_NOT_FOUND"
+    """No such lock: never existed, or already settled. After the client retried a batch whose
+    outcome was unknown, this can mean the earlier attempt acknowledged it."""
+    LOCK_EXPIRED = "LOCK_EXPIRED"
+    """Plain queue only: the lock's TTL passed, so the item is returning to the queue."""
+    INVALID_LOCK_ID = "INVALID_LOCK_ID"
+    """Empty lock id."""
+
+
+@dataclass
+class LockAcknowledgeResult:
+    lock_id: str
+    outcome: str
+    """One of the ``AcknowledgeOutcome`` values."""
+
+
+@dataclass
+class AcknowledgeBatchResult:
+    items_acknowledged: int
+    results: list[LockAcknowledgeResult]
+    """One entry per requested lock, in request order."""
+
+
 @dataclass
 class NackResult:
     dead_lettered: bool

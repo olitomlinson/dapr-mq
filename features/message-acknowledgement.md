@@ -475,6 +475,19 @@ This ensures:
 - Items can be reprocessed after lock expiration
 - Queue integrity is maintained
 
+## Batch acknowledge
+
+`POST /queue/{queue_id}/acknowledge-batch` with `{"lockIds": [...]}` settles up to 1,000 locks in
+one call: one actor turn and one `SaveStateAsync`, instead of one of each per lock.
+
+- Each lock gets its own outcome, in request order (`ACKNOWLEDGED`, `LOCK_NOT_FOUND`,
+  `LOCK_EXPIRED`, `INVALID_LOCK_ID`), with the same per-lock rules as Acknowledge. The call returns
+  `200` whenever the request is valid, even if no lock settled.
+- Only whole-call problems fail it: an empty list, more than 1,000 ids or duplicates
+  (`VALIDATION_ERROR`), or the session lease check, made once for the batch.
+- Single Acknowledge runs through the same settlement code with one id.
+- Safe to re-send after an unknown outcome: locks already settled come back `LOCK_NOT_FOUND`.
+
 ## Nack
 
 `POST /queue/{queue_id}/nack` with `{"lockId": "..."}` gives a locked item back without waiting

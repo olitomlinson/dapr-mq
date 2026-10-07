@@ -64,6 +64,20 @@ describe("retries", () => {
     expect(requests).toHaveLength(1);
   });
 
+  it("retries an unknown batch acknowledge, because re-sending is harmless", async () => {
+    // The retry reports LOCK_NOT_FOUND for locks the first attempt settled: after a retry that
+    // outcome means "already acknowledged", and the SDK passes it through unchanged.
+    const { fetchImpl, requests } = sequence(
+      unknown,
+      ok({ success: true, itemsAcknowledged: 0, results: [{ lockId: "L1", outcome: "LOCK_NOT_FOUND" }] }),
+    );
+
+    const result = await client(fetchImpl).acknowledgeBatch("q", ["L1"]);
+
+    expect(requests).toHaveLength(2);
+    expect(result.results[0].outcome).toBe("LOCK_NOT_FOUND");
+  });
+
   it("sends the remaining retry time on every attempt, not a call deadline", async () => {
     const { fetchImpl, requests } = sequence(ok(OK));
 

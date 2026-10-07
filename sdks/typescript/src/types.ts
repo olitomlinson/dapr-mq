@@ -25,6 +25,33 @@ export interface DequeueLockedResult {
   message?: string;
 }
 
+/** Per-lock outcomes of a batch acknowledge. */
+export const AcknowledgeOutcome = {
+  /** Settled by this call. */
+  Acknowledged: "ACKNOWLEDGED",
+  /**
+   * No such lock: never existed, or already settled. After the client retried a batch whose outcome
+   * was unknown, this can mean the earlier attempt acknowledged it.
+   */
+  LockNotFound: "LOCK_NOT_FOUND",
+  /** Plain queue only: the lock's TTL passed, so the item is returning to the queue. */
+  LockExpired: "LOCK_EXPIRED",
+  /** Empty lock id. */
+  InvalidLockId: "INVALID_LOCK_ID",
+} as const;
+
+export interface LockAcknowledgeResult {
+  lockId: string;
+  /** One of the AcknowledgeOutcome values. */
+  outcome: string;
+}
+
+export interface AcknowledgeBatchResult {
+  itemsAcknowledged: number;
+  /** One entry per requested lock, in request order. */
+  results: LockAcknowledgeResult[];
+}
+
 export interface NackResult {
   /** True if the nack exceeded the server's max delivery count, so the item was dead-lettered. */
   deadLettered: boolean;

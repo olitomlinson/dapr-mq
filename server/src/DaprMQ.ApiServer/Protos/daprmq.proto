@@ -26,6 +26,11 @@ service DaprMQ {
   // Requires valid lock_id from DequeueLocked.
   rpc Acknowledge(AcknowledgeRequest) returns (AcknowledgeResponse);
 
+  // Acknowledge up to 1,000 locks in one call, with an outcome per lock. Succeeds whenever the
+  // request is valid; read each result's outcome. Safe to re-send: locks an earlier attempt settled
+  // come back LOCK_NOT_FOUND.
+  rpc AcknowledgeBatch(AcknowledgeBatchRequest) returns (AcknowledgeBatchResponse);
+
   // Return a locked item to its original position in the queue and void the lock. Counts as a
   // delivery attempt: past the server's max delivery count the item is dead-lettered instead.
   rpc Nack(NackRequest) returns (NackResponse);
@@ -233,6 +238,45 @@ message AcknowledgeResponse {
   // Error code if failed (LOCK_EXPIRED, LOCK_NOT_FOUND, INVALID_LOCK_ID, SESSION_LEASE_EXPIRED,
   // INVALID_LEASE_ID)
   string error_code = 4;
+}
+
+// Request to acknowledge many locks at once
+message AcknowledgeBatchRequest {
+  // Queue identifier (actor ID)
+  string queue_id = 1;
+
+  // Lock identifiers from DequeueLocked (1-1000, no duplicates)
+  repeated string lock_ids = 2;
+
+  // Required when targeting a session-scoped queue actor with an active lease synced onto it
+  // (unset otherwise, e.g. an ordinary queue). Checked once for the whole batch.
+  optional string lease_id = 3;
+}
+
+// Outcome of one lock in an AcknowledgeBatch call
+message AcknowledgeResult {
+  string lock_id = 1;
+
+  // ACKNOWLEDGED, LOCK_NOT_FOUND, LOCK_EXPIRED or INVALID_LOCK_ID
+  string outcome = 2;
+}
+
+// Response from acknowledge batch operation
+message AcknowledgeBatchResponse {
+  // True whenever the request was valid, whatever the per-lock outcomes
+  bool success = 1;
+
+  // Human-readable message
+  string message = 2;
+
+  // Number of locks settled by this call
+  int32 items_acknowledged = 3;
+
+  // Whole-call error code if failed (VALIDATION_ERROR, SESSION_LEASE_EXPIRED, INVALID_LEASE_ID)
+  string error_code = 4;
+
+  // One result per requested lock, in request order
+  repeated AcknowledgeResult results = 5;
 }
 
 // Request to return a locked item to the queue

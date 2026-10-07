@@ -10,6 +10,7 @@ Most endpoints are scoped to a queue via `{queueId}` in the path — each distin
 - [Enqueue Large Object](#enqueue-large-object)
 - [Dequeue](#dequeue)
 - [Acknowledge](#acknowledge)
+- [Acknowledge Batch](#acknowledge-batch)
 - [Extend Lock](#extend-lock)
 - [Nack](#nack)
 - [Dead Letter](#dead-letter)
@@ -243,6 +244,70 @@ curl -X POST http://localhost:8002/queue/my-queue/acknowledge \
   -H "Content-Type: application/json" \
   -d '{"lockId": "aB3xQ9k2LmZ"}'
 ```
+
+---
+
+## Acknowledge Batch
+
+Settle up to 1,000 locks in one call: one request, one actor turn, one state transaction. Use it to settle what a bulk dequeue (`count` > 1) returned, instead of one acknowledge per lock: every call on a queue waits its turn on that queue's actor, so 1,000 single acks take 1,000 turns.
+
+```
+POST /queue/{queueId}/acknowledge-batch
+Content-Type: application/json
+```
+
+**Headers**
+
+| Header | Default | Description |
+|---|---|---|
+| `lease-id` | _(none)_ | Required when `{queueId}` is a session-scoped queue with an active lease — see [Sessions](#sessions). Checked once for the whole batch. |
+
+**Body**
+
+```json
+{ "lockIds": ["aB3xQ9k2LmZ", "Zm8pW4r7TqN"] }
+```
+
+1 to 1,000 ids, no duplicates.
+
+**Response — `200 OK`**
+
+Returned whenever the request is valid, even if no lock settled. Each lock gets its own outcome, in request order; one lock failing never fails the rest.
+
+```json
+{
+  "success": true,
+  "message": "Acknowledged 1 of 2 locks",
+  "itemsAcknowledged": 1,
+  "results": [
+    { "lockId": "aB3xQ9k2LmZ", "outcome": "ACKNOWLEDGED" },
+    { "lockId": "Zm8pW4r7TqN", "outcome": "LOCK_EXPIRED" }
+  ]
+}
+```
+
+| Outcome | Meaning |
+|---|---|
+| `ACKNOWLEDGED` | Settled by this call |
+| `LOCK_NOT_FOUND` | No such lock: never existed, or already settled (including by an earlier attempt of this same batch) |
+| `LOCK_EXPIRED` | Plain queue only: the TTL passed, so the item is already returning to the queue (same rule as single acknowledge) |
+| `INVALID_LOCK_ID` | Empty id |
+
+All `ACKNOWLEDGED` locks are saved in one transaction: either all of them are settled, or the call fails and none are.
+
+**Error responses** (whole call) — `400` (`VALIDATION_ERROR`: empty list, more than 1,000 ids, duplicates; `INVALID_LEASE_ID`), `410` (`SESSION_LEASE_EXPIRED`), `503` (`UNAVAILABLE`), `504` (`DELIVERY_UNKNOWN`).
+
+**Safe to re-send.** After `DELIVERY_UNKNOWN`, sending the same batch again is harmless: locks the first attempt settled come back `LOCK_NOT_FOUND`, which in a retry means "already done". The SDKs retry an unknown batch acknowledge automatically and pass `LOCK_NOT_FOUND` through unchanged.
+
+**Example**
+
+```bash
+curl -X POST http://localhost:8002/queue/my-queue/acknowledge-batch \
+  -H "Content-Type: application/json" \
+  -d '{"lockIds": ["aB3xQ9k2LmZ", "Zm8pW4r7TqN"]}'
+```
+
+gRPC: `AcknowledgeBatch(AcknowledgeBatchRequest { queue_id, lock_ids[], lease_id? }) → AcknowledgeBatchResponse { success, message, items_acknowledged, error_code, results[] { lock_id, outcome } }`. Whole-call errors map to `INVALID_ARGUMENT` (validation, wrong lease) and `FAILED_PRECONDITION` (lease expired).
 
 ---
 

@@ -23,9 +23,10 @@ import {
 } from "./grpc/daprmqGrpcClient.js";
 import { createHealthGrpcClient, type HealthGrpcClient } from "./grpc/healthGrpcClient.js";
 import { AsyncMessageQueue } from "./asyncMessageQueue.js";
-import type { DequeueLockedResult, EnqueueItem, EnqueueResult, NackResult, SessionDelivery, SessionLease } from "./types.js";
+import type { AcknowledgeBatchResult, DequeueLockedResult, EnqueueItem, EnqueueResult, NackResult, SessionDelivery, SessionLease } from "./types.js";
 import type {
   AcceptSessionResponseWire,
+  AcknowledgeBatchResponseWire,
   AcknowledgeResponseWire,
   DeadLetterResponseWire,
   NackResponseWire,
@@ -210,6 +211,39 @@ export class DaprMQClient {
 
     const text = await this.readBodyText(response);
     const body = this.tryParseJson<AcknowledgeResponseWire>(text);
+    throw this.mapLockError(body?.errorCode, body?.message ?? this.errorMessageFrom(text, response.status));
+  }
+
+  /**
+   * Acknowledges up to 1,000 locks in one call, with an outcome per lock: one lock that expired or
+   * was already settled does not fail the rest. Throws only for whole-call failures (bad lease,
+   * invalid request). An unknown outcome is retried automatically, since re-sending is harmless;
+   * after such a retry, LOCK_NOT_FOUND can mean "already settled".
+   */
+  async acknowledgeBatch(
+    queueId: string,
+    lockIds: string[],
+    options: { leaseId?: string; signal?: AbortSignal } = {},
+  ): Promise<AcknowledgeBatchResult> {
+    const headers: Record<string, string> = {};
+    if (options.leaseId != null) {
+      headers["lease-id"] = options.leaseId;
+    }
+    const response = await this.send("acknowledgeBatch", queueId, this.path(queueId, "acknowledge-batch"), {
+      body: { lockIds },
+      headers,
+      signal: options.signal,
+      unknownIsRetryable: true,
+    });
+    const text = await this.readBodyText(response);
+    const body = this.tryParseJson<AcknowledgeBatchResponseWire>(text);
+    if (response.ok) {
+      return {
+        itemsAcknowledged: body?.itemsAcknowledged ?? 0,
+        results: (body?.results ?? []).map((r) => ({ lockId: r.lockId, outcome: r.outcome })),
+      };
+    }
+
     throw this.mapLockError(body?.errorCode, body?.message ?? this.errorMessageFrom(text, response.status));
   }
 
@@ -637,6 +671,7 @@ export class DaprMQClient {
         return new InvalidLeaseIdError(message);
       case "INVALID_LOCK_ID":
       case "INVALID_TTL":
+      case "VALIDATION_ERROR":
         return new ValidationError(message);
       default:
         return new DaprMQError(message, errorCode);

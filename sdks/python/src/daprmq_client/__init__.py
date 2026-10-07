@@ -23,10 +23,13 @@ from .session_queue_consumer import (
     SessionQueueConsumerOptions,
 )
 from .types import (
+    AcknowledgeBatchResult,
+    AcknowledgeOutcome,
     DequeueLockedItem,
     DequeueLockedResult,
     EnqueueItem,
     EnqueueResult,
+    LockAcknowledgeResult,
     NackResult,
     RetryOptions,
     SessionDelivery,
@@ -57,6 +60,9 @@ __all__ = [
     "DequeueLockedResult",
     "SessionLease",
     "NackResult",
+    "AcknowledgeBatchResult",
+    "AcknowledgeOutcome",
+    "LockAcknowledgeResult",
     "SessionDelivery",
     "SessionQueueConsumer",
     "SessionQueueConsumerOptions",

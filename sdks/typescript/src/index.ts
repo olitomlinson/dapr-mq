@@ -14,7 +14,10 @@ export type {
   SessionLease,
   SessionDelivery,
   NackResult,
+  AcknowledgeBatchResult,
+  LockAcknowledgeResult,
 } from "./types.js";
+export { AcknowledgeOutcome } from "./types.js";
 export {
   DaprMQError,
   DaprMQUnavailableError,
