@@ -288,6 +288,9 @@ public class DaprTestEnvironment : IAsyncLifetime
             // Allow optional override of actor type name via environment variable
             .WithEnvironment("QUEUE_ACTOR_TYPE_NAME", Environment.GetEnvironmentVariable("QUEUE_ACTOR_TYPE_NAME") ?? "QueueActor")
             .WithEnvironment("HTTP_SINK_ACTOR_TYPE_NAME", Environment.GetEnvironmentVariable("HTTP_SINK_ACTOR_TYPE_NAME") ?? "HttpSinkActor")
+            // Let tests that declare a long daprmq-timeout (the bulk throughput tests) actually get it:
+            // the server caps every request's deadline at this (production default 30 s).
+            .WithEnvironment("DELIVERY_RETRY_MAX_SECONDS", "300")
             // Short reap TTLs so LargeObjectTests can observe deletion within a reasonable test timeout
             .WithEnvironment("DAPRMQ_BLOB_REAP_BACKSTOP_SECONDS", "30")
             .WithEnvironment("DAPRMQ_BLOB_REAP_POST_DOWNLOAD_SECONDS", "30");

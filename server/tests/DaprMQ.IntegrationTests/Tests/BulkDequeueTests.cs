@@ -457,6 +457,13 @@ public class BulkDequeueTests(DaprTestFixture fixture)
         var queueId = $"{fixture.QueueId}-bulk10000-parallel-{Guid.NewGuid():N}";
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
+        // Throughput ceiling is overridable (DAPRMQ_BULK_TEST_MAX_SECONDS) so slower shared CI runners
+        // can loosen it without changing the local default. Every request also declares it as its
+        // deadline: thousands of parallel calls queue behind one actor, and without it the server's
+        // default 30 s deadline would cut the slowest off as DELIVERY_UNKNOWN.
+        var maxSeconds = double.TryParse(Environment.GetEnvironmentVariable("DAPRMQ_BULK_TEST_MAX_SECONDS"), out var overrideSeconds) ? overrideSeconds : 60;
+        var deadlineMs = ((int)(maxSeconds * 1000)).ToString();
+
         const int totalItems = 10000;
         var enqueueItems = new List<ApiEnqueueItem>();
         for (int i = 0; i < totalItems; i++)
@@ -466,8 +473,12 @@ public class BulkDequeueTests(DaprTestFixture fixture)
         }
 
         // Enqueue all 10000 items in one bulk operation
-        var enqueueResponse = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/enqueue",
-            new ApiEnqueueRequest(enqueueItems));
+        using var enqueueRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/enqueue")
+        {
+            Content = JsonContent.Create(new ApiEnqueueRequest(enqueueItems)),
+            Headers = { { "daprmq-timeout", deadlineMs } },
+        };
+        var enqueueResponse = await fixture.ApiClient.SendAsync(enqueueRequest);
         Assert.Equal(HttpStatusCode.OK, enqueueResponse.StatusCode);
 
         var enqueueResult = await enqueueResponse.Content.ReadFromJsonAsync<ApiEnqueueResponse>();
@@ -484,6 +495,7 @@ public class BulkDequeueTests(DaprTestFixture fixture)
             dequeueRequest.Headers.Add("require-ack", "true");
             dequeueRequest.Headers.Add("ttl-seconds", "300");
             dequeueRequest.Headers.Add("allow-competing-consumers", "true");
+            dequeueRequest.Headers.Add("daprmq-timeout", deadlineMs);
 
             var response = await fixture.ApiClient.SendAsync(dequeueRequest);
 
@@ -512,8 +524,12 @@ public class BulkDequeueTests(DaprTestFixture fixture)
         // Acknowledge all locks in parallel
         var ackTasks = lockIds.Select(async lockId =>
         {
-            var ackResponse = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/acknowledge",
-                new ApiAcknowledgeRequest(lockId));
+            using var ackRequest = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/acknowledge")
+            {
+                Content = JsonContent.Create(new ApiAcknowledgeRequest(lockId)),
+                Headers = { { "daprmq-timeout", deadlineMs } },
+            };
+            var ackResponse = await fixture.ApiClient.SendAsync(ackRequest);
             return ackResponse.StatusCode;
         });
 
@@ -527,9 +543,6 @@ public class BulkDequeueTests(DaprTestFixture fixture)
         Assert.All(ackStatuses, status => Assert.Equal(HttpStatusCode.OK, status));
 
         var elapsedSeconds = stopwatch.Elapsed.TotalSeconds;
-        // Throughput ceiling is overridable (DAPRMQ_BULK_TEST_MAX_SECONDS) so slower shared CI runners
-        // can loosen it without changing the local default.
-        var maxSeconds = double.TryParse(Environment.GetEnvironmentVariable("DAPRMQ_BULK_TEST_MAX_SECONDS"), out var overrideSeconds) ? overrideSeconds : 60;
         Assert.True(elapsedSeconds < maxSeconds, $"Test took {elapsedSeconds:F2}s (expected <{maxSeconds}s for {totalItems} items with parallel dequeues)");
     }
 
