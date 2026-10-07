@@ -55,7 +55,7 @@ var client = new DaprMQClient(httpClient, grpcChannel, new DaprMQRetryOptions
   Enqueue, the items' `IdempotencyKeys`. What to do next:
   - **Enqueue without keys:** re-send and accept a possible duplicate.
   - **`DequeueLockedAsync`:** don't re-send. If it ran, the items come back when their locks expire.
-  - **Acknowledge / ExtendLock / DeadLetter:** re-sending is safe in effect. A `LockNotFoundException`
+  - **Acknowledge / ExtendLock / DeadLetter / Nack:** re-sending is safe in effect. A `LockNotFoundException`
     then means the first attempt worked.
 - **Cancelling your token** stops retrying and surfaces as `OperationCanceledException`.
 

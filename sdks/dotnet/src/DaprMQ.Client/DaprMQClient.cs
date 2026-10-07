@@ -210,8 +210,8 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
 
     public async Task<NackResult> NackAsync(string queueId, string lockId, string? leaseId = null, CancellationToken ct = default)
     {
-        using var request = BuildJsonRequest(Path(queueId, "nack"), new { lockId }, leaseId);
-        using var response = await _httpClient.SendAsync(request, ct);
+        using var response = await SendAsync("Nack", queueId,
+            () => BuildJsonRequest(Path(queueId, "nack"), new { lockId }, leaseId), unknownIsRetryable: false, null, ct);
         if (response.IsSuccessStatusCode)
         {
             var result = await ReadRequiredAsync<NackResponseWire>(response, ct);

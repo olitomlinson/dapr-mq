@@ -70,6 +70,28 @@ public class DaprMQClientRetryTests
     }
 
     [Fact]
+    public async Task Nack_NotDelivered_IsRetried_UntilItSucceeds()
+    {
+        var (handler, requests) = Sequence(NotDelivered, () => Json(HttpStatusCode.OK, """{"success":true,"deadLettered":false,"deliveryCount":1}"""));
+
+        var result = await CreateClient(handler).NackAsync("q", "L1");
+
+        Assert.Equal(2, requests.Count);
+        Assert.False(result.DeadLettered);
+    }
+
+    [Fact]
+    public async Task Nack_Unknown_IsNotRetried_AndNamesTheOperation()
+    {
+        var (handler, requests) = Sequence(Unknown);
+
+        var ex = await Assert.ThrowsAsync<DeliveryUnknownException>(() => CreateClient(handler).NackAsync("q", "L1"));
+
+        Assert.Single(requests);
+        Assert.Equal("Nack", ex.Operation);
+    }
+
+    [Fact]
     public async Task EveryAttempt_SendsTheRemainingRetryTime_NotACallDeadline()
     {
         var (handler, requests) = Sequence(() => Json(HttpStatusCode.OK, Ok));
