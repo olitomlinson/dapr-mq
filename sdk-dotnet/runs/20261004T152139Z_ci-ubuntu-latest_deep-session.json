@@ -1,31 +1,45 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "runId": "20261004T152139Z_ci-ubuntu-latest_deep-session",
-  "timestampUtc": "2026-10-04T15:21:39.6535897+00:00",
+  "timestampUtc": "2026-10-04T15:21:39.6535897\u002B00:00",
+  "sdk": {
+    "name": "dotnet",
+    "version": null,
+    "runtime": ".NET 10.0.12"
+  },
   "environment": {
     "label": "ci-ubuntu-latest",
     "gitSha": "86a03904b1f583d6eb7cc7f1585ff09fc63c9fc8",
     "gitBranch": "main",
     "gitDirty": false,
     "os": "Ubuntu 24.04.5 LTS",
-    "cpuCount": 4,
-    "dotnet": ".NET 10.0.12",
+    "cpuCount": 4
+  },
+  "topology": {
+    "apiReplicas": 1,
+    "schedulerReplicas": 1,
+    "loadBalancer": false,
     "server": "testcontainers daprmq-api:test"
   },
-  "profile": "deep-session",
+  "scale": "pr",
   "scenario": {
-    "sessions": 4,
-    "messagesPerSession": 1000,
-    "settleMs": 10,
-    "maxConcurrentSessions": 4,
-    "prefetchCount": 10,
-    "leaseSeconds": 30,
-    "sessionIdleTimeoutSeconds": 1,
-    "publishMode": "before",
-    "publishIntervalMs": 0,
-    "publishJitterMs": 0,
+    "id": "P-04",
+    "name": "session-drain",
+    "profile": "deep-session",
     "key": "4x1000@10ms/4slots\u002Bidle1s",
-    "idealSeconds": 10
+    "params": {
+      "sessions": 4,
+      "messagesPerSession": 1000,
+      "settleMs": 10,
+      "maxConcurrentSessions": 4,
+      "prefetchCount": 10,
+      "leaseSeconds": 30,
+      "sessionIdleTimeoutSeconds": 1,
+      "publishMode": "before",
+      "publishIntervalMs": 0,
+      "publishJitterMs": 0,
+      "idealSeconds": 10
+    }
   },
   "metrics": {
     "seedSeconds": 0.0566098,
@@ -92,20 +106,28 @@
     "messagesHandled": 4000,
     "duplicates": 0,
     "missing": 0,
-    "fifoViolations": 0,
-    "timelineBucketMs": 1000,
-    "busySlotsTimeline": [
-      3.927,
-      3.983,
-      3.983,
-      3.983,
-      3.979,
-      3.977,
-      3.978,
-      3.976,
-      3.979,
-      3.977,
-      0.866
-    ]
+    "fifoViolations": 0
+  },
+  "checks": {
+    "passed": true,
+    "failures": []
+  },
+  "timeline": {
+    "bucketMs": 1000,
+    "series": {
+      "busySlots": [
+        3.927,
+        3.983,
+        3.983,
+        3.983,
+        3.979,
+        3.977,
+        3.978,
+        3.976,
+        3.979,
+        3.977,
+        0.866
+      ]
+    }
   }
 }

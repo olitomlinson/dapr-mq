@@ -1,31 +1,45 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "runId": "20261003T092938Z_ci-ubuntu-latest_steady-drain",
-  "timestampUtc": "2026-10-03T09:29:38.3438241+00:00",
+  "timestampUtc": "2026-10-03T09:29:38.3438241\u002B00:00",
+  "sdk": {
+    "name": "dotnet",
+    "version": null,
+    "runtime": ".NET 10.0.12"
+  },
   "environment": {
     "label": "ci-ubuntu-latest",
     "gitSha": "47931d910c6a5d3b49f308ea3575273cdbe66aeb",
     "gitBranch": "main",
     "gitDirty": false,
     "os": "Ubuntu 24.04.5 LTS",
-    "cpuCount": 4,
-    "dotnet": ".NET 10.0.12",
+    "cpuCount": 4
+  },
+  "topology": {
+    "apiReplicas": 1,
+    "schedulerReplicas": 1,
+    "loadBalancer": false,
     "server": "testcontainers daprmq-api:test"
   },
-  "profile": "steady-drain",
+  "scale": "pr",
   "scenario": {
-    "sessions": 200,
-    "messagesPerSession": 20,
-    "settleMs": 100,
-    "maxConcurrentSessions": 20,
-    "prefetchCount": 10,
-    "leaseSeconds": 30,
-    "sessionIdleTimeoutSeconds": 1,
-    "publishMode": "before",
-    "publishIntervalMs": 0,
-    "publishJitterMs": 0,
+    "id": "P-04",
+    "name": "session-drain",
+    "profile": "steady-drain",
     "key": "200x20@100ms/20slots\u002Bidle1s",
-    "idealSeconds": 20
+    "params": {
+      "sessions": 200,
+      "messagesPerSession": 20,
+      "settleMs": 100,
+      "maxConcurrentSessions": 20,
+      "prefetchCount": 10,
+      "leaseSeconds": 30,
+      "sessionIdleTimeoutSeconds": 1,
+      "publishMode": "before",
+      "publishIntervalMs": 0,
+      "publishJitterMs": 0,
+      "idealSeconds": 20
+    }
   },
   "metrics": {
     "seedSeconds": 1.1944577,
@@ -92,39 +106,47 @@
     "messagesHandled": 4000,
     "duplicates": 0,
     "missing": 0,
-    "fifoViolations": 0,
-    "timelineBucketMs": 1000,
-    "busySlotsTimeline": [
-      13.636,
-      19.962,
-      11.119,
-      16.798,
-      15.422,
-      9.028,
-      16.498,
-      14.257,
-      9.193,
-      16.963,
-      14.367,
-      8.791,
-      16.508,
-      14.314,
-      9.108,
-      16.708,
-      14.446,
-      9.457,
-      16.91,
-      13.926,
-      9.503,
-      16.521,
-      13.666,
-      9.802,
-      16.71,
-      13.75,
-      9.702,
-      16.722,
-      13.636,
-      3.293
-    ]
+    "fifoViolations": 0
+  },
+  "checks": {
+    "passed": true,
+    "failures": []
+  },
+  "timeline": {
+    "bucketMs": 1000,
+    "series": {
+      "busySlots": [
+        13.636,
+        19.962,
+        11.119,
+        16.798,
+        15.422,
+        9.028,
+        16.498,
+        14.257,
+        9.193,
+        16.963,
+        14.367,
+        8.791,
+        16.508,
+        14.314,
+        9.108,
+        16.708,
+        14.446,
+        9.457,
+        16.91,
+        13.926,
+        9.503,
+        16.521,
+        13.666,
+        9.802,
+        16.71,
+        13.75,
+        9.702,
+        16.722,
+        13.636,
+        3.293
+      ]
+    }
   }
 }
