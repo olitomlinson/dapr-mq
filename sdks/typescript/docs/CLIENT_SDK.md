@@ -62,7 +62,7 @@ const client = new DaprMQClient({
   the items' `idempotencyKeys`. What to do next:
   - **Enqueue without keys:** re-send and accept a possible duplicate.
   - **`dequeueLocked`:** don't re-send. If it ran, the items come back when their locks expire.
-  - **acknowledge / extendLock / deadLetter:** re-sending is safe in effect. A `LockNotFoundError`
+  - **acknowledge / extendLock / deadLetter / nack:** re-sending is safe in effect. A `LockNotFoundError`
     then means the first attempt worked.
 - **Aborting your `signal`** stops retrying and rejects with the abort reason.
 

@@ -45,6 +45,25 @@ describe("retries", () => {
     expect(requests).toHaveLength(3);
   });
 
+  it("retries a not-delivered nack until it succeeds", async () => {
+    const { fetchImpl, requests } = sequence(notDelivered, ok({ success: true, deadLettered: false, deliveryCount: 1 }));
+
+    const result = await client(fetchImpl).nack("q", "L1");
+
+    expect(requests).toHaveLength(2);
+    expect(result.deadLettered).toBe(false);
+  });
+
+  it("never retries an unknown nack, and names the operation", async () => {
+    const { fetchImpl, requests } = sequence(unknown);
+
+    const error = await client(fetchImpl).nack("q", "L1").catch((e) => e);
+
+    expect(error).toBeInstanceOf(DeliveryUnknownError);
+    expect(error.operation).toBe("nack");
+    expect(requests).toHaveLength(1);
+  });
+
   it("sends the remaining retry time on every attempt, not a call deadline", async () => {
     const { fetchImpl, requests } = sequence(ok(OK));
 

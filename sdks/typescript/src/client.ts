@@ -266,7 +266,7 @@ export class DaprMQClient {
     lockId: string,
     options: { leaseId?: string; signal?: AbortSignal } = {},
   ): Promise<NackResult> {
-    const response = await this.postJson(this.path(queueId, "nack"), { lockId }, options.leaseId, options.signal);
+    const response = await this.postJson("nack", queueId, this.path(queueId, "nack"), { lockId }, options.leaseId, options.signal);
     const text = await this.readBodyText(response);
     const body = this.tryParseJson<NackResponseWire>(text);
     if (response.ok) {
