@@ -394,7 +394,7 @@ every caller.
 
 9. **Fan-in on one queue.** Thousands of concurrent calls on one queue wait in line at its actor.
    Should there be a bulk acknowledge, or per-queue concurrency limits at the gateway that reject early
-   with `503` + `Retry-After` rather than queueing?
+   with `503` + `Retry-After` rather than queueing? *Proposed:* a batch acknowledge, in [batch-acknowledge.md](batch-acknowledge.md).
 
 ## Verification
 
