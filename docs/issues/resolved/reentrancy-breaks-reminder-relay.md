@@ -1,6 +1,15 @@
 # Dapr actor reminders silently stop firing once actor reentrancy is enabled
 
-**Status:** Unconfirmed root cause. Written to support filing a GitHub issue against `dapr/dapr`.
+**Status:** Resolved 2026-09-24. The hypothesis below (a `daprd` reentrancy-lock bug) was wrong: the root
+cause was a client-side caching bug in `Dapr.Actors`. The state manager's default tracker, used by
+activation, reminder and timer callbacks, was not updated when a reentrant call wrote the same key, so the
+`TopicActor` relay reminder read stale state and did nothing. Fixed upstream by
+[dapr/dotnet-sdk#1912](https://github.com/dapr/dotnet-sdk/pull/1912) (shipped in 1.18.9; DaprMQ uses 1.18.10,
+see [sdk-1.18.9-retest.md](sdk-1.18.9-retest.md)). The decision to run with reentrancy on is
+[ADR 0002](../../ADR/0002-enable-actor-reentrancy.md).
+
+Everything below is the investigation as written at the time, before the root cause was found. Phase 3's
+`daprd` source analysis is kept as a record but did not lead to the fix.
 
 **Dapr versions tested:** 1.18.2 and 1.18.4 (daprd + placement + scheduler, all matching versions). Same result on both — this is not something patched between those two releases.
 

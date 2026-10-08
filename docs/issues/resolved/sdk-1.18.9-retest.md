@@ -8,12 +8,12 @@ one commit on top of 1.18.9). DaprMQ now uses 1.18.10 directly; the local
 added for this issue.
 
 The official `Dapr.Actors` 1.18.9 release includes all three changes from
-`docs/REENTRANCY_FIX_EMPIRICAL_COMPARISON.md`. This page records the retest of DaprMQ against
+[reentrancy-fix-empirical-comparison.md](reentrancy-fix-empirical-comparison.md). This page records the retest of DaprMQ against
 1.18.9.
 
 | Upstream PR | Change | Addresses |
 |---|---|---|
-| [#1912](https://github.com/dapr/dotnet-sdk/pull/1912) | Refreshes the default tracker in place after a reentrant save | Reentrancy / reminder staleness (`DAPR_REENTRANCY_REMINDER_ISSUE.md`) |
+| [#1912](https://github.com/dapr/dotnet-sdk/pull/1912) | Refreshes the default tracker in place after a reentrant save | Reentrancy / reminder staleness ([reentrancy-breaks-reminder-relay.md](reentrancy-breaks-reminder-relay.md)) |
 | [#1913](https://github.com/dapr/dotnet-sdk/pull/1913) | Caches "not found" (`StateChangeKind.NotFound`) | [#1909](https://github.com/dapr/dotnet-sdk/issues/1909), `github-issue-draft-negative-caching.md` |
 | [#1914](https://github.com/dapr/dotnet-sdk/pull/1914) | `SetStateAsync` no longer calls `ContainsStateAsync`; it always stages `Update` (upsert) | #1910, `github-issue-draft-setstate-existence-check.md` |
 
@@ -172,7 +172,7 @@ docker build -t daprmq-api:official1189 .
 # Point QueryCountComparisonTest at daprmq-api:refreshfix and daprmq-api:official1189, then:
 dotnet test tests/DaprMQ.IntegrationTests/DaprMQ.IntegrationTests.csproj \
   --filter "FullyQualifiedName~QueryCountComparisonTest"
-# Group the per-statement logs by state name as described in REENTRANCY_FIX_EMPIRICAL_COMPARISON.md.
+# Group the per-statement logs by state name as described in reentrancy-fix-empirical-comparison.md.
 ```
 
 ---

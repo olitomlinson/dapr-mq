@@ -1,6 +1,6 @@
 # DaprMQ Pub/Sub — Canonical Implementation Plan
 
-Status: planning complete, implementation not started.
+Status: implemented as `TopicActor`. This is the design record; where it and the code differ, the code is authoritative.
 
 ## 1. Context
 

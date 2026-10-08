@@ -95,7 +95,7 @@ if (lease is not null)
 }
 ```
 
-See [API_REFERENCE.md](../../../docs/API_REFERENCE.md#sessions) and [SESSIONS_IMPLEMENTATION.md](../../../docs/SESSIONS_IMPLEMENTATION.md) for the underlying actor-id convention and lease semantics.
+See [API_REFERENCE.md](../../../docs/API_REFERENCE.md#sessions) and [design/sessions.md](../../../docs/design/sessions.md) for the underlying actor-id convention and lease semantics.
 
 ## Sessions - managed consume loop (`SessionQueueConsumer`)
 
@@ -138,4 +138,4 @@ On a failed claim (no session currently available), a slot backs off with the sa
 
 ### Why one shared `GrpcChannel`
 
-**All of a `SessionQueueConsumer`'s `MaxConcurrentSessions` slots share the single `GrpcChannel` passed into (or built by) its `DaprMQClient`** - never construct a separate `DaprMQClient`/`GrpcChannel` per slot. A `GrpcChannel` multiplexes every RPC, including long-lived streams, over one (or a small number of, if the server's per-connection stream cap is exceeded) underlying HTTP/2 connection - this is what makes running 10s-100s of concurrent `ConsumeSession` streams cheap. Giving each slot its own channel would open that many separate HTTP/2 connections for no benefit, and was considered and rejected during the sessions feature's design - see the "multiplexing many sessions over one stream" discussion in [SESSIONS_IMPLEMENTATION.md](../../../docs/SESSIONS_IMPLEMENTATION.md) for the full reasoning (the conclusion there was the mirror image of this point: many streams over one connection is fine; it's one connection per stream that would be wasteful).
+**All of a `SessionQueueConsumer`'s `MaxConcurrentSessions` slots share the single `GrpcChannel` passed into (or built by) its `DaprMQClient`** - never construct a separate `DaprMQClient`/`GrpcChannel` per slot. A `GrpcChannel` multiplexes every RPC, including long-lived streams, over one (or a small number of, if the server's per-connection stream cap is exceeded) underlying HTTP/2 connection - this is what makes running 10s-100s of concurrent `ConsumeSession` streams cheap. Giving each slot its own channel would open that many separate HTTP/2 connections for no benefit, and was considered and rejected during the sessions feature's design - see the "multiplexing many sessions over one stream" discussion in [design/sessions.md](../../../docs/design/sessions.md) for the full reasoning (the conclusion there was the mirror image of this point: many streams over one connection is fine; it's one connection per stream that would be wasteful).

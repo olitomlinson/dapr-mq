@@ -172,5 +172,5 @@ change came from. CI runs it after the session drain and stores it on the same `
 To compare two server builds directly, run it once per image with `DAPRMQ_API_IMAGE=<image>` and diff
 the two run files.
 
-[docs/STATE_READS_BREAKDOWN.md](../../../docs/STATE_READS_BREAKDOWN.md) traces every read and write in each
+[docs/performance/state-reads-breakdown.md](../../../docs/performance/state-reads-breakdown.md) traces every read and write in each
 step back to the actor code.
