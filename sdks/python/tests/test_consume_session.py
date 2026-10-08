@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
+
 import pytest
 
-from daprmq_client import DaprMQClient, NoSessionsAvailableError, SessionLostError
+from daprmq_client import DaprMQClient, DaprMQError, NoSessionsAvailableError, SessionLostError
+from daprmq_client import client as client_module
 from daprmq_client.grpc import daprmq_pb2
 
 from .fake_grpc_stub import FakeStreamStreamCall, FakeStub
@@ -110,3 +114,88 @@ async def test_nack_writes_a_nack_frame() -> None:
         await delivery.nack()
 
     assert call.written[1].nack.lock_id == "L3"
+
+
+def delivered(lock_id: str) -> daprmq_pb2.ConsumeSessionResponse:
+    return daprmq_pb2.ConsumeSessionResponse(
+        delivered=daprmq_pb2.SessionDelivered(lock_id=lock_id, item_json="{}", priority=0, lock_expires_at=1.0)
+    )
+
+
+async def test_breaking_after_acking_half_closes_and_waits_for_the_server_before_cancelling() -> None:
+    call = FakeStreamStreamCall(ends_after_half_close=0.1)
+    client = make_client(call)
+    call.emit(delivered("L1"))
+
+    async with contextlib.aclosing(client.consume_session("q")) as stream:
+        async for delivery in stream:
+            await delivery.ack()
+            break  # consumer shutting down
+
+    assert call.written[1].ack.lock_id == "L1"
+    assert call.half_closed
+    assert not call.cancelled_before_server_ended
+
+
+async def test_setting_cancel_after_acking_half_closes_and_waits_for_the_server_before_cancelling() -> None:
+    call = FakeStreamStreamCall(ends_after_half_close=0.1)
+    client = make_client(call)
+    call.emit(delivered("L1"))
+    cancel = asyncio.Event()
+
+    async for delivery in client.consume_session("q", cancel=cancel):
+        await delivery.ack()
+        cancel.set()
+
+    assert call.written[1].ack.lock_id == "L1"
+    assert call.half_closed
+    assert not call.cancelled_before_server_ended
+
+
+async def test_cancels_the_call_if_the_server_never_ends_it_after_the_half_close(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(client_module, "SESSION_DRAIN_TIMEOUT_SECONDS", 0.1)
+    call = FakeStreamStreamCall()  # never ends on its own
+    client = make_client(call)
+    cancel = asyncio.Event()
+    cancel.set()
+
+    async def consume() -> None:
+        async for _ in client.consume_session("q", cancel=cancel):
+            pass
+
+    await asyncio.wait_for(consume(), timeout=2)
+
+    assert call.half_closed
+    assert call.cancelled
+
+
+async def test_hands_out_nothing_that_arrives_after_the_half_close() -> None:
+    call = FakeStreamStreamCall()
+    call._on_half_close = lambda: (call.emit(delivered("L2")), call.emit_end())
+    client = make_client(call)
+    call.emit(delivered("L1"))
+    cancel = asyncio.Event()
+    seen: list[str] = []
+
+    async for delivery in client.consume_session("q", cancel=cancel):
+        seen.append(delivery.lock_id)
+        cancel.set()
+
+    assert seen == ["L1"]
+
+
+async def test_settling_after_the_half_close_raises_without_writing() -> None:
+    call = FakeStreamStreamCall(ends_after_half_close=0)
+    client = make_client(call)
+    call.emit(delivered("L1"))
+    cancel = asyncio.Event()
+    kept = []
+
+    async for delivery in client.consume_session("q", cancel=cancel):
+        kept.append(delivery)
+        cancel.set()
+        await asyncio.sleep(0.01)  # let the half-close land
+
+    with pytest.raises(DaprMQError, match="closing"):
+        await kept[0].ack()
+    assert len(call.written) == 1  # just the Start frame

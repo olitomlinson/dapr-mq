@@ -9,7 +9,7 @@ conventions, e.g. `RetryTimeout` / `retry_timeout` / `retryTimeout`.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `RetryTimeout` | 30 s | How long one call may keep retrying a DaprMQ that can't serve it. Sent to the server as its retry window. It **never** cuts short a call that was delivered: a slow call (for example, one queued behind a busy queue) runs until the caller cancels, or until the per-call limit of 100 s. `0` turns client retries off. |
+| `RetryTimeout` | 30 s | How long one call may keep retrying a DaprMQ that can't serve it. Sent to the server as its retry window. It **never** cuts short a call that was delivered: a slow call (for example, one queued behind a busy queue) runs until the caller cancels, or until the per-call limit of 100 s. `0` turns client retries off. In Go, where an unset field is also `0`, `0` means the default and `NoRetries` turns retries off. |
 | `AutoIdempotencyKeys` | off | Give every enqueued item without an `IdempotencyKey` a fresh random one (a UUID), so an enqueue whose outcome is unknown can be retried safely. Each key costs the server one extra state write, which is why it is opt-in. |
 
 ## Telling the server how long to retry

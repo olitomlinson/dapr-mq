@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Protocol
 
@@ -52,6 +53,14 @@ class SessionMessageContext:
     priority: int
 
 
+@dataclass
+class _Slot:
+    handling: bool = False
+    # Closes the slot's current stream: set when stopping begins if the slot is idle, otherwise the
+    # slot leaves the stream once the running message is settled.
+    close_stream: asyncio.Event = field(default_factory=asyncio.Event)
+
+
 class SessionCapableClient(Protocol):
     """The slice of DaprMQClient that SessionQueueConsumer needs - satisfied by DaprMQClient itself."""
 
@@ -93,19 +102,28 @@ class SessionQueueConsumer:
         self.delay: Callable[[float], Awaitable[None]] = asyncio.sleep
 
         self._stop_event = asyncio.Event()
+        self._slots = [_Slot() for _ in range(options.max_concurrent_sessions)]
         self._slot_tasks: list[asyncio.Task[None]] | None = None
 
     def start(self) -> None:
-        self._slot_tasks = [asyncio.ensure_future(self._run_slot()) for _ in range(self.options.max_concurrent_sessions)]
+        self._slot_tasks = [asyncio.ensure_future(self._run_slot(slot)) for slot in self._slots]
 
     async def stop(self) -> None:
-        """Stops claiming new sessions, gives in-flight handlers up to drain_timeout_seconds to
-        finish, then closes their streams - closing the stream is itself what releases the
-        session, no separate release_session call is needed here."""
+        """Stops claiming new sessions, lets in-flight handlers finish and settle for up to
+        drain_timeout_seconds (then cancels them), and returns once every stream has closed -
+        closing the stream is itself what releases the session, no separate release_session call
+        is needed here. Prefetched, unhandled messages return with their session."""
         self._stop_event.set()
+        for slot in self._slots:
+            if not slot.handling:
+                slot.close_stream.set()
 
         if self._slot_tasks:
-            await asyncio.wait(self._slot_tasks, timeout=self.options.drain_timeout_seconds)
+            _, pending = await asyncio.wait(self._slot_tasks, timeout=self.options.drain_timeout_seconds)
+            for task in pending:
+                task.cancel()  # cancels the running handler
+            if pending:
+                await asyncio.wait(pending)
 
     async def __aenter__(self) -> SessionQueueConsumer:
         self.start()
@@ -114,22 +132,33 @@ class SessionQueueConsumer:
     async def __aexit__(self, *exc_info: object) -> None:
         await self.stop()
 
-    async def _run_slot(self) -> None:
+    async def _run_slot(self, slot: _Slot) -> None:
         backoff_seconds = self.options.min_backoff_seconds
 
         while not self._stop_event.is_set():
             session_was_claimed = False
+            slot.close_stream = asyncio.Event()
             try:
                 stream = self.client.consume_session(
                     self.queue_id,
                     session_id=self.options.target_session_id,
                     lease_seconds=self.options.lease_seconds,
                     prefetch_count=self.options.prefetch_count,
-                    cancel=self._stop_event,
+                    cancel=slot.close_stream,
                 )
-                async for delivery in stream:
-                    session_was_claimed = True
-                    await self._handle_delivery(delivery)
+                # aclosing: leaving the loop waits for the stream to close, which releases the session.
+                async with contextlib.aclosing(stream):
+                    async for delivery in stream:
+                        session_was_claimed = True
+                        if self._stop_event.is_set():
+                            break  # stopping: don't start another message, even a prefetched one
+                        slot.handling = True
+                        try:
+                            await self._handle_delivery(delivery)
+                        finally:
+                            slot.handling = False
+                        if self._stop_event.is_set():
+                            break
 
                 session_was_claimed = True  # stream ended cleanly after a successful claim (drained)
             except asyncio.CancelledError:

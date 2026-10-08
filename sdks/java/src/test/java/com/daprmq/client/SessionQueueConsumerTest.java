@@ -6,13 +6,16 @@ import com.daprmq.grpc.SessionDelivered;
 import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SessionQueueConsumerTest {
@@ -159,5 +162,122 @@ class SessionQueueConsumerTest {
         assertEquals(1000L, delays.get(0));
         assertEquals(2000L, delays.get(1));
         assertEquals(4000L, delays.get(2));
+    }
+
+    /** A stream that delivers the given items, then - like the real server - ends only once the client half-closes. */
+    private SessionStream streamEndingOnHalfClose(FakeRequestObserver requestObserver, String... lockIds) {
+        AtomicReference<StreamObserver<ConsumeSessionResponse>> captured = new AtomicReference<>();
+        SessionStream.StreamFactory factory = observer -> {
+            captured.set(observer);
+            return requestObserver;
+        };
+        requestObserver.onHalfClose = () -> captured.get().onCompleted();
+        SessionStream stream = new SessionStream(factory, "q", ConsumeSessionOptions.defaults());
+        for (String lockId : lockIds) {
+            captured.get().onNext(ConsumeSessionResponse.newBuilder()
+                    .setDelivered(SessionDelivered.newBuilder().setLockId(lockId).setItemJson("{}").setPriority(0).setLockExpiresAt(1).build())
+                    .build());
+        }
+        return stream;
+    }
+
+    @Test
+    void stopDuringAHandlerLetsItFinishAndAckBeforeClosingTheStream() throws InterruptedException {
+        FakeRequestObserver requestObserver = new FakeRequestObserver();
+        SessionStream stream = streamEndingOnHalfClose(requestObserver, "L1");
+        CountDownLatch entered = new CountDownLatch(1);
+        AtomicBoolean interrupted = new AtomicBoolean();
+        AtomicBoolean closedUnderHandler = new AtomicBoolean();
+        SessionQueueConsumer consumer = new SessionQueueConsumer((queueId, options) -> stream, "q",
+                new SessionQueueConsumerOptions().maxConcurrentSessions(1), ctx -> {
+                    entered.countDown();
+                    try {
+                        Thread.sleep(200);
+                    } catch (InterruptedException e) {
+                        interrupted.set(true);
+                    }
+                    closedUnderHandler.set(requestObserver.completed || requestObserver.cancelled);
+                });
+
+        consumer.start();
+        assertTrue(entered.await(2, TimeUnit.SECONDS));
+        consumer.stop();
+
+        assertFalse(interrupted.get());
+        assertFalse(closedUnderHandler.get());
+        assertEquals("L1", requestObserver.sent.get(1).getAck().getLockId(), "stop() returned before the in-flight message was acked");
+        assertTrue(requestObserver.completed);
+        assertFalse(requestObserver.cancelled);
+    }
+
+    @Test
+    void stopPastTheDrainTimeoutInterruptsTheHandler() throws InterruptedException {
+        FakeRequestObserver requestObserver = new FakeRequestObserver();
+        SessionStream stream = streamEndingOnHalfClose(requestObserver, "L1");
+        CountDownLatch entered = new CountDownLatch(1);
+        AtomicBoolean interrupted = new AtomicBoolean();
+        SessionQueueConsumer consumer = new SessionQueueConsumer((queueId, options) -> stream, "q",
+                new SessionQueueConsumerOptions().maxConcurrentSessions(1).drainTimeoutMillis(100), ctx -> {
+                    entered.countDown();
+                    try {
+                        Thread.sleep(3_600_000);
+                    } catch (InterruptedException e) {
+                        interrupted.set(true);
+                        throw e;
+                    }
+                });
+
+        consumer.start();
+        assertTrue(entered.await(2, TimeUnit.SECONDS));
+        long started = System.nanoTime();
+        consumer.stop();
+
+        assertTrue(System.nanoTime() - started < TimeUnit.SECONDS.toNanos(2));
+        assertTrue(interrupted.get());
+        assertEquals(1, requestObserver.sent.size()); // unsettled: it returns with the session
+    }
+
+    @Test
+    void idleStopHalfClosesTheStreamPromptly() throws InterruptedException {
+        FakeRequestObserver requestObserver = new FakeRequestObserver();
+        CountDownLatch opened = new CountDownLatch(1);
+        SessionQueueConsumer consumer = new SessionQueueConsumer((queueId, options) -> {
+            opened.countDown();
+            return streamEndingOnHalfClose(requestObserver);
+        }, "q", new SessionQueueConsumerOptions().maxConcurrentSessions(1), ctx -> {
+        });
+
+        consumer.start();
+        assertTrue(opened.await(2, TimeUnit.SECONDS));
+        Thread.sleep(50); // let the slot block waiting for a delivery
+        long started = System.nanoTime();
+        consumer.stop();
+
+        assertTrue(System.nanoTime() - started < TimeUnit.SECONDS.toNanos(1));
+        assertTrue(requestObserver.completed);
+        assertFalse(requestObserver.cancelled);
+    }
+
+    @Test
+    void stopDuringAHandlerDoesNotStartAPrefetchedMessage() throws InterruptedException {
+        FakeRequestObserver requestObserver = new FakeRequestObserver();
+        SessionStream stream = streamEndingOnHalfClose(requestObserver, "L1", "L2");
+        CountDownLatch entered = new CountDownLatch(1);
+        List<String> handled = new CopyOnWriteArrayList<>();
+        SessionQueueConsumer consumer = new SessionQueueConsumer((queueId, options) -> stream, "q",
+                new SessionQueueConsumerOptions().maxConcurrentSessions(1).prefetchCount(2), ctx -> {
+                    handled.add(ctx.lockId());
+                    entered.countDown();
+                    Thread.sleep(100);
+                });
+
+        consumer.start();
+        assertTrue(entered.await(2, TimeUnit.SECONDS));
+        consumer.stop();
+
+        assertEquals(List.of("L1"), handled);
+        List<String> acked = new ArrayList<>();
+        requestObserver.sent.stream().filter(r -> r.hasAck()).forEach(r -> acked.add(r.getAck().getLockId()));
+        assertEquals(List.of("L1"), acked);
     }
 }

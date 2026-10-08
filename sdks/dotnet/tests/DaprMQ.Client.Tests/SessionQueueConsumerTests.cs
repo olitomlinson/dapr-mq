@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using DaprMQ.Client.Exceptions;
 using Moq;
@@ -238,6 +239,159 @@ public class SessionQueueConsumerTests
         // once more after the abandoned attempt proves the loop kept going.
         mockClient.Verify(c => c.ConsumeSessionAsync("q", null, 30, 1, It.IsAny<CancellationToken>(), It.IsAny<int>()),
             Times.AtLeast(2));
+    }
+
+    /// <summary>
+    /// Like the real stream: hands out the given deliveries, then waits for more; stopping (the
+    /// token) hands out nothing further and ends with cancellation.
+    /// </summary>
+    private static async IAsyncEnumerable<SessionDelivery> DeliverThenWait(
+        IEnumerable<SessionDelivery> items, [EnumeratorCancellation] CancellationToken ct)
+    {
+        foreach (var item in items)
+        {
+            ct.ThrowIfCancellationRequested();
+            yield return item;
+        }
+        await Task.Delay(Timeout.Infinite, ct);
+    }
+
+    private static Mock<IDaprMQClient> ClientStreaming(params SessionDelivery[] items)
+    {
+        var mockClient = new Mock<IDaprMQClient>();
+        mockClient
+            .Setup(c => c.ConsumeSessionAsync("q", null, 30, It.IsAny<int>(), It.IsAny<CancellationToken>(), It.IsAny<int>()))
+            .Returns((string _, string? _, int _, int _, CancellationToken ct, int _) => DeliverThenWait(items, ct));
+        return mockClient;
+    }
+
+    [Fact]
+    public async Task StopAsync_DuringAHandler_LetsItFinishAndAck_BeforeClosingTheStream()
+    {
+        var recording = new RecordingDelivery("s1", "L1");
+        var entered = new TaskCompletionSource();
+        var streamClosed = false; // stopped by its token, or by the consumer leaving the loop
+        async IAsyncEnumerable<SessionDelivery> Stream([EnumeratorCancellation] CancellationToken ct = default)
+        {
+            try
+            {
+                await foreach (var d in DeliverThenWait([recording.Delivery], ct))
+                {
+                    yield return d;
+                }
+            }
+            finally
+            {
+                streamClosed = true;
+            }
+        }
+        var mockClient = new Mock<IDaprMQClient>();
+        mockClient
+            .Setup(c => c.ConsumeSessionAsync("q", null, 30, 1, It.IsAny<CancellationToken>(), It.IsAny<int>()))
+            .Returns((string _, string? _, int _, int _, CancellationToken ct, int _) => Stream(ct));
+        bool handlerCancelled = false, streamClosedUnderHandler = false;
+
+        var consumer = new SessionQueueConsumer(
+            mockClient.Object, "q", new SessionQueueConsumerOptions { MaxConcurrentSessions = 1 },
+            async (_, ct) =>
+            {
+                entered.TrySetResult();
+                await Task.Delay(200);
+                handlerCancelled = ct.IsCancellationRequested;
+                streamClosedUnderHandler = streamClosed;
+            });
+
+        await consumer.StartAsync();
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await consumer.StopAsync();
+
+        Assert.False(handlerCancelled);
+        Assert.False(streamClosedUnderHandler);
+        Assert.True(recording.Acked, "StopAsync returned before the in-flight message was acked");
+        Assert.True(streamClosed, "StopAsync returned before the stream closed");
+    }
+
+    [Fact]
+    public async Task StopAsync_PastTheDrainTimeout_CancelsTheHandler()
+    {
+        var recording = new RecordingDelivery("s1", "L1");
+        var entered = new TaskCompletionSource();
+        var handlerCancelled = false;
+        var consumer = new SessionQueueConsumer(
+            ClientStreaming(recording.Delivery).Object, "q",
+            new SessionQueueConsumerOptions { MaxConcurrentSessions = 1, DrainTimeout = TimeSpan.FromMilliseconds(100) },
+            async (_, ct) =>
+            {
+                entered.TrySetResult();
+                try
+                {
+                    await Task.Delay(Timeout.Infinite, ct);
+                }
+                finally
+                {
+                    handlerCancelled = ct.IsCancellationRequested;
+                }
+            });
+
+        await consumer.StartAsync();
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var sw = Stopwatch.StartNew();
+        await consumer.StopAsync();
+
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(2), $"StopAsync took {sw.Elapsed}");
+        Assert.True(handlerCancelled);
+        Assert.False(recording.Acked);
+        Assert.False(recording.DeadLettered);
+    }
+
+    [Fact]
+    public async Task StopAsync_WhileIdle_ClosesTheStreamPromptly()
+    {
+        var opened = new TaskCompletionSource<CancellationToken>();
+        var mockClient = new Mock<IDaprMQClient>();
+        mockClient
+            .Setup(c => c.ConsumeSessionAsync("q", null, 30, 1, It.IsAny<CancellationToken>(), It.IsAny<int>()))
+            .Returns((string _, string? _, int _, int _, CancellationToken ct, int _) =>
+            {
+                opened.TrySetResult(ct);
+                return DeliverThenWait([], ct);
+            });
+        var consumer = new SessionQueueConsumer(
+            mockClient.Object, "q", new SessionQueueConsumerOptions { MaxConcurrentSessions = 1 }, (_, _) => Task.CompletedTask);
+
+        await consumer.StartAsync();
+        var streamToken = await opened.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var sw = Stopwatch.StartNew();
+        await consumer.StopAsync();
+
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(1), $"StopAsync took {sw.Elapsed}");
+        Assert.True(streamToken.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task StopAsync_DuringAHandler_DoesNotStartAPrefetchedMessage()
+    {
+        var first = new RecordingDelivery("s1", "L1");
+        var second = new RecordingDelivery("s1", "L2");
+        var entered = new TaskCompletionSource();
+        var handled = new List<string>();
+        var consumer = new SessionQueueConsumer(
+            ClientStreaming(first.Delivery, second.Delivery).Object, "q",
+            new SessionQueueConsumerOptions { MaxConcurrentSessions = 1, PrefetchCount = 2 },
+            async (ctx, _) =>
+            {
+                handled.Add(ctx.LockId);
+                entered.TrySetResult();
+                await Task.Delay(100);
+            });
+
+        await consumer.StartAsync();
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await consumer.StopAsync();
+
+        Assert.Equal(["L1"], handled);
+        Assert.True(first.Acked);
+        Assert.False(second.Acked);
     }
 
     [Fact]

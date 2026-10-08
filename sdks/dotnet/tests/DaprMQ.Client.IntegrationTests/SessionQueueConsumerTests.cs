@@ -506,16 +506,16 @@ public class SessionQueueConsumerTests(DaprTestFixture fixture) : IntegrationTes
 
         var handlerEntered = new TaskCompletionSource();
         var handlerCompleted = false;
+        var handlerCancelled = false;
 
         await using var consumer = new SessionQueueConsumer(
             CreateClient(), queueId, Options(drainTimeout: TimeSpan.FromSeconds(30)),
-            async (_, _) =>
+            async (_, ct) =>
             {
                 handlerEntered.TrySetResult();
-                // Deliberately not observing the cancellation token: StopAsync cancels it
-                // immediately, and what's being asserted is that Stop still *waits* for work
-                // already in flight rather than abandoning it.
-                await Task.Delay(TimeSpan.FromSeconds(2));
+                // StopAsync lands while this runs; the token is cancelled only past DrainTimeout.
+                await Task.Delay(TimeSpan.FromSeconds(2), ct);
+                handlerCancelled = ct.IsCancellationRequested;
                 handlerCompleted = true;
             });
 
@@ -527,12 +527,15 @@ public class SessionQueueConsumerTests(DaprTestFixture fixture) : IntegrationTes
         stopWatch.Stop();
 
         Assert.True(handlerCompleted, "StopAsync returned before the in-flight handler finished");
+        Assert.False(handlerCancelled);
         Assert.True(stopWatch.Elapsed < TimeSpan.FromSeconds(30), $"StopAsync took {stopWatch.Elapsed}, past DrainTimeout");
 
-        // Closing the streams is what releases the sessions, so the session is claimable at once.
+        // Closing the streams is what releases the sessions, so the session is claimable at once,
+        // and the handler's ack was applied before that.
         var reclaimed = await CreateClient().AcceptSessionAsync(queueId, sessionId, leaseSeconds: 60);
         Assert.NotNull(reclaimed);
         Assert.Equal(sessionId, reclaimed!.SessionId);
+        Assert.Empty(await DrainAsync(CreateClient(), SessionQueueId(queueId, sessionId), leaseId: reclaimed.LeaseId));
     }
 
     [Fact]

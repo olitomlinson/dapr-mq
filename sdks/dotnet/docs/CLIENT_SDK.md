@@ -119,8 +119,10 @@ await using var consumer = new SessionQueueConsumer(client, "my-queue", options,
 
 await consumer.StartAsync();
 // ... run your application ...
-await consumer.StopAsync(); // stops claiming, drains in-flight handlers, closes streams
+await consumer.StopAsync(); // stops claiming, lets in-flight handlers settle, closes streams
 ```
+
+`StopAsync` stops claiming sessions and closes idle streams at once. A handler that is running finishes and its message is settled (acked, or per `OnHandlerException`) before its stream closes; prefetched messages not yet handled return with their session. The handler's token is cancelled only if handlers are still running after `DrainTimeout` (default 30 s). `StopAsync` returns once every stream has closed, so the sessions are released by then. Cancelling the token passed to `StartAsync` stops the consumer the same way. Closing a `ConsumeSessionAsync` stream (cancelling its token, or leaving the `await foreach`) half-closes it: settlements already sent are applied before the session is released, and the call is cancelled only if the server hasn't ended it within 5 s.
 
 `OnHandlerException` is one of `DeadLetterMessage` (default), `NackMessage` (return the item to the front of the session for redelivery - counts toward the server's max delivery count, past which it is dead-lettered), `AbandonSession`, or `Both`. Session ordering holds only at the default prefetch of 1: with a larger prefetch, items already delivered are handled before a nacked item comes back.
 

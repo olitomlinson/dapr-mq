@@ -200,6 +200,122 @@ describe("SessionQueueConsumer", () => {
     expect(consumeSession.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
+  /**
+   * Hands out `items` on each stream, then waits; like the real stream, it hands out nothing
+   * further once its signal aborts, then ends. Records how each stream was closed.
+   */
+  function streamingClient(...items: SessionDelivery[]) {
+    const signals: AbortSignal[] = [];
+    const closed: boolean[] = [];
+    const client: SessionCapableClient = {
+      consumeSession: (_queueId, { signal }) => {
+        signals.push(signal!);
+        const index = closed.push(false) - 1;
+        return (async function* () {
+          try {
+            for (const item of items) {
+              if (signal!.aborted) return;
+              yield item;
+            }
+            if (!signal!.aborted) {
+              await new Promise((resolve) => signal!.addEventListener("abort", resolve, { once: true }));
+            }
+          } finally {
+            closed[index] = true;
+          }
+        })();
+      },
+    };
+    return { client, signals, closed };
+  }
+
+  it("stop() during a handler lets it finish and ack before closing the stream", async () => {
+    const { delivery, acked } = makeDelivery("s1", "L1");
+    const { client, signals, closed } = streamingClient(delivery);
+    let entered!: () => void;
+    const enteredPromise = new Promise<void>((resolve) => (entered = resolve));
+    let handlerAborted: boolean | undefined;
+    let streamClosedUnderHandler: boolean | undefined;
+
+    const consumer = new SessionQueueConsumer(client, "q", { maxConcurrentSessions: 1 }, async (_ctx, signal) => {
+      entered();
+      await new Promise((r) => setTimeout(r, 200));
+      handlerAborted = signal.aborted;
+      streamClosedUnderHandler = closed[0] || signals[0].aborted;
+    });
+
+    consumer.start();
+    await enteredPromise;
+    await consumer.stop();
+
+    expect(handlerAborted).toBe(false);
+    expect(streamClosedUnderHandler).toBe(false);
+    expect(acked()).toBe(true);
+    expect(closed[0]).toBe(true);
+  });
+
+  it("stop() past drainTimeoutMs aborts the handler's signal", async () => {
+    const { delivery, acked, deadLettered } = makeDelivery("s1", "L1");
+    const { client } = streamingClient(delivery);
+    let entered!: () => void;
+    const enteredPromise = new Promise<void>((resolve) => (entered = resolve));
+    let handlerAborted = false;
+
+    const consumer = new SessionQueueConsumer(client, "q", { maxConcurrentSessions: 1, drainTimeoutMs: 100 }, async (_ctx, signal) => {
+      entered();
+      await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+      handlerAborted = true;
+      throw new Error("aborted");
+    });
+
+    consumer.start();
+    await enteredPromise;
+    const started = Date.now();
+    await consumer.stop();
+
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(handlerAborted).toBe(true);
+    expect(acked()).toBe(false);
+    expect(deadLettered()).toBe(false);
+  });
+
+  it("stop() while idle closes the stream promptly", async () => {
+    const { client, signals, closed } = streamingClient();
+    const consumer = new SessionQueueConsumer(client, "q", { maxConcurrentSessions: 1 }, async () => {});
+
+    consumer.start();
+    await waitUntil(() => signals.length === 1, 2000);
+    const started = Date.now();
+    await consumer.stop();
+
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(signals[0].aborted).toBe(true);
+    expect(closed[0]).toBe(true);
+  });
+
+  it("stop() during a handler does not start a prefetched message", async () => {
+    const first = makeDelivery("s1", "L1");
+    const second = makeDelivery("s1", "L2");
+    const { client } = streamingClient(first.delivery, second.delivery);
+    let entered!: () => void;
+    const enteredPromise = new Promise<void>((resolve) => (entered = resolve));
+    const handled: string[] = [];
+
+    const consumer = new SessionQueueConsumer(client, "q", { maxConcurrentSessions: 1, prefetchCount: 2 }, async (ctx) => {
+      handled.push(ctx.lockId);
+      entered();
+      await new Promise((r) => setTimeout(r, 100));
+    });
+
+    consumer.start();
+    await enteredPromise;
+    await consumer.stop();
+
+    expect(handled).toEqual(["L1"]);
+    expect(first.acked()).toBe(true);
+    expect(second.acked()).toBe(false);
+  });
+
   it("stop() drains gracefully without throwing", async () => {
     const client: SessionCapableClient = {
       consumeSession: () => throwingSequence(new NoSessionsAvailableError("none")),

@@ -53,7 +53,7 @@
 
 **Priority:** 0=fast lane, 1+=normal. Lower first.
 
-**Locks:** A locked item moves out of the queue into `{lockId}-lock` (`LockCount` tracks them). Enables DLQ routing (`{id}-deadletter`), lock extension, FIFO preservation. Default mode blocks further locked dequeues (423) while `LockCount > 0`; `AllowCompetingConsumers` lets each caller hold its own locks (all 4 SDKs expose it). `MaxConcurrency` caps total in-flight locks - set only via HTTP sink config, not a public dequeue parameter.
+**Locks:** A locked item moves out of the queue into `{lockId}-lock` (`LockCount` tracks them). Enables DLQ routing (`{id}-deadletter`), lock extension, FIFO preservation. Default mode blocks further locked dequeues (423) while `LockCount > 0`; `AllowCompetingConsumers` lets each caller hold its own locks (all 5 SDKs expose it). `MaxConcurrency` caps total in-flight locks - set only via HTTP sink config, not a public dequeue parameter.
 An expired lock's item returns to the position it was taken from, not the tail: every item carries a monotonic
 `Sequence` stamped at enqueue, and the expiry sweep merges reclaimed items back into the head segment by it.
 

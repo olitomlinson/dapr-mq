@@ -278,6 +278,83 @@ public class DaprMQClientConsumeSessionTests
             "The SDK cancelled the call before the server finished, so acks the server hadn't read yet are lost");
     }
 
+    [Fact]
+    public async Task ConsumeSessionAsync_ServerNeverEndsAfterHalfClose_CancelsTheCallOnceTheDrainRunsOut()
+    {
+        var requests = new HalfCloseAwareWriter();
+        var responses = new FakeAsyncStreamReader<ConsumeSessionResponse>(); // never completed
+        var cancelled = false;
+        var call = new AsyncDuplexStreamingCall<ConsumeSessionRequest, ConsumeSessionResponse>(
+            requests, responses, Task.FromResult(new Metadata()), () => Status.DefaultSuccess, () => new Metadata(),
+            () => cancelled = true);
+        var client = ClientFor(call);
+        responses.Add(new ConsumeSessionResponse { Delivered = new SessionDelivered { LockId = "L1", ItemJson = "{}" } });
+
+        var original = DaprMQClient.SessionDrainTimeout;
+        DaprMQClient.SessionDrainTimeout = TimeSpan.FromMilliseconds(200);
+        try
+        {
+            var consuming = Task.Run(async () =>
+            {
+                await foreach (var _ in client.ConsumeSessionAsync("q", "s1", 30, 1))
+                {
+                    break;
+                }
+            });
+
+            await consuming.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            DaprMQClient.SessionDrainTimeout = original;
+        }
+
+        Assert.True(requests.HalfClosed.IsCompleted, "the stream must half-close first");
+        Assert.True(cancelled, "the call must be cancelled once the drain runs out");
+    }
+
+    [Fact]
+    public async Task ConsumeSessionAsync_DeliveryArrivingAfterTheHalfClose_IsNotHandedOut()
+    {
+        var requests = new HalfCloseAwareWriter();
+        var responses = new FakeAsyncStreamReader<ConsumeSessionResponse>();
+        var call = new AsyncDuplexStreamingCall<ConsumeSessionRequest, ConsumeSessionResponse>(
+            requests, responses, Task.FromResult(new Metadata()), () => Status.DefaultSuccess, () => new Metadata(), () => { });
+        var client = ClientFor(call);
+        responses.Add(new ConsumeSessionResponse { Delivered = new SessionDelivered { LockId = "L1", ItemJson = "{}" } });
+        _ = requests.HalfClosed.ContinueWith(_ =>
+        {
+            responses.Add(new ConsumeSessionResponse { Delivered = new SessionDelivered { LockId = "L2", ItemJson = "{}" } });
+            responses.Complete();
+        });
+        using var stop = new CancellationTokenSource();
+        var seen = new List<string>();
+
+        var consuming = Task.Run(async () =>
+        {
+            await foreach (var delivery in client.ConsumeSessionAsync("q", "s1", 30, 1, stop.Token))
+            {
+                seen.Add(delivery.LockId);
+                stop.Cancel();
+            }
+        });
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => consuming.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal(["L1"], seen);
+    }
+
+    private static DaprMQClient ClientFor(AsyncDuplexStreamingCall<ConsumeSessionRequest, ConsumeSessionResponse> call)
+    {
+        var mockInvoker = new Mock<CallInvoker>();
+        mockInvoker
+            .Setup(i => i.AsyncDuplexStreamingCall(
+                It.IsAny<Method<ConsumeSessionRequest, ConsumeSessionResponse>>(),
+                It.IsAny<string>(),
+                It.IsAny<CallOptions>()))
+            .Returns(call);
+        return new DaprMQClient(new HttpClient(), new global::DaprMQ.ApiServer.Grpc.DaprMQ.DaprMQClient(mockInvoker.Object));
+    }
+
     private sealed class HalfCloseAwareWriter : IClientStreamWriter<ConsumeSessionRequest>
     {
         private readonly TaskCompletionSource _halfClosed = new(TaskCreationOptions.RunContinuationsAsynchronously);

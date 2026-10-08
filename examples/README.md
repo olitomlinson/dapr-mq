@@ -120,7 +120,8 @@ kubectl get deploy -n <namespace> daprmq-examples-dotnet-worker -w
 ```
 
 Workers scale out from 0, drain the queue in parallel, and scale back to 0 after `autoscale.cooldownPeriod`.
-`../k8s-deploy-and-test.sh --keda` automates all of this. Only dotnet implements worker mode so far.
+`../k8s-deploy-and-test.sh --keda` automates all of this. Only dotnet implements worker mode so far. To scale your own
+consumers, see [`keda/README.md`](keda/README.md).
 
 ## Notes
 

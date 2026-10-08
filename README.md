@@ -154,7 +154,7 @@ daprMQ takes a different approach:
 - [x] **Pub Sub**: When publishing to a single Topic, dapr-mq can fan-out to N other independent Subscriber Queues. 
 - [x] **Message Deduplication**: Messages with a non-unique Idempotency Key will be deduplicated within a time-window since first-occurrence.
 - [x] **Sessions**: Claim exclusive, leased ownership of an ordered sub-group (session) within a queue, modeled on Azure Service Bus sessions — different sessions on the same queue can be consumed in parallel while each preserves strict FIFO order internally.
-- [x] **Language SDKs (.NET, TypeScript, Python, Java)**: `sdks/dotnet/`, `sdks/typescript/`, `sdks/python/`, `sdks/java/` — each a managed client with `SessionQueueConsumer`, a multi-session gRPC streaming consume loop that buffers messages and relays them to your handler push-based, so you don't hand-roll session leasing/heartbeating yourself. See [docs/CLIENT_SDK.md](docs/CLIENT_SDK.md).
+- [x] **Language SDKs (.NET, TypeScript, Python, Java, Go)**: `sdks/dotnet/`, `sdks/typescript/`, `sdks/python/`, `sdks/java/`, `sdks/go/` — each a managed client with `SessionQueueConsumer`, a multi-session gRPC streaming consume loop that buffers messages and relays them to your handler push-based, so you don't hand-roll session leasing/heartbeating yourself. See [docs/CLIENT_SDK.md](docs/CLIENT_SDK.md).
 
 ### To-do
 
@@ -247,7 +247,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for optimization strategies.
 - **[Quick Start Guide](docs/QUICKSTART.md)** - Get running in minutes
 - **[API Reference](docs/API_REFERENCE.md)** - Complete method documentation
 - **[Architecture](docs/ARCHITECTURE.md)** - How it works under the hood
-- **[Client SDKs](docs/CLIENT_SDK.md)** - .NET, TypeScript, and Python clients (`sdks/`), incl. the managed `SessionQueueConsumer`
+- **[Client SDKs](docs/CLIENT_SDK.md)** - .NET, TypeScript, Python, Java and Go clients (`sdks/`), incl. the managed `SessionQueueConsumer`
 - **[Examples](examples/)** - Code samples and patterns
 
 ## Requirements
