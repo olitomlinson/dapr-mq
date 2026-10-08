@@ -378,6 +378,60 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         }
     }
 
+    public override async Task<AcknowledgeBatchResponse> AcknowledgeBatch(AcknowledgeBatchRequest request, ServerCallContext context)
+    {
+        try
+        {
+            _logger.LogDebug($"gRPC AcknowledgeBatch request for queue {request.QueueId}, {request.LockIds.Count} lock ids");
+
+            var result = await _queueActorInvoker.InvokeMethodAsync<ActorModels.AcknowledgeBatchRequest, ActorModels.AcknowledgeBatchResponse>(
+                new ActorId(request.QueueId),
+                ActorMethodNames.AcknowledgeBatch,
+                new ActorModels.AcknowledgeBatchRequest
+                {
+                    LockIds = request.LockIds.ToList(),
+                    LeaseId = request.HasLeaseId ? request.LeaseId : null
+                },
+                context.CancellationToken);
+
+            if (!result.Success)
+            {
+                var statusCode = result.ErrorCode switch
+                {
+                    "SESSION_LEASE_EXPIRED" => StatusCode.FailedPrecondition,
+                    "VALIDATION_ERROR" or "INVALID_LEASE_ID" => StatusCode.InvalidArgument,
+                    _ => StatusCode.Internal
+                };
+
+                throw new RpcException(new Status(statusCode, result.Message));
+            }
+
+            var response = new AcknowledgeBatchResponse
+            {
+                Success = result.Success,
+                Message = result.Message,
+                ItemsAcknowledged = result.ItemsAcknowledged,
+                ErrorCode = result.ErrorCode ?? ""
+            };
+            response.Results.Add(result.Results.Select(r => new AcknowledgeResult { LockId = r.LockId, Outcome = r.Outcome }));
+            return response;
+        }
+        catch (RpcException)
+        {
+            throw;
+        }
+        catch (ActorModels.ActorCallException ex)
+        {
+            _logger.LogWarning(ex, $"Error acknowledging batch in queue {request.QueueId}");
+            throw DeliveryFailures.ToRpcException(ex);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Error acknowledging batch in queue {request.QueueId}");
+            throw new RpcException(new Status(StatusCode.Internal, $"Internal error: {ex.Message}"));
+        }
+    }
+
     public override async Task<NackResponse> Nack(NackRequest request, ServerCallContext context)
     {
         try

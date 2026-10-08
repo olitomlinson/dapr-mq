@@ -178,6 +178,39 @@ public class DaprMQClientTests
         await Assert.ThrowsAsync<LockNotFoundException>(() => client.DeadLetterAsync("q", "L1"));
     }
 
+    // ---- AcknowledgeBatch ----
+
+    [Fact]
+    public async Task AcknowledgeBatchAsync_Success_ReturnsAnOutcomePerLock()
+    {
+        var handler = new FakeHttpMessageHandler(HttpStatusCode.OK,
+            """{"success":true,"message":"ok","itemsAcknowledged":1,"results":[{"lockId":"L1","outcome":"ACKNOWLEDGED"},{"lockId":"L2","outcome":"LOCK_EXPIRED"}]}""");
+        var client = CreateClient(handler);
+
+        var result = await client.AcknowledgeBatchAsync("q", ["L1", "L2"], leaseId: "lease-1");
+
+        Assert.Equal(1, result.ItemsAcknowledged);
+        Assert.Equal([new LockAcknowledgeResult("L1", AcknowledgeOutcomes.Acknowledged), new LockAcknowledgeResult("L2", AcknowledgeOutcomes.LockExpired)], result.Results);
+        Assert.EndsWith("/queue/q/acknowledge-batch", handler.LastRequest!.RequestUri!.AbsolutePath);
+        Assert.Equal("lease-1", handler.LastRequest.Headers.GetValues("lease-id").Single());
+        Assert.Equal("""{"lockIds":["L1","L2"]}""", handler.LastRequestBody);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Gone, "SESSION_LEASE_EXPIRED", typeof(SessionLeaseExpiredException))]
+    [InlineData(HttpStatusCode.BadRequest, "INVALID_LEASE_ID", typeof(InvalidLeaseIdException))]
+    [InlineData(HttpStatusCode.BadRequest, "VALIDATION_ERROR", typeof(ValidationException))]
+    public async Task AcknowledgeBatchAsync_WholeCallError_ThrowsTypedException(HttpStatusCode status, string errorCode, Type expected)
+    {
+        var handler = new FakeHttpMessageHandler(status,
+            $$"""{"success":false,"message":"nope","itemsAcknowledged":0,"results":[],"errorCode":"{{errorCode}}"}""");
+        var client = CreateClient(handler);
+
+        var ex = await Assert.ThrowsAnyAsync<DaprMQException>(() => client.AcknowledgeBatchAsync("q", ["L1"]));
+
+        Assert.IsType(expected, ex);
+    }
+
     // ---- Nack ----
 
     [Fact]

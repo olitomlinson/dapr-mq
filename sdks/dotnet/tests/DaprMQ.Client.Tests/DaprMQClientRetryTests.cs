@@ -92,6 +92,20 @@ public class DaprMQClientRetryTests
     }
 
     [Fact]
+    public async Task AcknowledgeBatch_Unknown_IsRetried_BecauseResendingIsHarmless()
+    {
+        // The retry reports LOCK_NOT_FOUND for locks the first attempt settled: after a retry that
+        // outcome means "already acknowledged", and the SDK passes it through unchanged.
+        var (handler, requests) = Sequence(Unknown, () => Json(HttpStatusCode.OK,
+            """{"success":true,"message":"ok","itemsAcknowledged":0,"results":[{"lockId":"L1","outcome":"LOCK_NOT_FOUND"}]}"""));
+
+        var result = await CreateClient(handler).AcknowledgeBatchAsync("q", ["L1"]);
+
+        Assert.Equal(2, requests.Count);
+        Assert.Equal(AcknowledgeOutcomes.LockNotFound, Assert.Single(result.Results).Outcome);
+    }
+
+    [Fact]
     public async Task EveryAttempt_SendsTheRemainingRetryTime_NotACallDeadline()
     {
         var (handler, requests) = Sequence(() => Json(HttpStatusCode.OK, Ok));

@@ -15,6 +15,10 @@ internal record LockedResponseWire(string? Message, double? LockExpiresAt);
 
 internal record AcknowledgeResponseWire(bool Success, string Message, int ItemsAcknowledged = 0, string? ErrorCode = null);
 
+internal record LockAcknowledgeResultWire(string LockId, string Outcome);
+
+internal record AcknowledgeBatchResponseWire(bool Success, string Message, int ItemsAcknowledged, List<LockAcknowledgeResultWire>? Results = null, string? ErrorCode = null);
+
 internal record ExtendLockResponseWire(long NewExpiresAt, string LockId);
 
 internal record DeadLetterResponseWire(bool Success, string Message, string? ErrorCode = null, string? DlqId = null);

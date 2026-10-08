@@ -9,8 +9,11 @@ import com.daprmq.client.errors.SessionLockedException;
 import com.daprmq.client.errors.SessionNotFoundException;
 import com.daprmq.client.errors.ValidationException;
 import com.daprmq.client.types.DequeueLockedResult;
+import com.daprmq.client.types.AcknowledgeBatchResult;
+import com.daprmq.client.types.AcknowledgeOutcome;
 import com.daprmq.client.types.EnqueueItem;
 import com.daprmq.client.types.EnqueueResult;
+import com.daprmq.client.types.LockAcknowledgeResult;
 import com.daprmq.client.types.NackResult;
 import com.daprmq.client.types.SessionLease;
 import org.junit.jupiter.api.AfterEach;
@@ -145,6 +148,33 @@ class DaprMQClientTest {
         server.respondWith(410, "{\"success\":false,\"message\":\"expired\",\"errorCode\":\"SESSION_LEASE_EXPIRED\"}");
 
         assertThrows(SessionLeaseExpiredException.class, () -> client.deadLetter("q", "L1"));
+    }
+
+    @Test
+    void acknowledgeBatchReturnsAnOutcomePerLockAndSendsTheLeaseHeader() {
+        server.respondWith(200, "{\"success\":true,\"message\":\"ok\",\"itemsAcknowledged\":1,\"results\":["
+                + "{\"lockId\":\"L1\",\"outcome\":\"ACKNOWLEDGED\"},{\"lockId\":\"L2\",\"outcome\":\"LOCK_EXPIRED\"}]}");
+
+        AcknowledgeBatchResult result = client.acknowledgeBatch("q", List.of("L1", "L2"), "lease-1");
+
+        assertEquals(new AcknowledgeBatchResult(1, List.of(
+                new LockAcknowledgeResult("L1", AcknowledgeOutcome.ACKNOWLEDGED),
+                new LockAcknowledgeResult("L2", AcknowledgeOutcome.LOCK_EXPIRED))), result);
+        assertEquals("/queue/q/acknowledge-batch", server.lastRequest().path());
+        assertEquals("lease-1", server.lastRequest().headers().get("lease-id"));
+        assertEquals("{\"lockIds\":[\"L1\",\"L2\"]}", server.lastRequest().body());
+    }
+
+    @Test
+    void acknowledgeBatchMapsWholeCallErrors() {
+        server.respondWith(410, "{\"success\":false,\"message\":\"gone\",\"errorCode\":\"SESSION_LEASE_EXPIRED\"}");
+        assertThrows(SessionLeaseExpiredException.class, () -> client.acknowledgeBatch("q", List.of("L1")));
+
+        server.respondWith(400, "{\"success\":false,\"message\":\"bad\",\"errorCode\":\"INVALID_LEASE_ID\"}");
+        assertThrows(InvalidLeaseIdException.class, () -> client.acknowledgeBatch("q", List.of("L1")));
+
+        server.respondWith(400, "{\"success\":false,\"message\":\"bad\",\"errorCode\":\"VALIDATION_ERROR\"}");
+        assertThrows(ValidationException.class, () -> client.acknowledgeBatch("q", List.of("L1")));
     }
 
     @Test

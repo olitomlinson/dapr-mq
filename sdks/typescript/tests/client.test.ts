@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as grpc from "@grpc/grpc-js";
 import { DaprMQClient } from "../src/client.js";
+import { AcknowledgeOutcome } from "../src/types.js";
 import {
   InvalidLeaseIdError,
   LockExpiredError,
@@ -152,6 +153,45 @@ describe("DaprMQClient.deadLetter", () => {
     const client = createClient(fake.fetch);
 
     await expect(client.deadLetter("q", "L1")).rejects.toBeInstanceOf(LockNotFoundError);
+  });
+});
+
+describe("DaprMQClient.acknowledgeBatch", () => {
+  it("returns an outcome per lock and sends the lease header", async () => {
+    const fake = fakeFetch(200, {
+      success: true,
+      message: "ok",
+      itemsAcknowledged: 1,
+      results: [
+        { lockId: "L1", outcome: "ACKNOWLEDGED" },
+        { lockId: "L2", outcome: "LOCK_EXPIRED" },
+      ],
+    });
+    const client = createClient(fake.fetch);
+
+    const result = await client.acknowledgeBatch("q", ["L1", "L2"], { leaseId: "lease-1" });
+
+    expect(result).toEqual({
+      itemsAcknowledged: 1,
+      results: [
+        { lockId: "L1", outcome: AcknowledgeOutcome.Acknowledged },
+        { lockId: "L2", outcome: AcknowledgeOutcome.LockExpired },
+      ],
+    });
+    expect(fake.lastRequest!.url).toBe("http://localhost:5000/queue/q/acknowledge-batch");
+    expect(fake.lastRequest!.headers["lease-id"]).toBe("lease-1");
+    expect(fake.lastRequest!.body).toBe('{"lockIds":["L1","L2"]}');
+  });
+
+  it.each([
+    [410, "SESSION_LEASE_EXPIRED", SessionLeaseExpiredError],
+    [400, "INVALID_LEASE_ID", InvalidLeaseIdError],
+    [400, "VALIDATION_ERROR", ValidationError],
+  ])("maps a whole-call %i %s to a typed exception", async (status, errorCode, expected) => {
+    const fake = fakeFetch(status, { success: false, message: "nope", itemsAcknowledged: 0, results: [], errorCode });
+    const client = createClient(fake.fetch);
+
+    await expect(client.acknowledgeBatch("q", ["L1"])).rejects.toBeInstanceOf(expected);
   });
 });
 

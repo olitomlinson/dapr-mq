@@ -45,6 +45,14 @@ export interface DeadLetterResponseWire {
   dlqId?: string;
 }
 
+export interface AcknowledgeBatchResponseWire {
+  success: boolean;
+  message: string;
+  itemsAcknowledged: number;
+  results?: { lockId: string; outcome: string }[];
+  errorCode?: string;
+}
+
 export interface NackResponseWire {
   success: boolean;
   message: string;

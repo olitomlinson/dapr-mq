@@ -53,6 +53,19 @@ class DaprMQClientRetryTest {
     }
 
     @Test
+    void acknowledgeBatchUnknownIsRetriedBecauseResendingIsHarmless() {
+        // The retry reports LOCK_NOT_FOUND for locks the first attempt settled: after a retry that
+        // outcome means "already acknowledged", and the SDK passes it through unchanged.
+        try (ScriptedHttpServer server = new ScriptedHttpServer(UNKNOWN,
+                ok("{\"success\":true,\"itemsAcknowledged\":0,\"results\":[{\"lockId\":\"L1\",\"outcome\":\"LOCK_NOT_FOUND\"}]}"))) {
+            var result = client(server.baseUrl(), FAST).acknowledgeBatch("q", List.of("L1"));
+
+            assertEquals(2, server.requests().size());
+            assertEquals("LOCK_NOT_FOUND", result.results().get(0).outcome());
+        }
+    }
+
+    @Test
     void nackNotDeliveredIsRetriedUntilItSucceeds() {
         try (ScriptedHttpServer server = new ScriptedHttpServer(NOT_DELIVERED, ok("{\"success\":true,\"deadLettered\":false,\"deliveryCount\":1}"))) {
             NackResult result = client(server.baseUrl(), FAST).nack("q", "L1");
@@ -95,9 +108,11 @@ class DaprMQClientRetryTest {
 
     @Test
     void notDeliveredUntilTimeRunsOutThrowsUnavailable() {
+        // The window must outlast a cold first request (class loading, new connection) on a busy CI
+        // runner, or only one attempt fits and the "retried" assertion below flakes.
         try (ScriptedHttpServer server = new ScriptedHttpServer(NOT_DELIVERED)) {
             DaprMQUnavailableException e = assertThrows(DaprMQUnavailableException.class,
-                    () -> client(server.baseUrl(), FAST.withTimeout(Duration.ofMillis(200))).acknowledge("q", "L1"));
+                    () -> client(server.baseUrl(), FAST.withTimeout(Duration.ofSeconds(2))).acknowledge("q", "L1"));
 
             assertTrue(server.requests().size() > 1);
             assertEquals("UNAVAILABLE", e.getErrorCode());

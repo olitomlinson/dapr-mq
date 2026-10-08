@@ -49,7 +49,7 @@
 
 ## Domain Knowledge (Reference Only)
 
-**Queue ops:** Enqueue (FIFO), Dequeue, DequeueLocked (creates lock), Acknowledge (removes lock), Nack (returns item to its original position, +1 DeliveryCount, DLQ past max), ExtendLock
+**Queue ops:** Enqueue (FIFO), Dequeue, DequeueLocked (creates lock), Acknowledge (removes lock), AcknowledgeBatch (up to 1000 locks, per-lock outcomes, always 200 when valid), Nack (returns item to its original position, +1 DeliveryCount, DLQ past max), ExtendLock
 
 **Priority:** 0=fast lane, 1+=normal. Lower first.
 

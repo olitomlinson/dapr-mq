@@ -43,6 +43,12 @@ public interface IQueueActor : IActor
     Task<AcknowledgeResponse> Acknowledge(AcknowledgeRequest request);
 
     /// <summary>
+    /// Acknowledge up to 1,000 locks in one actor turn and one state transaction, with an outcome
+    /// per lock. One lock failing never fails the rest.
+    /// </summary>
+    Task<AcknowledgeBatchResponse> AcknowledgeBatch(AcknowledgeBatchRequest request);
+
+    /// <summary>
     /// Return a locked item to its original position in the queue and void the lock. Counts as a
     /// delivery attempt: past LockConfig.MaxDeliveryCount the item is dead-lettered instead.
     /// </summary>

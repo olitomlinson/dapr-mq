@@ -106,6 +106,38 @@ public class DeliveryFailureMappingTests
     }
 
     [Fact]
+    public async Task Rest_AcknowledgeBatch_Unknown_Returns504DeliveryUnknown()
+    {
+        var invoker = new Mock<IQueueActorInvoker>();
+        invoker.Setup(i => i.InvokeMethodAsync<ActorModels.AcknowledgeBatchRequest, ActorModels.AcknowledgeBatchResponse>(
+                It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<ActorModels.AcknowledgeBatchRequest>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(Unknown());
+
+        var result = await CreateController(invoker.Object).AcknowledgeBatch("q", new ApiAcknowledgeBatchRequest(["L1"]));
+
+        var objectResult = Assert.IsType<DeliveryFailureResult>(result);
+        Assert.Equal(504, objectResult.StatusCode);
+        Assert.Equal("DELIVERY_UNKNOWN", Assert.IsType<ApiErrorResponse>(objectResult.Value).ErrorCode);
+    }
+
+    [Fact]
+    public async Task Grpc_AcknowledgeBatch_NotDelivered_ReturnsUnavailableWithMarker()
+    {
+        var invoker = new Mock<IQueueActorInvoker>();
+        invoker.Setup(i => i.InvokeMethodAsync<ActorModels.AcknowledgeBatchRequest, ActorModels.AcknowledgeBatchResponse>(
+                It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<ActorModels.AcknowledgeBatchRequest>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(NotDelivered());
+        var service = new DaprMQGrpcService(new Mock<ILogger<DaprMQGrpcService>>().Object, invoker.Object, new Mock<ISessionCoordinatorActorInvoker>().Object);
+
+        var request = new ApiServer.Grpc.AcknowledgeBatchRequest { QueueId = "q" };
+        request.LockIds.Add("L1");
+        var ex = await Assert.ThrowsAsync<RpcException>(() => service.AcknowledgeBatch(request, new Mock<ServerCallContext>().Object));
+
+        Assert.Equal(StatusCode.Unavailable, ex.StatusCode);
+        Assert.Equal("not-delivered", ex.Trailers.GetValue("daprmq-delivery"));
+    }
+
+    [Fact]
     public async Task Rest_NonDeliveryFailure_StillReturns500()
     {
         var result = await CreateController(EnqueueThrows(new InvalidOperationException("bug")).Object).Enqueue("q", OneItem());

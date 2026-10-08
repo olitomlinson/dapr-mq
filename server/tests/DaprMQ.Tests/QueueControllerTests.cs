@@ -855,6 +855,93 @@ public class QueueControllerTests
         Assert.IsType<BadRequestObjectResult>(result);
     }
 
+    // ===== AcknowledgeBatch Controller Tests =====
+
+    private static Mock<IQueueActorInvoker> MockAcknowledgeBatch(AcknowledgeBatchResponse response)
+    {
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        mockInvoker.Setup(i => i.InvokeMethodAsync<AcknowledgeBatchRequest, AcknowledgeBatchResponse>(
+                It.IsAny<ActorId>(),
+                "AcknowledgeBatch",
+                It.IsAny<AcknowledgeBatchRequest>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(response);
+        return mockInvoker;
+    }
+
+    [Fact]
+    public async Task AcknowledgeBatch_ValidRequest_Returns200WithPerLockResults()
+    {
+        var mockInvoker = MockAcknowledgeBatch(new AcknowledgeBatchResponse
+        {
+            Success = true,
+            Message = "Acknowledged 1 of 2 locks",
+            ItemsAcknowledged = 1,
+            Results =
+            [
+                new AcknowledgeResult { LockId = "a", Outcome = "ACKNOWLEDGED" },
+                new AcknowledgeResult { LockId = "b", Outcome = "LOCK_EXPIRED" }
+            ]
+        });
+        var controller = CreateController(mockInvoker.Object);
+
+        var result = await controller.AcknowledgeBatch("test-queue", new ApiAcknowledgeBatchRequest(["a", "b"]), lease_id: "lease-1");
+
+        var response = Assert.IsType<ApiAcknowledgeBatchResponse>(Assert.IsType<OkObjectResult>(result).Value);
+        Assert.True(response.Success);
+        Assert.Equal(1, response.ItemsAcknowledged);
+        Assert.Equal([new ApiAcknowledgeResult("a", "ACKNOWLEDGED"), new ApiAcknowledgeResult("b", "LOCK_EXPIRED")], response.Results);
+        mockInvoker.Verify(i => i.InvokeMethodAsync<AcknowledgeBatchRequest, AcknowledgeBatchResponse>(
+            It.Is<ActorId>(id => id.GetId() == "test-queue"),
+            "AcknowledgeBatch",
+            It.Is<AcknowledgeBatchRequest>(r => r.LockIds.SequenceEqual(new[] { "a", "b" }) && r.LeaseId == "lease-1"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task AcknowledgeBatch_EveryLockFailed_StillReturns200()
+    {
+        var mockInvoker = MockAcknowledgeBatch(new AcknowledgeBatchResponse
+        {
+            Success = true,
+            Results = [new AcknowledgeResult { LockId = "a", Outcome = "LOCK_NOT_FOUND" }]
+        });
+        var controller = CreateController(mockInvoker.Object);
+
+        var result = await controller.AcknowledgeBatch("test-queue", new ApiAcknowledgeBatchRequest(["a"]));
+
+        Assert.IsType<OkObjectResult>(result);
+    }
+
+    [Theory]
+    [InlineData("SESSION_LEASE_EXPIRED", 410)]
+    [InlineData("INVALID_LEASE_ID", 400)]
+    [InlineData("VALIDATION_ERROR", 400)]
+    [InlineData("INTERNAL_ERROR", 500)]
+    public async Task AcknowledgeBatch_WholeCallError_MapsToHttpStatus(string errorCode, int expectedStatus)
+    {
+        var mockInvoker = MockAcknowledgeBatch(new AcknowledgeBatchResponse { Success = false, Message = "nope", ErrorCode = errorCode });
+        var controller = CreateController(mockInvoker.Object);
+
+        var result = await controller.AcknowledgeBatch("test-queue", new ApiAcknowledgeBatchRequest(["a"]));
+
+        var objectResult = Assert.IsAssignableFrom<ObjectResult>(result);
+        Assert.Equal(expectedStatus, objectResult.StatusCode);
+        Assert.Equal(errorCode, Assert.IsType<ApiAcknowledgeBatchResponse>(objectResult.Value).ErrorCode);
+    }
+
+    [Fact]
+    public async Task AcknowledgeBatch_MissingLockIds_Returns400WithoutCallingActor()
+    {
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        var controller = CreateController(mockInvoker.Object);
+
+        var result = await controller.AcknowledgeBatch("test-queue", new ApiAcknowledgeBatchRequest(null!));
+
+        Assert.IsType<BadRequestObjectResult>(result);
+        mockInvoker.VerifyNoOtherCalls();
+    }
+
     // ===== Nack Controller Tests =====
 
     private static Mock<IQueueActorInvoker> MockNack(NackResponse response)

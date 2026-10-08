@@ -1,6 +1,6 @@
 # Batch acknowledge
 
-**Status:** proposed, not started. Answers open question 9 of
+**Status:** implemented (server, REST, gRPC, all four SDKs, docs). Answers open question 9 of
 [readiness-and-retries.md](readiness-and-retries.md) (fan-in on one queue).
 
 ## Context
@@ -149,9 +149,11 @@ actor per batch. Out of scope for the first version (open question 2).
 ## Open questions
 
 1. **Retry reporting:** after an automatic retry, should the SDK rewrite `LOCK_NOT_FOUND` to
-   "settled", or keep the server's outcome and document what it means?
+   "settled", or keep the server's outcome and document what it means? *Decided:* keep the server's
+   outcome, and document that after a retry it can mean "already settled".
 2. **Dead-letter batch:** in this proposal, or a follow-on once batch acknowledge has shipped?
+   *Decided:* follow-on.
 3. **Batch ExtendLock:** worth adding for long-running batch consumers, with the same per-lock
-   semantics?
+   semantics? *Decided:* follow-on.
 4. **Partial-failure status code:** keep `200` when every lock failed (for example, all expired), or
-   return a distinct status so naive callers notice?
+   return a distinct status so naive callers notice? *Decided:* always `200` for a valid request.

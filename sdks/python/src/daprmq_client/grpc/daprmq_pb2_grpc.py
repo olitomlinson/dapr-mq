@@ -56,6 +56,11 @@ class DaprMQStub:
                 request_serializer=daprmq__pb2.AcknowledgeRequest.SerializeToString,
                 response_deserializer=daprmq__pb2.AcknowledgeResponse.FromString,
                 _registered_method=True)
+        self.AcknowledgeBatch = channel.unary_unary(
+                '/daprmq.DaprMQ/AcknowledgeBatch',
+                request_serializer=daprmq__pb2.AcknowledgeBatchRequest.SerializeToString,
+                response_deserializer=daprmq__pb2.AcknowledgeBatchResponse.FromString,
+                _registered_method=True)
         self.Nack = channel.unary_unary(
                 '/daprmq.DaprMQ/Nack',
                 request_serializer=daprmq__pb2.NackRequest.SerializeToString,
@@ -126,6 +131,15 @@ class DaprMQServicer:
     def Acknowledge(self, request, context):
         """Acknowledge and permanently remove a locked item from the queue.
         Requires valid lock_id from DequeueLocked.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AcknowledgeBatch(self, request, context):
+        """Acknowledge up to 1,000 locks in one call, with an outcome per lock. Succeeds whenever the
+        request is valid; read each result's outcome. Safe to re-send: locks an earlier attempt settled
+        come back LOCK_NOT_FOUND.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -214,6 +228,11 @@ def add_DaprMQServicer_to_server(servicer, server):
                     servicer.Acknowledge,
                     request_deserializer=daprmq__pb2.AcknowledgeRequest.FromString,
                     response_serializer=daprmq__pb2.AcknowledgeResponse.SerializeToString,
+            ),
+            'AcknowledgeBatch': grpc.unary_unary_rpc_method_handler(
+                    servicer.AcknowledgeBatch,
+                    request_deserializer=daprmq__pb2.AcknowledgeBatchRequest.FromString,
+                    response_serializer=daprmq__pb2.AcknowledgeBatchResponse.SerializeToString,
             ),
             'Nack': grpc.unary_unary_rpc_method_handler(
                     servicer.Nack,
@@ -361,6 +380,33 @@ class DaprMQ:
             '/daprmq.DaprMQ/Acknowledge',
             daprmq__pb2.AcknowledgeRequest.SerializeToString,
             daprmq__pb2.AcknowledgeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AcknowledgeBatch(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/daprmq.DaprMQ/AcknowledgeBatch',
+            daprmq__pb2.AcknowledgeBatchRequest.SerializeToString,
+            daprmq__pb2.AcknowledgeBatchResponse.FromString,
             options,
             channel_credentials,
             insecure,

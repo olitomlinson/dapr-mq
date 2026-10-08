@@ -35,7 +35,7 @@ DaprMQClient client = new DaprMQClient("http://localhost:8002", myManagedChannel
 client.close();
 ```
 
-`DaprMQClient` is REST-backed for every operation except `consumeSession`, which is the one method built on the `ConsumeSession` gRPC streaming RPC - everything else (`enqueue`, `dequeueLocked`, `acknowledge`, `extendLock`, `nack`, `deadLetter`, `acceptSession`, `renewSessionLease`, `releaseSession`) is a plain HTTP call under the hood.
+`DaprMQClient` is REST-backed for every operation except `consumeSession`, which is the one method built on the `ConsumeSession` gRPC streaming RPC - everything else (`enqueue`, `dequeueLocked`, `acknowledge`, `acknowledgeBatch`, `extendLock`, `nack`, `deadLetter`, `acceptSession`, `renewSessionLease`, `releaseSession`) is a plain HTTP call under the hood.
 
 `close()` only shuts down the gRPC channel if `create(...)` built it; a channel you constructed and passed in yourself is left alone. Every method blocks the calling thread (there's no async/`Future` variant) except `consumeSession`, which hands back a lazily-pulled `SessionStream`.
 
@@ -56,7 +56,7 @@ DaprMQClient client = DaprMQClient.create(httpBaseUrl, grpcTarget, RetryOptions.
 - **Certainly not performed** (the server reports it couldn't serve the call, or the connection was
   refused): retried until the timeout, then `DaprMQUnavailableException`. Always safe to repeat later.
 - **Outcome unknown** (the connection broke after sending, or no response arrived in time): an
-  `enqueue` whose items all have an `idempotencyKey` is retried; anything else throws
+  `enqueue` whose items all have an `idempotencyKey`, and `acknowledgeBatch`, are retried; anything else throws
   `DeliveryUnknownException` straight away. It carries `getOperation()`, `getQueueId()` and, for
   enqueue, `getIdempotencyKeys()`. What to do next:
   - **Enqueue without keys:** re-send and accept a possible duplicate.
@@ -131,6 +131,8 @@ consumer.stop(); // stops claiming, cancels blocked streams, drains in-flight ha
 ```
 
 `onHandlerException` is one of `DEAD_LETTER_MESSAGE` (default), `NACK_MESSAGE` (return the item to the front of the session for redelivery - counts toward the server's max delivery count, past which it is dead-lettered), `ABANDON_SESSION`, or `BOTH`. Session ordering holds only at the default prefetch of 1: with a larger prefetch, items already delivered are handled before a nacked item comes back.
+
+`acknowledgeBatch(queueId, lockIds[, leaseId])` settles up to 1,000 locks in one call (one actor turn, one state save), typically everything a bulk `dequeueLocked` with `count` returned. It returns `AcknowledgeBatchResult(itemsAcknowledged, results)` with one `LockAcknowledgeResult(lockId, outcome)` per lock in request order; `outcome` is one of the `AcknowledgeOutcome` constants (`ACKNOWLEDGED`, `LOCK_NOT_FOUND`, `LOCK_EXPIRED`, `INVALID_LOCK_ID`). A lock that can't be settled never fails the others; only a whole-call problem throws (`SessionLeaseExpiredException`, `InvalidLeaseIdException`, `ValidationException` for an empty list, more than 1,000 ids or duplicates). An unknown outcome is retried automatically, so after a retry `LOCK_NOT_FOUND` can mean the first attempt already settled that lock.
 
 `nack(queueId, lockId[, leaseId])` on the client (and `nack()` on a `SessionDelivery`) returns a locked item to its original position; it returns `NackResult(deadLettered, deliveryCount, dlqId)`.
 

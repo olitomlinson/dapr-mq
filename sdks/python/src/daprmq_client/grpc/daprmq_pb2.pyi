@@ -138,6 +138,38 @@ class AcknowledgeResponse(_message.Message):
     error_code: str
     def __init__(self, success: _Optional[bool] = ..., message: _Optional[str] = ..., items_acknowledged: _Optional[int] = ..., error_code: _Optional[str] = ...) -> None: ...
 
+class AcknowledgeBatchRequest(_message.Message):
+    __slots__ = ("queue_id", "lock_ids", "lease_id")
+    QUEUE_ID_FIELD_NUMBER: _ClassVar[int]
+    LOCK_IDS_FIELD_NUMBER: _ClassVar[int]
+    LEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    queue_id: str
+    lock_ids: _containers.RepeatedScalarFieldContainer[str]
+    lease_id: str
+    def __init__(self, queue_id: _Optional[str] = ..., lock_ids: _Optional[_Iterable[str]] = ..., lease_id: _Optional[str] = ...) -> None: ...
+
+class AcknowledgeResult(_message.Message):
+    __slots__ = ("lock_id", "outcome")
+    LOCK_ID_FIELD_NUMBER: _ClassVar[int]
+    OUTCOME_FIELD_NUMBER: _ClassVar[int]
+    lock_id: str
+    outcome: str
+    def __init__(self, lock_id: _Optional[str] = ..., outcome: _Optional[str] = ...) -> None: ...
+
+class AcknowledgeBatchResponse(_message.Message):
+    __slots__ = ("success", "message", "items_acknowledged", "error_code", "results")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    ITEMS_ACKNOWLEDGED_FIELD_NUMBER: _ClassVar[int]
+    ERROR_CODE_FIELD_NUMBER: _ClassVar[int]
+    RESULTS_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    message: str
+    items_acknowledged: int
+    error_code: str
+    results: _containers.RepeatedCompositeFieldContainer[AcknowledgeResult]
+    def __init__(self, success: _Optional[bool] = ..., message: _Optional[str] = ..., items_acknowledged: _Optional[int] = ..., error_code: _Optional[str] = ..., results: _Optional[_Iterable[_Union[AcknowledgeResult, _Mapping]]] = ...) -> None: ...
+
 class NackRequest(_message.Message):
     __slots__ = ("queue_id", "lock_id", "lease_id")
     QUEUE_ID_FIELD_NUMBER: _ClassVar[int]

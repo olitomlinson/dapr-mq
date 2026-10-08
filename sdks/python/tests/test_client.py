@@ -3,10 +3,13 @@ from __future__ import annotations
 import pytest
 
 from daprmq_client import (
+    AcknowledgeBatchResult,
+    AcknowledgeOutcome,
     DaprMQClient,
     EnqueueItem,
     InvalidLeaseIdError,
     LockExpiredError,
+    LockAcknowledgeResult,
     LockNotFoundError,
     NackResult,
     SessionActorUnavailableError,
@@ -145,6 +148,46 @@ class TestDeadLetter:
 
         with pytest.raises(LockNotFoundError):
             await client.dead_letter("q", "L1")
+
+
+class TestAcknowledgeBatch:
+    async def test_returns_an_outcome_per_lock_and_sends_the_lease_header(self) -> None:
+        client, transport = make_client(
+            200,
+            {
+                "success": True,
+                "message": "ok",
+                "itemsAcknowledged": 1,
+                "results": [{"lockId": "L1", "outcome": "ACKNOWLEDGED"}, {"lockId": "L2", "outcome": "LOCK_EXPIRED"}],
+            },
+        )
+
+        result = await client.acknowledge_batch("q", ["L1", "L2"], lease_id="lease-1")
+
+        assert result == AcknowledgeBatchResult(
+            items_acknowledged=1,
+            results=[
+                LockAcknowledgeResult(lock_id="L1", outcome=AcknowledgeOutcome.ACKNOWLEDGED),
+                LockAcknowledgeResult(lock_id="L2", outcome=AcknowledgeOutcome.LOCK_EXPIRED),
+            ],
+        )
+        assert str(transport.last_request.url) == "http://localhost:5000/queue/q/acknowledge-batch"
+        assert transport.last_request.headers["lease-id"] == "lease-1"
+        assert transport.last_request.content == b'{"lockIds":["L1","L2"]}'
+
+    @pytest.mark.parametrize(
+        ("status", "error_code", "expected"),
+        [
+            (410, "SESSION_LEASE_EXPIRED", SessionLeaseExpiredError),
+            (400, "INVALID_LEASE_ID", InvalidLeaseIdError),
+            (400, "VALIDATION_ERROR", ValidationError),
+        ],
+    )
+    async def test_maps_a_whole_call_error_to_a_typed_exception(self, status: int, error_code: str, expected: type) -> None:
+        client, _ = make_client(status, {"success": False, "message": "nope", "itemsAcknowledged": 0, "results": [], "errorCode": error_code})
+
+        with pytest.raises(expected):
+            await client.acknowledge_batch("q", ["L1"])
 
 
 class TestNack:

@@ -154,6 +154,32 @@ public class QueueActorBlobOffloadTests
     }
 
     [Fact]
+    public async Task AcknowledgeBatch_SchedulesReapingForOffloadedPayloadsOnly()
+    {
+        var mockStateManager = CreateMockStateManager();
+        var (actor, reaperInvoker) = await CreateActorAsync(mockStateManager);
+
+        await actor.Enqueue(new EnqueueRequest
+        {
+            Items = new List<EnqueueItem>
+            {
+                new() { ItemJson = BlobRef("blob-a"), Priority = 0 },
+                new() { ItemJson = "{\"a\":1}", Priority = 0 },
+                new() { ItemJson = BlobRef("blob-b"), Priority = 0 }
+            }
+        });
+        var dequeueResult = await actor.DequeueLocked(new DequeueLockedRequest { Count = 3 });
+        await actor.AcknowledgeBatch(new AcknowledgeBatchRequest { LockIds = dequeueResult.Items.Select(i => i.LockId).ToList() });
+
+        reaperInvoker.Verify(i => i.InvokeMethodAsync<ScheduleDeletionRequest>(
+            It.IsAny<ActorId>(), "ScheduleDeletion",
+            It.Is<ScheduleDeletionRequest>(r => r.BlobReference == "blob-a" || r.BlobReference == "blob-b"),
+            It.IsAny<CancellationToken>()), Times.Exactly(2));
+        reaperInvoker.Verify(i => i.InvokeMethodAsync<ScheduleDeletionRequest>(
+            It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<ScheduleDeletionRequest>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    [Fact]
     public async Task Acknowledge_NormalItem_DoesNotScheduleReaping()
     {
         var mockStateManager = CreateMockStateManager();

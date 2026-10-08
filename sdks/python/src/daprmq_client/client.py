@@ -33,7 +33,7 @@ from .errors import (
     ValidationError,
 )
 from .grpc import daprmq_pb2, daprmq_pb2_grpc
-from .types import DequeueLockedItem, DequeueLockedResult, EnqueueItem, EnqueueResult, NackResult, RetryOptions, SessionDelivery, SessionLease
+from .types import AcknowledgeBatchResult, DequeueLockedItem, LockAcknowledgeResult, DequeueLockedResult, EnqueueItem, EnqueueResult, NackResult, RetryOptions, SessionDelivery, SessionLease
 
 #: The health service :meth:`DaprMQClient.wait_for_ready` watches by default: queue operations can be served.
 OPERATIONS_HEALTH_SERVICE = "daprmq.DaprMQ.operations"
@@ -168,6 +168,31 @@ class DaprMQClient:
         error_code = (body or {}).get("errorCode")
         message = (body or {}).get("message") or self._error_message_from(response)
         raise self._map_lock_error(error_code, message)
+
+    async def acknowledge_batch(
+        self, queue_id: str, lock_ids: list[str], *, lease_id: str | None = None
+    ) -> AcknowledgeBatchResult:
+        """Acknowledges up to 1,000 locks in one call, with an outcome per lock.
+
+        One lock that expired or was already settled does not fail the rest; only a whole-call
+        failure (bad lease, invalid request) raises. An unknown outcome is retried automatically,
+        since re-sending is harmless; after such a retry, ``LOCK_NOT_FOUND`` can mean "already settled".
+        """
+        response = await self._send(
+            "acknowledge_batch", queue_id, "POST", self._path(queue_id, "acknowledge-batch"),
+            json_body={"lockIds": list(lock_ids)},
+            headers={"lease-id": lease_id} if lease_id is not None else None,
+            unknown_is_retryable=True,
+        )
+        body = self._try_parse_json(response) or {}
+        if response.is_success:
+            return AcknowledgeBatchResult(
+                items_acknowledged=body.get("itemsAcknowledged", 0),
+                results=[LockAcknowledgeResult(lock_id=r["lockId"], outcome=r["outcome"]) for r in body.get("results") or []],
+            )
+
+        message = body.get("message") or self._error_message_from(response)
+        raise self._map_lock_error(body.get("errorCode"), message)
 
     async def extend_lock(
         self, queue_id: str, lock_id: str, additional_ttl_seconds: int, *, lease_id: str | None = None
@@ -500,7 +525,7 @@ class DaprMQClient:
             return SessionLeaseExpiredError(message)
         if error_code == "INVALID_LEASE_ID":
             return InvalidLeaseIdError(message)
-        if error_code in ("INVALID_LOCK_ID", "INVALID_TTL"):
+        if error_code in ("INVALID_LOCK_ID", "INVALID_TTL", "VALIDATION_ERROR"):
             return ValidationError(message)
         return DaprMQError(message, error_code)
 

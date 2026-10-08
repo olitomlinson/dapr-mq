@@ -411,6 +411,59 @@ public record AcknowledgeResponse
 }
 
 /// <summary>
+/// Request model for AcknowledgeBatch operation.
+/// </summary>
+public record AcknowledgeBatchRequest
+{
+    /// <summary>
+    /// Lock IDs to acknowledge (1-1000, no duplicates).
+    /// </summary>
+    public List<string> LockIds { get; init; } = new();
+
+    /// <summary>
+    /// Required when calling a session-scoped queue actor with an active lease synced onto it
+    /// (null otherwise, e.g. an ordinary queue). Checked once for the whole batch.
+    /// </summary>
+    public string? LeaseId { get; init; }
+}
+
+/// <summary>
+/// Outcome of one lock in an AcknowledgeBatch call.
+/// </summary>
+public record AcknowledgeResult
+{
+    public string LockId { get; init; } = string.Empty;
+
+    /// <summary>
+    /// ACKNOWLEDGED, LOCK_NOT_FOUND, LOCK_EXPIRED or INVALID_LOCK_ID.
+    /// </summary>
+    public string Outcome { get; init; } = string.Empty;
+}
+
+/// <summary>
+/// Response model for AcknowledgeBatch operation. Success is true whenever the request was valid,
+/// whatever the per-lock outcomes; ErrorCode is set only for whole-call failures.
+/// </summary>
+public record AcknowledgeBatchResponse
+{
+    public bool Success { get; init; }
+
+    public string Message { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Number of locks settled by this call.
+    /// </summary>
+    public int ItemsAcknowledged { get; init; }
+
+    /// <summary>
+    /// One entry per requested lock, in request order.
+    /// </summary>
+    public List<AcknowledgeResult> Results { get; init; } = new();
+
+    public string? ErrorCode { get; init; }
+}
+
+/// <summary>
 /// Request model for Nack operation.
 /// </summary>
 public record NackRequest

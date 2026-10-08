@@ -13,10 +13,12 @@ import com.daprmq.client.errors.SessionLockedException;
 import com.daprmq.client.errors.SessionNotFoundException;
 import com.daprmq.client.errors.ValidationException;
 import com.daprmq.client.internal.Json;
+import com.daprmq.client.types.AcknowledgeBatchResult;
 import com.daprmq.client.types.DequeueLockedItem;
 import com.daprmq.client.types.DequeueLockedResult;
 import com.daprmq.client.types.EnqueueItem;
 import com.daprmq.client.types.EnqueueResult;
+import com.daprmq.client.types.LockAcknowledgeResult;
 import com.daprmq.client.types.NackResult;
 import com.daprmq.client.types.SessionLease;
 import com.daprmq.grpc.DaprMQGrpc;
@@ -215,6 +217,38 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
         }
 
         JsonNode parsed = Json.tryParse(response.body());
+        String errorCode = parsed == null ? null : Json.textOrNull(parsed, "errorCode");
+        String message = (parsed != null && parsed.hasNonNull("message"))
+                ? parsed.get("message").asText()
+                : Json.errorMessageFrom(response.body(), response.statusCode());
+        throw mapLockError(errorCode, message);
+    }
+
+    public AcknowledgeBatchResult acknowledgeBatch(String queueId, List<String> lockIds) {
+        return acknowledgeBatch(queueId, lockIds, null);
+    }
+
+    /**
+     * Acknowledges up to 1,000 locks in one call, with an outcome per lock: one lock that expired or
+     * was already settled does not fail the rest. Throws only for whole-call failures (bad lease,
+     * invalid request). An unknown outcome is retried automatically, since re-sending is harmless;
+     * after such a retry, {@code LOCK_NOT_FOUND} can mean "already settled".
+     */
+    public AcknowledgeBatchResult acknowledgeBatch(String queueId, List<String> lockIds, String leaseId) {
+        Map<String, Object> body = Map.of("lockIds", lockIds);
+        HttpResponse<String> response = send("acknowledgeBatch", queueId,
+                jsonRequest(path(queueId, "acknowledge-batch"), body, leaseId), true, null);
+        JsonNode parsed = Json.tryParse(response.body());
+        if (isSuccess(response.statusCode())) {
+            List<LockAcknowledgeResult> results = new ArrayList<>();
+            if (parsed != null) {
+                for (JsonNode r : parsed.path("results")) {
+                    results.add(new LockAcknowledgeResult(r.path("lockId").asText(), r.path("outcome").asText()));
+                }
+            }
+            return new AcknowledgeBatchResult(parsed == null ? 0 : parsed.path("itemsAcknowledged").asInt(0), results);
+        }
+
         String errorCode = parsed == null ? null : Json.textOrNull(parsed, "errorCode");
         String message = (parsed != null && parsed.hasNonNull("message"))
                 ? parsed.get("message").asText()
@@ -555,7 +589,7 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
             case "LOCK_EXPIRED" -> new LockExpiredException(message);
             case "SESSION_LEASE_EXPIRED" -> new SessionLeaseExpiredException(message);
             case "INVALID_LEASE_ID" -> new InvalidLeaseIdException(message);
-            case "INVALID_LOCK_ID", "INVALID_TTL" -> new ValidationException(message);
+            case "INVALID_LOCK_ID", "INVALID_TTL", "VALIDATION_ERROR" -> new ValidationException(message);
             default -> new DaprMQException(message, errorCode);
         };
     }

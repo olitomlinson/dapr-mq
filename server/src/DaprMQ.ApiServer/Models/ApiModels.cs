@@ -18,6 +18,10 @@ public record ApiAcknowledgeRequest(
     string LockId
 );
 
+public record ApiAcknowledgeBatchRequest(
+    List<string> LockIds
+);
+
 public record ApiNackRequest(
     string LockId
 );
@@ -62,6 +66,19 @@ public record ApiAcknowledgeResponse(
     string Message,
     int ItemsAcknowledged = 0,
     string? ErrorCode = null
+);
+
+public record ApiAcknowledgeBatchResponse(
+    bool Success,
+    string Message,
+    int ItemsAcknowledged,
+    List<ApiAcknowledgeResult> Results,
+    string? ErrorCode = null
+);
+
+public record ApiAcknowledgeResult(
+    string LockId,
+    string Outcome
 );
 
 public record ApiNackResponse(

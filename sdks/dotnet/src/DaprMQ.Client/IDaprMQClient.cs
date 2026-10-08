@@ -8,6 +8,14 @@ public interface IDaprMQClient
 
     Task AcknowledgeAsync(string queueId, string lockId, string? leaseId = null, CancellationToken ct = default);
 
+    /// <summary>
+    /// Acknowledges up to 1,000 locks in one call, with an outcome per lock: one lock that expired or
+    /// was already settled does not fail the rest. Throws only for whole-call failures (bad lease,
+    /// invalid request). An unknown outcome is retried automatically, since re-sending is harmless;
+    /// after such a retry, <see cref="AcknowledgeOutcomes.LockNotFound"/> can mean "already settled".
+    /// </summary>
+    Task<AcknowledgeBatchResult> AcknowledgeBatchAsync(string queueId, IReadOnlyList<string> lockIds, string? leaseId = null, CancellationToken ct = default);
+
     Task ExtendLockAsync(string queueId, string lockId, int additionalTtlSeconds, string? leaseId = null, CancellationToken ct = default);
 
     Task DeadLetterAsync(string queueId, string lockId, string? leaseId = null, CancellationToken ct = default);

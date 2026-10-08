@@ -94,6 +94,20 @@ async def test_nack_unknown_is_not_retried_and_names_the_operation() -> None:
     assert raised.value.operation == "nack"
 
 
+async def test_acknowledge_batch_unknown_is_retried_because_resending_is_harmless() -> None:
+    # The retry reports LOCK_NOT_FOUND for locks the first attempt settled: after a retry that
+    # outcome means "already acknowledged", and the SDK passes it through unchanged.
+    transport = SequenceTransport(
+        unknown,
+        ok({"success": True, "itemsAcknowledged": 0, "results": [{"lockId": "L1", "outcome": "LOCK_NOT_FOUND"}]}),
+    )
+
+    result = await make_client(transport).acknowledge_batch("q", ["L1"])
+
+    assert len(transport.requests) == 2
+    assert result.results[0].outcome == "LOCK_NOT_FOUND"
+
+
 async def test_every_attempt_sends_the_remaining_retry_time_not_a_call_deadline() -> None:
     transport = SequenceTransport(ok(OK))
 
