@@ -29,89 +29,90 @@ Readiness: wait for `GET /health/operations` to return 200 (queue operations can
 - .NET: `dotnet test` in `sdks/dotnet/tests/DaprMQ.Client.IntegrationTests` (Testcontainers for .NET).
 - Python: `pytest tests/integration` in `sdks/python` (`testcontainers` package; fixture in `tests/integration/conftest.py`).
 - TypeScript: `npm run test:integration` in `sdks/typescript` (`testcontainers` package; fixture in `tests/integration/daprmqServer.ts`, needs Node ≥ 22 with testcontainers 12 / ≥ 18 with the pinned 10.x).
+- Go: `go test ./...` in `sdks/go/integration` (Testcontainers for Go; fixture in `main_test.go`). It is its own module, so the SDK doesn't depend on Testcontainers; `go test ./...` in `sdks/go` runs only the unit tests.
 - Java: `mvn verify` in `sdks/java` (Testcontainers for Java; fixture in `src/test/java/com/daprmq/client/integration/DaprMQServer.java`). Integration tests are named `*IT` and run under failsafe; `mvn test` runs only the unit tests.
 
 ## Coverage matrix
 
 Legend: ✅ implemented and passing · ⬜ not yet · 🚫 permanently out of scope (see notes)
 
-| ID | Capability | .NET | Python | TypeScript | Java |
-|---|---|:-:|:-:|:-:|:-:|
-| **Queue basics** | | | | | |
-| Q-01 | Enqueue → DequeueLocked → Ack round trip | ✅ | ⬜ | ⬜ | ⬜ |
-| Q-02 | FIFO order preserved within a priority | ✅ | ⬜ | ⬜ | ⬜ |
-| Q-03 | Priority ordering (0 before 1+, lower first) | ✅ | ⬜ | ⬜ | ⬜ |
-| Q-04 | Bulk enqueue (many items, one call) | ✅ | ⬜ | ⬜ | ⬜ |
-| Q-05 | Bulk dequeue (`count` > 1) returns up to N items, in order | ✅ | ⬜ | ⬜ | ⬜ |
-| Q-06 | Dequeue on empty queue returns null/none (no error) | ✅ | ⬜ | ⬜ | ⬜ |
-| Q-07 | Arbitrary JSON payloads round-trip intact (nested, unicode, null fields) | ✅ | ⬜ | ⬜ | ⬜ |
-| Q-08 | Invalid enqueue input surfaces `Validation` error (bad priority, empty batch, >10000 items) | ✅ | ⬜ | ⬜ | ⬜ |
-| **Idempotency** | | | | | |
-| I-01 | Duplicate `idempotencyKey` is skipped; `ItemsDeduplicated` reported | ✅ | ⬜ | ⬜ | ⬜ |
-| I-02 | Same key on different queues does not dedupe | ✅ | ⬜ | ⬜ | ⬜ |
-| I-03 | Over-length / control-character key surfaces `Validation` error | ✅ | ⬜ | ⬜ | ⬜ |
-| **Locks** | | | | | |
-| L-01 | Locked items are not redelivered to a second dequeue | ✅ | ⬜ | ⬜ | ⬜ |
-| L-02 | Lock expiry makes item available again | ✅ | ⬜ | ⬜ | ⬜ |
-| L-03 | Ack after lock expiry raises `LockNotFound` (see notes) | ✅ | ⬜ | ⬜ | ⬜ |
-| L-04 | Ack with unknown lock ID raises `LockNotFound` | ✅ | ⬜ | ⬜ | ⬜ |
-| L-05 | Double ack raises `LockNotFound` | ✅ | ⬜ | ⬜ | ⬜ |
-| L-06 | `ExtendLock` prolongs the lock past its original TTL | ✅ | ⬜ | ⬜ | ⬜ |
-| L-07 | `ExtendLock` on expired/unknown lock raises the matching error | ✅ | ⬜ | ⬜ | ⬜ |
-| L-08 | Redelivery after expiry preserves the item's original FIFO position | ✅ | ⬜ | ⬜ | ⬜ |
-| **Dead-letter** | | | | | |
-| D-01 | `DeadLetter` removes item from source queue and it appears on `{queueId}-deadletter` | ✅ | ⬜ | ⬜ | ⬜ |
-| D-02 | `DeadLetter` with unknown/expired lock raises the matching error | ✅ | ⬜ | ⬜ | ⬜ |
-| **Nack** | | | | | |
-| N-01 | `Nack` returns the item to its original position; it is redelivered ahead of later items with `DeliveryCount` incremented | ✅ | ⬜ | ⬜ | ⬜ |
-| N-02 | `Nack` past the max delivery count dead-letters the item (`DeadLettered`, appears on `{queueId}-deadletter`) | ✅ | ⬜ | ⬜ | ⬜ |
-| **Batch acknowledge** | | | | | |
-| B-01 | `AcknowledgeBatch` settles every lock from one bulk dequeue in one call; all `ACKNOWLEDGED`, nothing redelivered | ✅ | ⬜ | ⬜ | ⬜ |
-| B-02 | `AcknowledgeBatch` with an already-settled and an unknown lock reports `LOCK_NOT_FOUND` for those and still settles the rest | ✅ | ⬜ | ⬜ | ⬜ |
-| **Sessions (manual API)** | | | | | |
-| S-01 | Enqueue with `SessionId` → `AcceptSession` (targeted) → dequeue/ack yields that session's items in FIFO order | ✅ | ⬜ | ⬜ | ⬜ |
-| S-02 | `AcceptSession` with no ID claims any available session and returns its ID | ✅ | ⬜ | ⬜ | ⬜ |
-| S-03 | `AcceptSession` with no sessions available returns null/none | ✅ | ⬜ | ⬜ | ⬜ |
-| S-04 | `AcceptSession` on already-leased session raises `SessionLocked` | ✅ | ⬜ | ⬜ | ⬜ |
-| S-05 | `AcceptSession` on unknown session raises `SessionNotFound` | ✅ | ⬜ | ⬜ | ⬜ |
-| S-06 | Dequeue on leased session without / with wrong `leaseId` raises `Validation`/`InvalidLeaseId` | ✅ | ⬜ | ⬜ | ⬜ |
-| S-07 | `RenewSessionLease` extends expiry; session stays usable past original expiry | ✅ | ⬜ | ⬜ | ⬜ |
-| S-08 | Expired lease makes session reclaimable by another `AcceptSession`; old lease raises `SessionLeaseExpired` | ✅ | ⬜ | ⬜ | ⬜ |
-| S-09 | `ReleaseSession` frees immediately (no wait for expiry) | ✅ | ⬜ | ⬜ | ⬜ |
-| S-10 | `ReleaseSession` twice with same lease is idempotent; wrong lease raises error | ✅ | ⬜ | ⬜ | ⬜ |
-| S-11 | Ack / ExtendLock / DeadLetter honour `leaseId` on a session queue | ✅ | ⬜ | ⬜ | ⬜ |
-| S-12 | Two sessions keep independent FIFO order | ✅ | ⬜ | ⬜ | ⬜ |
-| **Session streaming (`ConsumeSession`)** | | | | | |
-| C-01 | Stream assigns a session, delivers items in order, Ack removes them | ✅ | ⬜ | ⬜ | ⬜ |
-| C-02 | Targeted `sessionId` stream only receives that session | ✅ | ⬜ | ⬜ | ⬜ |
-| C-03 | Delivery `DeadLetter` routes to `{queueId}-session-{sessionId}-deadletter` (see notes) | ✅ | ⬜ | ⬜ | ⬜ |
-| C-04 | `prefetchCount` bounds unacked in-flight deliveries | ✅ | ⬜ | ⬜ | ⬜ |
-| C-05 | Client disconnect/cancel releases the session immediately | ✅ | ⬜ | ⬜ | ⬜ |
-| C-06 | `sessionIdleTimeoutSeconds` ends stream (session drained) and releases session | ✅ | ⬜ | ⬜ | ⬜ |
-| C-07 | Second stream on a leased session surfaces `SessionLocked` | ✅ | ⬜ | ⬜ | ⬜ |
-| C-08 | Unacked delivery at disconnect is redelivered to the next consumer | ✅ | ⬜ | ⬜ | ⬜ |
-| C-09 | Lease lost mid-stream surfaces `SessionLost` | 🚫 | 🚫 | 🚫 | 🚫 |
-| **SessionQueueConsumer (high-level)** | | | | | |
-| K-01 | Handler success auto-acks; queue ends empty | ✅ | ⬜ | ⬜ | ⬜ |
-| K-02 | Multi-session: per-session FIFO preserved and slow session doesn't stall fast one (`MaxConcurrentSessions` ≥ 2) | ✅ | ✅ | ✅ | ✅ |
-| K-03 | Handler throws + `DeadLetterMessage` → item dead-lettered, session continues | ✅ | ⬜ | ⬜ | ⬜ |
-| K-04 | Handler throws + `AbandonSession` → session released, item redelivered | ✅ | ⬜ | ⬜ | ⬜ |
-| K-05 | Handler throws + `Both` → item dead-lettered and session abandoned | ✅ | ⬜ | ⬜ | ⬜ |
-| K-06 | `TargetSessionId` (requires `MaxConcurrentSessions == 1`) only consumes that session | ✅ | ⬜ | ⬜ | ⬜ |
-| K-07 | `MaxConcurrentSessions` is never exceeded | ✅ | ⬜ | ⬜ | ⬜ |
-| K-08 | Empty queue backs off (min→max) and picks up sessions enqueued later | ✅ | ⬜ | ⬜ | ⬜ |
-| K-09 | `Stop` drains in-flight handlers within `DrainTimeout` and releases sessions | ✅ | ⬜ | ⬜ | ⬜ |
-| K-10 | External cancellation token stops the consumer | ✅ | ⬜ | ⬜ | ⬜ |
-| K-11 | `SessionIdleTimeoutSeconds` lets the consumer move on to another session | ✅ | ⬜ | ⬜ | ⬜ |
-| **Client lifecycle** | | | | | |
-| X-01 | Construct from options (HTTP + gRPC addresses) and perform a round trip | ✅ | ⬜ | ⬜ | ⬜ |
-| X-02 | Dispose/close is idempotent and cancels in-flight streams | ✅ | ⬜ | ⬜ | ⬜ |
-| X-03 | Server unreachable surfaces an error, not a hang and not a domain error (with retries: `DaprMQUnavailableException` once `RetryTimeout` runs out, see R-04) | ✅ | ⬜ | ⬜ | ⬜ |
-| R-01 | `WaitForReady()` (gRPC health `Watch`, service `daprmq.DaprMQ.operations`) returns against a running stack, and an enqueue then succeeds ([RETRIES_AND_READINESS.md](RETRIES_AND_READINESS.md)) | ✅ | ✅ | ✅ | ✅ |
-| R-02 | Split stack, every worker stopped: an enqueue with `RetryTimeout` 45 s succeeds once a worker starts 3 s later, stored once | ✅ | ⬜ | ⬜ | ⬜ |
-| R-03 | Split stack, every worker stopped, `RetryTimeout` 8 s: `DaprMQUnavailableException` in under 8 s | ✅ | ⬜ | ⬜ | ⬜ |
-| R-04 | Server unreachable, short `RetryTimeout`: `DaprMQUnavailableException`, not a hang | ✅ | ✅ | ✅ | ✅ |
-| R-05 | `AutoIdempotencyKeys` fills in a key for each item without one, and keeps keys the caller set | ✅ | ✅ | ✅ | ✅ |
+| ID | Capability | .NET | Python | TypeScript | Java | Go |
+|---|---|:-:|:-:|:-:|:-:|:-:|
+| **Queue basics** | | | | | | |
+| Q-01 | Enqueue → DequeueLocked → Ack round trip | ✅ | ⬜ | ⬜ | ⬜ | ✅ |
+| Q-02 | FIFO order preserved within a priority | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| Q-03 | Priority ordering (0 before 1+, lower first) | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| Q-04 | Bulk enqueue (many items, one call) | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| Q-05 | Bulk dequeue (`count` > 1) returns up to N items, in order | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| Q-06 | Dequeue on empty queue returns null/none (no error) | ✅ | ⬜ | ⬜ | ⬜ | ✅ |
+| Q-07 | Arbitrary JSON payloads round-trip intact (nested, unicode, null fields) | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| Q-08 | Invalid enqueue input surfaces `Validation` error (bad priority, empty batch, >10000 items) | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| **Idempotency** | | | | | | |
+| I-01 | Duplicate `idempotencyKey` is skipped; `ItemsDeduplicated` reported | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| I-02 | Same key on different queues does not dedupe | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| I-03 | Over-length / control-character key surfaces `Validation` error | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| **Locks** | | | | | | |
+| L-01 | Locked items are not redelivered to a second dequeue | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| L-02 | Lock expiry makes item available again | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| L-03 | Ack after lock expiry raises `LockNotFound` (see notes) | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| L-04 | Ack with unknown lock ID raises `LockNotFound` | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| L-05 | Double ack raises `LockNotFound` | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| L-06 | `ExtendLock` prolongs the lock past its original TTL | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| L-07 | `ExtendLock` on expired/unknown lock raises the matching error | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| L-08 | Redelivery after expiry preserves the item's original FIFO position | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| **Dead-letter** | | | | | | |
+| D-01 | `DeadLetter` removes item from source queue and it appears on `{queueId}-deadletter` | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| D-02 | `DeadLetter` with unknown/expired lock raises the matching error | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| **Nack** | | | | | | |
+| N-01 | `Nack` returns the item to its original position; it is redelivered ahead of later items with `DeliveryCount` incremented | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| N-02 | `Nack` past the max delivery count dead-letters the item (`DeadLettered`, appears on `{queueId}-deadletter`) | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| **Batch acknowledge** | | | | | | |
+| B-01 | `AcknowledgeBatch` settles every lock from one bulk dequeue in one call; all `ACKNOWLEDGED`, nothing redelivered | ✅ | ⬜ | ⬜ | ⬜ | ✅ |
+| B-02 | `AcknowledgeBatch` with an already-settled and an unknown lock reports `LOCK_NOT_FOUND` for those and still settles the rest | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| **Sessions (manual API)** | | | | | | |
+| S-01 | Enqueue with `SessionId` → `AcceptSession` (targeted) → dequeue/ack yields that session's items in FIFO order | ✅ | ⬜ | ⬜ | ⬜ | ✅ |
+| S-02 | `AcceptSession` with no ID claims any available session and returns its ID | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| S-03 | `AcceptSession` with no sessions available returns null/none | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| S-04 | `AcceptSession` on already-leased session raises `SessionLocked` | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| S-05 | `AcceptSession` on unknown session raises `SessionNotFound` | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| S-06 | Dequeue on leased session without / with wrong `leaseId` raises `Validation`/`InvalidLeaseId` | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| S-07 | `RenewSessionLease` extends expiry; session stays usable past original expiry | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| S-08 | Expired lease makes session reclaimable by another `AcceptSession`; old lease raises `SessionLeaseExpired` | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| S-09 | `ReleaseSession` frees immediately (no wait for expiry) | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| S-10 | `ReleaseSession` twice with same lease is idempotent; wrong lease raises error | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| S-11 | Ack / ExtendLock / DeadLetter honour `leaseId` on a session queue | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| S-12 | Two sessions keep independent FIFO order | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| **Session streaming (`ConsumeSession`)** | | | | | | |
+| C-01 | Stream assigns a session, delivers items in order, Ack removes them | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| C-02 | Targeted `sessionId` stream only receives that session | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| C-03 | Delivery `DeadLetter` routes to `{queueId}-session-{sessionId}-deadletter` (see notes) | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| C-04 | `prefetchCount` bounds unacked in-flight deliveries | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| C-05 | Client disconnect/cancel releases the session immediately | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| C-06 | `sessionIdleTimeoutSeconds` ends stream (session drained) and releases session | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| C-07 | Second stream on a leased session surfaces `SessionLocked` | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| C-08 | Unacked delivery at disconnect is redelivered to the next consumer | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| C-09 | Lease lost mid-stream surfaces `SessionLost` | 🚫 | 🚫 | 🚫 | 🚫 | 🚫 |
+| **SessionQueueConsumer (high-level)** | | | | | | |
+| K-01 | Handler success auto-acks; queue ends empty | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| K-02 | Multi-session: per-session FIFO preserved and slow session doesn't stall fast one (`MaxConcurrentSessions` ≥ 2) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| K-03 | Handler throws + `DeadLetterMessage` → item dead-lettered, session continues | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| K-04 | Handler throws + `AbandonSession` → session released, item redelivered | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| K-05 | Handler throws + `Both` → item dead-lettered and session abandoned | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| K-06 | `TargetSessionId` (requires `MaxConcurrentSessions == 1`) only consumes that session | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| K-07 | `MaxConcurrentSessions` is never exceeded | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| K-08 | Empty queue backs off (min→max) and picks up sessions enqueued later | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| K-09 | `Stop` drains in-flight handlers within `DrainTimeout` and releases sessions | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| K-10 | External cancellation token stops the consumer | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| K-11 | `SessionIdleTimeoutSeconds` lets the consumer move on to another session | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| **Client lifecycle** | | | | | | |
+| X-01 | Construct from options (HTTP + gRPC addresses) and perform a round trip | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| X-02 | Dispose/close is idempotent and cancels in-flight streams | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| X-03 | Server unreachable surfaces an error, not a hang and not a domain error (with retries: `DaprMQUnavailableException` once `RetryTimeout` runs out, see R-04) | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| R-01 | `WaitForReady()` (gRPC health `Watch`, service `daprmq.DaprMQ.operations`) returns against a running stack, and an enqueue then succeeds ([RETRIES_AND_READINESS.md](RETRIES_AND_READINESS.md)) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| R-02 | Split stack, every worker stopped: an enqueue with `RetryTimeout` 45 s succeeds once a worker starts 3 s later, stored once | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| R-03 | Split stack, every worker stopped, `RetryTimeout` 8 s: `DaprMQUnavailableException` in under 8 s | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| R-04 | Server unreachable, short `RetryTimeout`: `DaprMQUnavailableException`, not a hang | ✅ | ✅ | ✅ | ✅ | ✅ |
+| R-05 | `AutoIdempotencyKeys` fills in a key for each item without one, and keeps keys the caller set | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ## Out of scope (not exposed by any SDK today)
 
@@ -119,7 +120,7 @@ Topics/pub-sub, HTTP sink, and large-object offload are server features with no 
 
 ## Notes
 
-- Python currently has unit tests only. TypeScript and Java have one integration row each (K-02) on Testcontainers; the rest of their columns are empty.
+- Python, TypeScript, Java and Go cover K-02 and R-01/R-04/R-05 on Testcontainers (Go also Q-01, Q-06, B-01, S-01); the rest of their columns are empty.
 - Scenarios relying on TTL expiry (L-02, L-03, S-08) should use the shortest TTL the server accepts and poll with a timeout rather than fixed sleeps. One exception, found while implementing the .NET column:
   - **C-01/C-03**, and any consumer test asserting on post-consumption queue state, must let the server apply the last Ack/DeadLetter before the stream is torn down. Those are fire-and-forget frames on the request stream, so breaking out of the loop immediately after writing one can close the call before it lands. Pairing a short `sessionIdleTimeoutSeconds` with enumerating to the stream's natural end is the reliable shape - the server only ends the stream once nothing is outstanding.
 

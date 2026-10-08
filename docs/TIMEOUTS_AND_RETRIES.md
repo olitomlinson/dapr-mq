@@ -2,7 +2,7 @@
 
 ## The short version
 
-A DaprMQ SDK call waits through a short outage for up to 30 seconds, then fails with an error that tells you whether the operation happened. This guide is for application developers using the .NET, Python, TypeScript or Java SDK. It describes the retry and readiness behaviour from [proposals/readiness-and-retries.md](../proposals/readiness-and-retries.md); the contract every SDK implements is [sdks/testing/RETRIES_AND_READINESS.md](../sdks/testing/RETRIES_AND_READINESS.md).
+A DaprMQ SDK call waits through a short outage for up to 30 seconds, then fails with an error that tells you whether the operation happened. This guide is for application developers using the .NET, Python, TypeScript, Java or Go SDK. It describes the retry and readiness behaviour from [proposals/readiness-and-retries.md](../proposals/readiness-and-retries.md); the contract every SDK implements is [sdks/testing/RETRIES_AND_READINESS.md](../sdks/testing/RETRIES_AND_READINESS.md).
 
 The rules to program for:
 
@@ -55,6 +55,7 @@ Two client options control the behaviour. Both are set when you build the client
 | Python | `DaprMQClient(http_base_url=…, grpc_address=…, retry=RetryOptions(timeout=30.0, auto_idempotency_keys=True))` |
 | TypeScript | `new DaprMQClient({ httpBaseUrl, grpcAddress, retry: { timeoutMs: 30_000, autoIdempotencyKeys: true } })` |
 | Java | `DaprMQClient.create(httpUrl, grpcTarget, RetryOptions.defaults().withTimeout(Duration.ofSeconds(30)).withAutoIdempotencyKeys(true))` |
+| Go | `daprmq.NewClient(httpURL, grpcAddress, &daprmq.ClientOptions{Retry: daprmq.RetryOptions{Timeout: 30 * time.Second, AutoIdempotencyKeys: true}})`. `Timeout` 0 means the default; `daprmq.NoRetries` turns retries off |
 
 ### Limits on a single call
 
@@ -62,8 +63,8 @@ A call that reached DaprMQ runs until one of these ends it. The first to fire wi
 
 | Limit | Default | Where it comes from |
 | --- | --- | --- |
-| Your cancellation | none | `CancellationToken` (.NET), task cancellation or `asyncio.wait_for` (Python), `signal` (TypeScript), thread interrupt (Java) |
-| The SDK's per-call HTTP limit | 100 s | .NET: `HttpClient.Timeout`. Python: the SDK's own client (an `httpx.AsyncClient` you pass in keeps its own timeout, which is 5 s by default). Java: 100 s per attempt. TypeScript: no SDK limit, Node's `fetch` waits up to 300 s. |
+| Your cancellation | none | `CancellationToken` (.NET), task cancellation or `asyncio.wait_for` (Python), `signal` (TypeScript), thread interrupt (Java), the `context.Context` (Go) |
+| The SDK's per-call HTTP limit | 100 s | .NET: `HttpClient.Timeout`. Python: the SDK's own client (an `httpx.AsyncClient` you pass in keeps its own timeout, which is 5 s by default). Java: 100 s per attempt. TypeScript: no SDK limit, Node's `fetch` waits up to 300 s. Go: the SDK's own `http.Client` (one you pass in keeps its own `Timeout`, which is none by default). |
 | The server's safety limit | 100 s | `DELIVERY_ATTEMPT_MAX_SECONDS`, for a worker that has hung |
 | Your explicit deadline | none | `daprmq-timeout` header in milliseconds, raw REST only. The SDKs don't send one. |
 
@@ -78,21 +79,21 @@ Raw REST callers can send `daprmq-retry-timeout` (retry window, ms) and `daprmq-
 
 ## The errors you will see
 
-Every failure falls into one of four groups, and the group tells you whether the operation happened. Both new errors extend each SDK's base DaprMQ error, so existing catch blocks still catch them.
+Every failure falls into one of four groups, and the group tells you whether the operation happened. Both new errors extend each SDK's base DaprMQ error, so existing catch blocks still catch them. In Go every DaprMQ failure is one `*daprmq.Error`, told apart by its `Code`.
 
-| Group | .NET | Python | TypeScript | Java | Did it happen? |
-| --- | --- | --- | --- | --- | --- |
-| Unavailable | `DaprMQUnavailableException` | `DaprMQUnavailableError` | `DaprMQUnavailableError` | `DaprMQUnavailableException` | **No.** Safe to repeat later |
-| Delivery unknown | `DeliveryUnknownException` | `DeliveryUnknownError` | `DeliveryUnknownError` | `DeliveryUnknownException` | **Maybe.** Depends on the operation |
-| Cancelled | `OperationCanceledException` | `CancelledError` (or `TimeoutError` from `asyncio.wait_for`) | the signal's abort reason | `CancellationException` (interrupt flag kept) | **Maybe**, if the call had already been sent |
-| Domain errors | `LockNotFoundException`, `ValidationException`, … | `LockNotFoundError`, … | `LockNotFoundError`, … | `LockNotFoundException`, … | The server ran it and answered; unchanged |
+| Group | .NET | Python | TypeScript | Java | Go | Did it happen? |
+| --- | --- | --- | --- | --- | --- | --- |
+| Unavailable | `DaprMQUnavailableException` | `DaprMQUnavailableError` | `DaprMQUnavailableError` | `DaprMQUnavailableException` | `*daprmq.Error`, `CodeUnavailable` | **No.** Safe to repeat later |
+| Delivery unknown | `DeliveryUnknownException` | `DeliveryUnknownError` | `DeliveryUnknownError` | `DeliveryUnknownException` | `*daprmq.Error`, `CodeDeliveryUnknown` | **Maybe.** Depends on the operation |
+| Cancelled | `OperationCanceledException` | `CancelledError` (or `TimeoutError` from `asyncio.wait_for`) | the signal's abort reason | `CancellationException` (interrupt flag kept) | `context.Canceled` / `context.DeadlineExceeded` | **Maybe**, if the call had already been sent |
+| Domain errors | `LockNotFoundException`, `ValidationException`, … | `LockNotFoundError`, … | `LockNotFoundError`, … | `LockNotFoundException`, … | `*daprmq.Error`, `CodeLockNotFound`, … | The server ran it and answered; unchanged |
 
 What each error carries:
 
 - **Unavailable:** the operation name and the queue id. The server reported it couldn't serve the call (no worker available) or the connection was refused, and retrying ran out of `RetryTimeout`.
 - **Delivery unknown:** the operation name, the queue id and, for an enqueue, each item's idempotency key in order (empty where an item had none). Typical causes: the connection broke after the request was sent, or the call ran past a time limit.
 
-Two cases look like errors but aren't: an empty queue (dequeue returns null or `None`) and a locked queue (a result with `Locked = true`).
+Two cases look like errors but aren't: an empty queue (dequeue returns null or `None`, or in Go a result with no items) and a locked queue (a result with `Locked = true`).
 
 **Errors from something in front of DaprMQ.** A load balancer, ingress or proxy may time out or fail on its own. Its response has no DaprMQ delivery information, so the SDK reports it as a plain DaprMQ error or a transport error. Treat it like delivery unknown.
 
@@ -123,6 +124,7 @@ Call `WaitForReady()` before your first operation when you start alongside DaprM
 | Python | `await client.wait_for_ready()` | `asyncio.wait_for(…, timeout=30)` |
 | TypeScript | `await client.waitForReady({ signal })` | `AbortSignal.timeout(30_000)` |
 | Java | `client.waitForReady(Duration.ofSeconds(30))` | returns `false` if time runs out; `waitForReady()` waits until interrupted |
+| Go | `client.WaitForReady(ctx, nil)` | `context.WithTimeout(ctx, 30*time.Second)` |
 
 It watches a gRPC health service and reconnects while the server isn't up yet. It has no limit of its own, so always bound it. Two services exist:
 
@@ -158,7 +160,7 @@ Don't send a test enqueue to check readiness. It leaves a queue behind in the st
   var result = await client.AcknowledgeBatchAsync(queueId, locked!.Items.Select(i => i.LockId).ToList());
   ```
 
-  Python: `acknowledge_batch`. TypeScript and Java: `acknowledgeBatch`. Check each lock's outcome:
+  Python: `acknowledge_batch`. TypeScript and Java: `acknowledgeBatch`. Go: `AcknowledgeBatch`. Check each lock's outcome:
   the call succeeds even when some locks had expired.
 - **Cap concurrent calls per queue.** For everything else, the same single line applies: 10,000 calls
   sent at once all wait on one queue, and the last ones wait tens of seconds. Keep the line in your
@@ -174,7 +176,7 @@ Don't send a test enqueue to check readiness. It leaves a queue behind in the st
   ```
 
   Python: an `asyncio.Semaphore(100)` around each call. TypeScript: run the calls in chunks of 100, or
-  use a concurrency limiter. Java: a fixed thread pool of 100, or a `Semaphore(100)`.
+  use a concurrency limiter. Java: a fixed thread pool of 100, or a `Semaphore(100)`. Go: a buffered channel of 100 used as a semaphore, or `errgroup.Group.SetLimit(100)`.
 - **Match timeouts from the outside in.** Your request handler's deadline should be longer than `RetryTimeout` plus a typical call. A gateway or ingress in front of DaprMQ should allow longer than the server's 100-second call limit, or your callers will see the proxy's error instead of DaprMQ's.
 - **Shorten `RetryTimeout` for interactive paths.** A user waiting on a web request may prefer a fast `DaprMQUnavailable` after 5 seconds to a 30-second wait. Values under about 6 seconds give a single attempt, because the server takes about 5 seconds to report that no worker is available.
 - **Lengthen it for background producers.** A batch job that can wait gains nothing from failing early. Retries stop at the server's cap, 30 seconds by default, so ask your operator if you need longer.

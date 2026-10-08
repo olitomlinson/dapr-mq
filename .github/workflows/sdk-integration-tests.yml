@@ -33,6 +33,7 @@ jobs:
       python: ${{ steps.decide.outputs.python }}
       typescript: ${{ steps.decide.outputs.typescript }}
       java: ${{ steps.decide.outputs.java }}
+      go: ${{ steps.decide.outputs.go }}
       image: ${{ steps.decide.outputs.image }}
     steps:
       - uses: actions/checkout@v4
@@ -53,6 +54,8 @@ jobs:
               - 'sdks/typescript/**'
             java:
               - 'sdks/java/**'
+            go:
+              - 'sdks/go/**'
             shared:
               - 'sdks/testing/**'
               - '.github/workflows/sdk-integration-tests.yml'
@@ -64,20 +67,22 @@ jobs:
           if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "schedule" || "${{ steps.filter.outputs.shared }}" == "true" ]]; then
             all=true
           fi
-          server=$all; dotnet=$all; python=$all; typescript=$all; java=$all
-          [[ "${{ steps.filter.outputs.server }}" == "true" ]] && server=true && dotnet=true && python=true && typescript=true && java=true
+          server=$all; dotnet=$all; python=$all; typescript=$all; java=$all; go=$all
+          [[ "${{ steps.filter.outputs.server }}" == "true" ]] && server=true && dotnet=true && python=true && typescript=true && java=true && go=true
           [[ "${{ steps.filter.outputs.dotnet }}" == "true" ]] && dotnet=true
           [[ "${{ steps.filter.outputs.python }}" == "true" ]] && python=true
           [[ "${{ steps.filter.outputs.typescript }}" == "true" ]] && typescript=true
           [[ "${{ steps.filter.outputs.java }}" == "true" ]] && java=true
+          [[ "${{ steps.filter.outputs.go }}" == "true" ]] && go=true
           image=false
-          [[ $server == true || $dotnet == true || $python == true || $typescript == true || $java == true ]] && image=true
+          [[ $server == true || $dotnet == true || $python == true || $typescript == true || $java == true || $go == true ]] && image=true
           {
             echo "server=$server"
             echo "dotnet=$dotnet"
             echo "python=$python"
             echo "typescript=$typescript"
             echo "java=$java"
+            echo "go=$go"
             echo "image=$image"
           } | tee -a "$GITHUB_OUTPUT"
 
@@ -251,12 +256,38 @@ jobs:
         working-directory: sdks/java
         run: mvn -B verify
 
+  go:
+    name: Go SDK
+    needs: [changes, build-image]
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./sdks/testing/actions/load-api-image
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: sdks/go/go.mod
+          cache-dependency-path: |
+            sdks/go/go.sum
+            sdks/go/integration/go.sum
+
+      - name: Run unit tests
+        working-directory: sdks/go
+        run: go test -race ./...
+
+      # A separate module, so the SDK itself doesn't depend on Testcontainers.
+      - name: Run integration tests
+        working-directory: sdks/go/integration
+        run: go test -v ./...
+
   # Single required check for branch protection: the jobs above are conditional, so requiring them
   # individually would block PRs where they're legitimately skipped. Skipped = fine; failed or
   # cancelled = fail.
   gate:
     name: Integration tests gate
-    needs: [changes, build-image, server, dotnet, python, typescript, java]
+    needs: [changes, build-image, server, dotnet, python, typescript, java, go]
     if: always()
     runs-on: ubuntu-latest
     steps:
