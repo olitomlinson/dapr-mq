@@ -243,6 +243,122 @@ async def test_abandon_session_does_not_dead_letter_and_keeps_the_slot_alive() -
     assert client.call_count >= 2
 
 
+class StreamingClient:
+    """Hands out ``items`` on each stream, then waits; like the real stream, it hands out nothing
+    further once ``cancel`` is set, then ends. Records how each stream was closed."""
+
+    def __init__(self, *items: SessionDelivery) -> None:
+        self.items = items
+        self.cancel_events: list[asyncio.Event] = []
+        self.closed: list[bool] = []
+
+    def consume_session(self, queue_id: str, *, cancel: asyncio.Event, **_kwargs: object) -> AsyncIterator[SessionDelivery]:
+        self.cancel_events.append(cancel)
+        index = len(self.closed)
+        self.closed.append(False)
+        return self._stream(cancel, index)
+
+    async def _stream(self, cancel: asyncio.Event, index: int) -> AsyncIterator[SessionDelivery]:
+        try:
+            for item in self.items:
+                if cancel.is_set():
+                    return
+                yield item
+            await cancel.wait()
+        finally:
+            self.closed[index] = True
+
+
+async def test_stop_during_a_handler_lets_it_finish_and_ack_before_closing_the_stream() -> None:
+    handle = make_delivery("s1", "L1")
+    client = StreamingClient(handle.delivery)
+    entered = asyncio.Event()
+    observed: dict[str, bool] = {}
+
+    async def handler(_ctx: SessionMessageContext) -> None:
+        entered.set()
+        await asyncio.sleep(0.2)
+        observed["stream_closed_under_handler"] = client.closed[0] or client.cancel_events[0].is_set()
+
+    consumer = SessionQueueConsumer(client, "q", SessionQueueConsumerOptions(max_concurrent_sessions=1), handler)
+    consumer.start()
+    await entered.wait()
+    await consumer.stop()
+
+    assert observed == {"stream_closed_under_handler": False}
+    assert handle.acked[0] is True, "stop() returned before the in-flight message was acked"
+    assert client.closed[0] is True, "stop() returned before the stream closed"
+
+
+async def test_stop_past_the_drain_timeout_cancels_the_handler() -> None:
+    handle = make_delivery("s1", "L1")
+    client = StreamingClient(handle.delivery)
+    entered = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def handler(_ctx: SessionMessageContext) -> None:
+        entered.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    consumer = SessionQueueConsumer(
+        client, "q", SessionQueueConsumerOptions(max_concurrent_sessions=1, drain_timeout_seconds=0.1), handler
+    )
+    consumer.start()
+    await entered.wait()
+    started = time.monotonic()
+    await consumer.stop()
+
+    assert time.monotonic() - started < 2
+    assert cancelled.is_set()
+    assert handle.acked[0] is False
+    assert handle.dead_lettered[0] is False
+
+
+async def test_stop_while_idle_closes_the_stream_promptly() -> None:
+    client = StreamingClient()
+
+    async def handler(_ctx: SessionMessageContext) -> None:
+        pass
+
+    consumer = SessionQueueConsumer(client, "q", SessionQueueConsumerOptions(max_concurrent_sessions=1), handler)
+    consumer.start()
+    await wait_until(lambda: len(client.cancel_events) == 1)
+    started = time.monotonic()
+    await consumer.stop()
+
+    assert time.monotonic() - started < 1
+    assert client.cancel_events[0].is_set()
+    assert client.closed[0] is True
+
+
+async def test_stop_during_a_handler_does_not_start_a_prefetched_message() -> None:
+    first = make_delivery("s1", "L1")
+    second = make_delivery("s1", "L2")
+    client = StreamingClient(first.delivery, second.delivery)
+    entered = asyncio.Event()
+    handled: list[str] = []
+
+    async def handler(ctx: SessionMessageContext) -> None:
+        handled.append(ctx.lock_id)
+        entered.set()
+        await asyncio.sleep(0.1)
+
+    consumer = SessionQueueConsumer(
+        client, "q", SessionQueueConsumerOptions(max_concurrent_sessions=1, prefetch_count=2), handler
+    )
+    consumer.start()
+    await entered.wait()
+    await consumer.stop()
+
+    assert handled == ["L1"]
+    assert first.acked[0] is True
+    assert second.acked[0] is False
+
+
 async def test_stop_drains_gracefully_without_throwing() -> None:
     client = FakeClient(lambda: throwing_sequence(NoSessionsAvailableError("none")))
 

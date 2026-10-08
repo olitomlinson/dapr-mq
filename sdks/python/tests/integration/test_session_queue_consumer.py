@@ -55,3 +55,29 @@ async def test_k02_multi_session_preserves_per_session_order_and_isolates_throug
     assert fast_completed_at[0] < slow_floor, (
         f"fast session took {fast_completed_at[0]:.2f}s, expected well under slow's {slow_floor:.2f}s floor"
     )
+
+
+async def test_k09_stop_drains_in_flight_handlers_and_releases_sessions(client: DaprMQClient, queue_id: str) -> None:
+    session_id = "drain-on-stop"
+    await client.enqueue(queue_id, [EnqueueItem({"seq": 1}, priority=1, session_id=session_id)])
+    entered = asyncio.Event()
+    completed: list[bool] = []
+
+    async def handler(_ctx: SessionMessageContext) -> None:
+        entered.set()
+        await asyncio.sleep(2)  # stop() lands while this runs; it must not be cancelled
+        completed.append(True)
+
+    consumer = SessionQueueConsumer(client, queue_id, SessionQueueConsumerOptions(max_concurrent_sessions=1), handler)
+    consumer.start()
+    await asyncio.wait_for(entered.wait(), timeout=30)
+
+    started = time.monotonic()
+    await consumer.stop()
+
+    assert completed, "stop() returned before the in-flight handler finished"
+    assert time.monotonic() - started < 30, "stop() ran past drain_timeout_seconds"
+    # The session is released by the time stop() returns, and the handler's ack was applied first.
+    lease = await client.accept_session(queue_id, session_id=session_id, lease_seconds=60)
+    assert lease is not None
+    assert await client.dequeue_locked(f"{queue_id}-session-{session_id}", lease_id=lease.lease_id) is None

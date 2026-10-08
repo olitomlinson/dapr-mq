@@ -35,6 +35,10 @@ from .errors import (
 from .grpc import daprmq_pb2, daprmq_pb2_grpc
 from .types import AcknowledgeBatchResult, DequeueLockedItem, LockAcknowledgeResult, DequeueLockedResult, EnqueueItem, EnqueueResult, NackResult, RetryOptions, SessionDelivery, SessionLease
 
+#: How long a stopping :meth:`DaprMQClient.consume_session` stream waits, after half-closing, for the server
+#: to apply what it was sent and end the stream, before it cancels the call.
+SESSION_DRAIN_TIMEOUT_SECONDS = 5.0
+
 #: The health service :meth:`DaprMQClient.wait_for_ready` watches by default: queue operations can be served.
 OPERATIONS_HEALTH_SERVICE = "daprmq.DaprMQ.operations"
 
@@ -308,17 +312,50 @@ class DaprMQClient:
         lease_id is exposed here (unlike the unary session API) - the server tracks the lease
         internally and the gRPC call itself renews it for as long as the stream stays open.
 
-        Pass `cancel` (an `asyncio.Event`) to interrupt the stream early - setting it cancels the
-        underlying gRPC call, unblocking the stream read.
+        Pass `cancel` (an `asyncio.Event`) to stop the stream early. However the stream stops
+        (`cancel`, leaving the loop, or an error), it half-closes rather than cancelling the call:
+        the server applies every settlement already sent, then ends the stream and releases the
+        session. Nothing more is handed out meanwhile, settling afterwards raises, and the call is
+        cancelled only if the server hasn't ended it within ``SESSION_DRAIN_TIMEOUT_SECONDS``.
+        After ``break``, close the generator (``contextlib.aclosing``) to wait for that.
         """
         call = self._grpc_stub.ConsumeSession()
+        loop = asyncio.get_running_loop()
+        write_lock = asyncio.Lock()  # a stop can now race an ack
+        half_closed = False
+        drain_expired = False
+        drain_timer: asyncio.TimerHandle | None = None
+        ended = False
+
+        def expire_drain() -> None:
+            nonlocal drain_expired
+            drain_expired = True
+            call.cancel()
+
+        async def write(request: daprmq_pb2.ConsumeSessionRequest) -> None:
+            async with write_lock:
+                if half_closed:
+                    raise DaprMQError("The session stream is closing; this message can no longer be settled on it.")
+                await call.write(request)
+
+        async def half_close() -> None:
+            nonlocal half_closed, drain_timer
+            async with write_lock:
+                if half_closed:
+                    return
+                half_closed = True
+                drain_timer = loop.call_later(SESSION_DRAIN_TIMEOUT_SECONDS, expire_drain)
+                try:
+                    await call.done_writing()
+                except Exception:
+                    pass  # best-effort - the stream may already be broken
 
         watcher: asyncio.Task[None] | None = None
         if cancel is not None:
 
             async def _watch() -> None:
                 await cancel.wait()
-                call.cancel()
+                await half_close()
 
             watcher = asyncio.ensure_future(_watch())
 
@@ -326,11 +363,14 @@ class DaprMQClient:
             start = daprmq_pb2.ConsumeSessionStart(queue_id=queue_id, lease_seconds=lease_seconds, prefetch_count=prefetch_count)
             if session_id is not None:
                 start.session_id = session_id
-            await call.write(daprmq_pb2.ConsumeSessionRequest(start=start))
+            await write(daprmq_pb2.ConsumeSessionRequest(start=start))
 
             assigned_session_id = session_id or ""
 
             async for response in call:
+                if half_closed:
+                    continue  # stopping: let the server finish, but hand out nothing more
+
                 payload = response.WhichOneof("payload")
 
                 if payload == "session_assigned":
@@ -341,15 +381,13 @@ class DaprMQClient:
                     lock_id = delivered.lock_id
 
                     async def ack(lock_id: str = lock_id) -> None:
-                        await call.write(daprmq_pb2.ConsumeSessionRequest(ack=daprmq_pb2.ConsumeSessionAck(lock_id=lock_id)))
+                        await write(daprmq_pb2.ConsumeSessionRequest(ack=daprmq_pb2.ConsumeSessionAck(lock_id=lock_id)))
 
                     async def dead_letter(lock_id: str = lock_id) -> None:
-                        await call.write(
-                            daprmq_pb2.ConsumeSessionRequest(dead_letter=daprmq_pb2.ConsumeSessionDeadLetter(lock_id=lock_id))
-                        )
+                        await write(daprmq_pb2.ConsumeSessionRequest(dead_letter=daprmq_pb2.ConsumeSessionDeadLetter(lock_id=lock_id)))
 
                     async def nack(lock_id: str = lock_id) -> None:
-                        await call.write(daprmq_pb2.ConsumeSessionRequest(nack=daprmq_pb2.ConsumeSessionNack(lock_id=lock_id)))
+                        await write(daprmq_pb2.ConsumeSessionRequest(nack=daprmq_pb2.ConsumeSessionNack(lock_id=lock_id)))
 
                     yield SessionDelivery(
                         session_id=assigned_session_id,
@@ -367,13 +405,30 @@ class DaprMQClient:
 
                 elif payload == "session_lost":
                     raise SessionLostError(response.session_lost.message)
+            ended = True
+        except (asyncio.CancelledError, grpc.aio.AioRpcError):
+            ended = True
+            if not drain_expired:
+                raise  # cancelling the call ends its read this way; anything else is real
         finally:
             if watcher is not None:
                 watcher.cancel()
             try:
-                await call.done_writing()
-            except Exception:
-                pass  # best-effort - the stream may already be broken/cancelled
+                if not ended:
+                    # However the stream stopped, let the server apply what it was sent first.
+                    await half_close()
+                    try:
+                        async for _ in call:
+                            pass
+                    except asyncio.CancelledError:
+                        if not drain_expired:
+                            call.cancel()
+                            raise
+                    except Exception:
+                        pass  # the stream had already failed
+            finally:
+                if drain_timer is not None:
+                    drain_timer.cancel()
 
     async def wait_for_ready(self, service: str = OPERATIONS_HEALTH_SERVICE) -> None:
         """Wait until the server reports SERVING for ``service`` over the standard gRPC health
