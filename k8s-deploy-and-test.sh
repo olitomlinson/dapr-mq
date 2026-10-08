@@ -284,6 +284,25 @@ rollout_restart_all() {
 }
 
 # ---------------------------------------------------------------------------
+# helm test without --logs: the charts' test pods use hook-delete-policy hook-succeeded, and Helm 3
+# deletes them before --logs fetches, failing a passing run. Failed pods are kept, so their logs
+# are printed from there.
+# ---------------------------------------------------------------------------
+
+run_helm_test() {
+    local release="$1" ns="$2"
+    if helm test "$release" -n "$ns"; then
+        return 0
+    fi
+    local pod
+    for pod in $(kubectl get pods -n "$ns" -o name 2>/dev/null | grep -- '-test-'); do
+        echo "--- ${pod} ---"
+        kubectl logs -n "$ns" "$pod" --tail=100 2>/dev/null || true
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------
 # Step 0: Prerequisite checks
 # ---------------------------------------------------------------------------
 
@@ -509,7 +528,7 @@ rollout_restart_all "$NAMESPACE"
 log_success "DaprMQ pods rolled and ready"
 
 log_info "Running the DaprMQ chart's built-in enqueue/dequeue smoke test..."
-if helm test "$DAPRMQ_RELEASE" -n "$NAMESPACE" --logs; then
+if run_helm_test "$DAPRMQ_RELEASE" "$NAMESPACE"; then
     record_pass "helm test daprmq (enqueue/dequeue smoke test)"
 else
     record_fail "helm test daprmq (enqueue/dequeue smoke test)" "helm test exited non-zero"
@@ -541,7 +560,7 @@ else
     log_success "Example app pods rolled and ready"
 
     log_info "Running the example chart's built-in health-check test..."
-    if helm test "$EXAMPLES_RELEASE" -n "$EXAMPLES_NAMESPACE" --logs; then
+    if run_helm_test "$EXAMPLES_RELEASE" "$EXAMPLES_NAMESPACE"; then
         record_pass "helm test daprmq-examples (8x /health)"
     else
         record_fail "helm test daprmq-examples (8x /health)" "helm test exited non-zero"
