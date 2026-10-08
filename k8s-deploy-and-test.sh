@@ -39,11 +39,16 @@
 #                                the producer's `autoscale` scenario and asserts the KEDA-scaled
 #                                worker Deployment scales out, consumes in parallel, and returns to 0.
 #                                Only dotnet implements the worker so far; others are skipped.
+#                                Also runs the ScaledJob checks in examples/keda/test/run.sh.
+#   --skip-examples             Don't build, deploy or test the example apps (the --keda
+#                                ScaledJob checks still run - they bring their own worker)
+#   --kind-cluster NAME         Load the built images into this kind cluster (`kind load
+#                                docker-image`) instead of relying on a shared Docker daemon
 #   -h, --help                  Show this help and exit
 #
 # Environment overrides (same effect as the matching flag, flags win if both are set):
 #   NAMESPACE, EXAMPLES_NAMESPACE, DAPR_NAMESPACE, KUBE_CONTEXT, IMAGE_TAG,
-#   LANGUAGES, POSTGRES_PASSWORD, DAPR_VERSION, KEDA
+#   LANGUAGES, POSTGRES_PASSWORD, DAPR_VERSION, KEDA, SKIP_EXAMPLES, KIND_CLUSTER
 
 set -euo pipefail
 
@@ -63,6 +68,8 @@ LANGUAGES="${LANGUAGES:-dotnet,java,python,typescript}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-daprmq_secret_123}"
 DAPR_VERSION="${DAPR_VERSION:-}"
 KEDA="${KEDA:-false}"
+SKIP_EXAMPLES="${SKIP_EXAMPLES:-false}"
+KIND_CLUSTER="${KIND_CLUSTER:-}"
 
 DAPR_RELEASE="dapr"
 POSTGRES_RELEASE="postgres"
@@ -128,6 +135,8 @@ while [[ $# -gt 0 ]]; do
         --skip-build) SKIP_BUILD="true"; shift ;;
         --dapr-version) DAPR_VERSION="$2"; shift 2 ;;
         --keda) KEDA="true"; shift ;;
+        --skip-examples) SKIP_EXAMPLES="true"; shift ;;
+        --kind-cluster) KIND_CLUSTER="$2"; shift 2 ;;
         -h|--help) show_help; exit 0 ;;
         *) log_error "Unknown option: $1"; show_help; exit 1 ;;
     esac
@@ -275,6 +284,25 @@ rollout_restart_all() {
 }
 
 # ---------------------------------------------------------------------------
+# helm test without --logs: the charts' test pods use hook-delete-policy hook-succeeded, and Helm 3
+# deletes them before --logs fetches, failing a passing run. Failed pods are kept, so their logs
+# are printed from there.
+# ---------------------------------------------------------------------------
+
+run_helm_test() {
+    local release="$1" ns="$2"
+    if helm test "$release" -n "$ns"; then
+        return 0
+    fi
+    local pod
+    for pod in $(kubectl get pods -n "$ns" -o name 2>/dev/null | grep -- '-test-'); do
+        echo "--- ${pod} ---"
+        kubectl logs -n "$ns" "$pod" --tail=100 2>/dev/null || true
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------
 # Step 0: Prerequisite checks
 # ---------------------------------------------------------------------------
 
@@ -287,6 +315,11 @@ for cmd in kubectl helm docker curl; do
     fi
 done
 log_success "kubectl, helm, docker, curl are all installed"
+
+if [[ -n "$KIND_CLUSTER" ]] && ! command -v kind >/dev/null 2>&1; then
+    log_error "--kind-cluster given but kind is not installed"
+    exit 1
+fi
 
 if ! docker info >/dev/null 2>&1; then
     log_error "Docker daemon is not running (docker info failed)"
@@ -344,8 +377,24 @@ else
         log_success "Built daprmq-operator:${IMAGE_TAG}"
     fi
 
-    ./examples/shared/build-images.sh
-    log_success "Built all 8 example images"
+    if [[ "$SKIP_EXAMPLES" == "true" ]]; then
+        log_info "Skipping example images (--skip-examples)"
+    else
+        ./examples/shared/build-images.sh
+        log_success "Built all 8 example images"
+    fi
+fi
+
+if [[ -n "$KIND_CLUSTER" ]]; then
+    kind_images=("daprmq:${IMAGE_TAG}")
+    [[ "$KEDA" == "true" ]] && kind_images+=("daprmq-operator:${IMAGE_TAG}")
+    if [[ "$SKIP_EXAMPLES" != "true" ]]; then
+        for lang in dotnet java python typescript; do
+            kind_images+=("daprmq-examples-${lang}-producer:0.1.0" "daprmq-examples-${lang}-consumer:0.1.0")
+        done
+    fi
+    kind load docker-image --name "$KIND_CLUSTER" "${kind_images[@]}"
+    log_success "Loaded ${#kind_images[@]} image(s) into kind cluster '$KIND_CLUSTER'"
 fi
 
 # ---------------------------------------------------------------------------
@@ -354,7 +403,7 @@ fi
 
 log_section "Ensuring Namespaces"
 
-for ns in "$NAMESPACE" "$EXAMPLES_NAMESPACE"; do
+for ns in "$NAMESPACE" $([[ "$SKIP_EXAMPLES" == "true" ]] || echo "$EXAMPLES_NAMESPACE"); do
     kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
     log_success "Namespace ready: $ns"
 done
@@ -479,7 +528,7 @@ rollout_restart_all "$NAMESPACE"
 log_success "DaprMQ pods rolled and ready"
 
 log_info "Running the DaprMQ chart's built-in enqueue/dequeue smoke test..."
-if helm test "$DAPRMQ_RELEASE" -n "$NAMESPACE" --logs; then
+if run_helm_test "$DAPRMQ_RELEASE" "$NAMESPACE"; then
     record_pass "helm test daprmq (enqueue/dequeue smoke test)"
 else
     record_fail "helm test daprmq (enqueue/dequeue smoke test)" "helm test exited non-zero"
@@ -489,37 +538,41 @@ fi
 # Step 8: Deploy the example apps (images already built in Step 1)
 # ---------------------------------------------------------------------------
 
-log_section "Deploying Example Apps"
-
-examples_helm_args=(upgrade --install "$EXAMPLES_RELEASE" ./examples/helm
-    -n "$EXAMPLES_NAMESPACE"
-    --set daprmq.namespace="$NAMESPACE"
-    --set daprmq.releaseName="$DAPRMQ_RELEASE"
-    --wait --timeout 5m0s)
-if [[ "$KEDA" == "true" ]]; then
-    examples_helm_args+=(--set autoscale.enabled=true)
-fi
-helm "${examples_helm_args[@]}"
-
-log_success "Example apps deployed/upgraded in namespace $EXAMPLES_NAMESPACE"
-
-log_info "Restarting example app pods to guarantee they're running the images just built (not stale ones from a previous run of this script)..."
-rollout_restart_all "$EXAMPLES_NAMESPACE"
-log_success "Example app pods rolled and ready"
-
-log_info "Running the example chart's built-in health-check test..."
-if helm test "$EXAMPLES_RELEASE" -n "$EXAMPLES_NAMESPACE" --logs; then
-    record_pass "helm test daprmq-examples (8x /health)"
+if [[ "$SKIP_EXAMPLES" == "true" ]]; then
+    log_warning "Skipping example apps (--skip-examples)"
 else
-    record_fail "helm test daprmq-examples (8x /health)" "helm test exited non-zero"
+    log_section "Deploying Example Apps"
+
+    examples_helm_args=(upgrade --install "$EXAMPLES_RELEASE" ./examples/helm
+        -n "$EXAMPLES_NAMESPACE"
+        --set daprmq.namespace="$NAMESPACE"
+        --set daprmq.releaseName="$DAPRMQ_RELEASE"
+        --wait --timeout 5m0s)
+    if [[ "$KEDA" == "true" ]]; then
+        examples_helm_args+=(--set autoscale.enabled=true)
+    fi
+    helm "${examples_helm_args[@]}"
+
+    log_success "Example apps deployed/upgraded in namespace $EXAMPLES_NAMESPACE"
+
+    log_info "Restarting example app pods to guarantee they're running the images just built (not stale ones from a previous run of this script)..."
+    rollout_restart_all "$EXAMPLES_NAMESPACE"
+    log_success "Example app pods rolled and ready"
+
+    log_info "Running the example chart's built-in health-check test..."
+    if run_helm_test "$EXAMPLES_RELEASE" "$EXAMPLES_NAMESPACE"; then
+        record_pass "helm test daprmq-examples (8x /health)"
+    else
+        record_fail "helm test daprmq-examples (8x /health)" "helm test exited non-zero"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
 # Step 9: End-to-end scenario run-through
 # ---------------------------------------------------------------------------
 
-if [[ "$SKIP_E2E" == "true" ]]; then
-    log_warning "Skipping E2E scenario run-through (--skip-e2e)"
+if [[ "$SKIP_E2E" == "true" || "$SKIP_EXAMPLES" == "true" ]]; then
+    log_warning "Skipping E2E scenario run-through (--skip-e2e / --skip-examples)"
 else
     log_section "Running E2E Scenarios: ${SCENARIOS[*]} x ${LANGUAGE_LIST[*]}"
 
@@ -621,7 +674,7 @@ record_processing_pods() {
         | grep "processed [0-9]* items" | sed -E 's#^\[pod/([^/]+)/.*#\1#' >> "$2" || true
 }
 
-if [[ "$KEDA" == "true" && "$SKIP_E2E" != "true" ]]; then
+if [[ "$KEDA" == "true" && "$SKIP_E2E" != "true" && "$SKIP_EXAMPLES" != "true" ]]; then
     log_section "KEDA Autoscaling"
 
     for lang in "${LANGUAGE_LIST[@]}"; do
@@ -705,6 +758,20 @@ if [[ "$KEDA" == "true" && "$SKIP_E2E" != "true" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Step 11: KEDA ScaledJob for long-running work (--keda only) - examples/keda/README.md#long-running-work
+# ---------------------------------------------------------------------------
+
+if [[ "$KEDA" == "true" && "$SKIP_E2E" != "true" ]]; then
+    log_section "KEDA ScaledJob (long-running work)"
+
+    if ./examples/keda/test/run.sh --namespace "$NAMESPACE" --release "$DAPRMQ_RELEASE" --keda-namespace "$KEDA_NAMESPACE"; then
+        record_pass "KEDA ScaledJob checks (examples/keda/test/run.sh)"
+    else
+        record_fail "KEDA ScaledJob checks (examples/keda/test/run.sh)" "see its summary above"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 
@@ -732,4 +799,4 @@ if [[ "$FAILED" == "true" ]]; then
     exit 1
 fi
 
-log_success "All checks passed - DaprMQ and all 4 example SDKs are deployed and verified end-to-end."
+log_success "All checks passed."
