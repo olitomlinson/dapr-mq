@@ -1,0 +1,61 @@
+name: Kubernetes (KEDA)
+
+# Deploys DaprMQ (with the operator), Dapr, Postgres and KEDA onto a kind cluster on the runner, then
+# runs the KEDA ScaledJob checks (examples/keda/test/run.sh) via k8s-deploy-and-test.sh. The example
+# apps are skipped (--skip-examples): they're 8 more image builds, and the checks bring their own worker.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - 'helm/**'
+      - 'examples/keda/**'
+      - 'k8s-deploy-and-test.sh'
+      - '.github/workflows/k8s-keda.yml'
+  pull_request:
+    paths:
+      - 'server/**'
+      - 'helm/**'
+      - 'examples/keda/**'
+      - 'k8s-deploy-and-test.sh'
+      - '.github/workflows/k8s-keda.yml'
+  schedule:
+    - cron: '0 5 * * *' # nightly: catches new Dapr/KEDA chart releases (both track latest)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: k8s-keda-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  keda:
+    name: KEDA ScaledJob on kind
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: daprmq
+
+      - name: Deploy and test
+        run: ./k8s-deploy-and-test.sh --keda --skip-examples --kind-cluster daprmq --context kind-daprmq
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide
+          kubectl get scaledjobs,jobs -A
+          kubectl describe pods -n daprmq | tail -n 200
+          for c in operator daprd; do
+            echo "--- daprmq operator ($c) ---"
+            kubectl logs -n daprmq -l app.kubernetes.io/component=operator -c "$c" --tail=200 --prefix || true
+          done
+          echo "--- keda-operator ---"
+          kubectl logs -n keda deploy/keda-operator --tail=300 || true
