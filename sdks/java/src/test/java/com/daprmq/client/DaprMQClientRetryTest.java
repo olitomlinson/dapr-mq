@@ -108,9 +108,11 @@ class DaprMQClientRetryTest {
 
     @Test
     void notDeliveredUntilTimeRunsOutThrowsUnavailable() {
+        // The window must outlast a cold first request (class loading, new connection) on a busy CI
+        // runner, or only one attempt fits and the "retried" assertion below flakes.
         try (ScriptedHttpServer server = new ScriptedHttpServer(NOT_DELIVERED)) {
             DaprMQUnavailableException e = assertThrows(DaprMQUnavailableException.class,
-                    () -> client(server.baseUrl(), FAST.withTimeout(Duration.ofMillis(200))).acknowledge("q", "L1"));
+                    () -> client(server.baseUrl(), FAST.withTimeout(Duration.ofSeconds(2))).acknowledge("q", "L1"));
 
             assertTrue(server.requests().size() > 1);
             assertEquals("UNAVAILABLE", e.getErrorCode());
