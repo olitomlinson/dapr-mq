@@ -12,8 +12,8 @@ import (
 )
 
 // closeGrace is how long a closed stream waits for the server to finish the settlements already
-// sent and end the stream, before the client tears it down regardless.
-const closeGrace = 30 * time.Second
+// sent and end the stream, before the client tears it down regardless. A var so tests can shorten it.
+var closeGrace = 5 * time.Second
 
 // SessionStream is a managed consume loop for exactly one session, from [Client.ConsumeSession]:
 // the server claims a session, streams its items, and renews the lease for as long as the stream

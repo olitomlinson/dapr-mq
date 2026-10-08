@@ -152,7 +152,7 @@ for {
 }
 ```
 
-Call `Receive` from one goroutine; `Ack`/`DeadLetter`/`Nack` may be called from any. `Close()` half-closes the stream: the server applies every settlement already sent and then releases the session (keep calling `Receive` until it returns an error to wait for that). Cancelling `ctx` ends the stream immediately.
+Call `Receive` from one goroutine; `Ack`/`DeadLetter`/`Nack` may be called from any. `Close()` half-closes the stream: the server applies every settlement already sent and then releases the session (keep calling `Receive` until it returns an error to wait for that). If the server hasn't ended the stream 5 s after `Close`, the client cancels it. Settling after `Close` returns `ErrSessionStreamClosed`. Cancelling `ctx` ends the stream immediately, dropping settlements the server hasn't read yet.
 
 ## Sessions: managed consume loop (`SessionQueueConsumer`)
 

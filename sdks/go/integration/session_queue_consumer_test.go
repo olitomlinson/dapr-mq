@@ -92,3 +92,56 @@ func TestK02_MultiSession_Preserves_Per_Session_Order_And_Isolates_Throughput(t 
 		t.Fatalf("fast session took %s, expected well under slow's %s floor", fastCompletedAfter, slowFloor)
 	}
 }
+
+func TestK09_Stop_Drains_In_Flight_Handlers_And_Releases_Sessions(t *testing.T) {
+	client := newClient(t, nil)
+	queueID := newQueueID()
+	sessionID := "drain-on-stop"
+	ctx := context.Background()
+	if _, err := client.Enqueue(ctx, queueID, []daprmq.EnqueueItem{{Item: map[string]any{"seq": 1}, SessionID: sessionID}}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{})
+	var completed, cancelled bool
+	consumer, err := daprmq.NewSessionQueueConsumer(client, queueID, func(ctx context.Context, msg daprmq.SessionMessage) error {
+		close(entered)
+		time.Sleep(2 * time.Second) // Stop lands while this runs; it must not be cancelled
+		cancelled = ctx.Err() != nil
+		completed = true
+		return nil
+	}, &daprmq.SessionQueueConsumerOptions{MaxConcurrentSessions: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer.Start(ctx)
+	select {
+	case <-entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("handler never ran")
+	}
+
+	started := time.Now()
+	if err := consumer.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if !completed || cancelled {
+		t.Fatalf("completed = %v, cancelled = %v", completed, cancelled)
+	}
+	if time.Since(started) >= 30*time.Second {
+		t.Fatal("Stop ran past DrainTimeout")
+	}
+	// The session is released by the time Stop returns, and the handler's ack was applied first.
+	lease, err := client.AcceptSession(ctx, queueID, &daprmq.AcceptSessionOptions{SessionID: sessionID, LeaseDuration: time.Minute})
+	if err != nil || lease == nil {
+		t.Fatalf("AcceptSession = %v, %v", lease, err)
+	}
+	remaining, err := client.DequeueLocked(ctx, queueID+"-session-"+sessionID, &daprmq.DequeueLockedOptions{LeaseID: lease.LeaseID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining.Items) != 0 {
+		t.Fatalf("remaining = %+v", remaining.Items)
+	}
+}

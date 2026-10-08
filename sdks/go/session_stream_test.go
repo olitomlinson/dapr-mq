@@ -191,6 +191,34 @@ func TestCloseHalfClosesSoTheServerSeesEverySettlementFirst(t *testing.T) {
 	}
 }
 
+func TestCloseCancelsTheCallIfTheServerNeverEndsIt(t *testing.T) {
+	defer func(g time.Duration) { closeGrace = g }(closeGrace)
+	closeGrace = 100 * time.Millisecond
+	cancelled := make(chan struct{})
+	client := newGRPCClient(t, &fakeServer{consume: func(stream pb.DaprMQ_ConsumeSessionServer) error {
+		_ = stream.Send(assigned("s1"))
+		<-stream.Context().Done() // never ends the stream itself, even after the half-close
+		close(cancelled)
+		return nil
+	}}, nil)
+	stream, err := client.ConsumeSession(bg, "q", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("call was never cancelled after the drain")
+	}
+	if _, err := stream.Receive(); err == nil {
+		t.Fatal("Receive must end once the call is cancelled")
+	}
+}
+
 func TestCancellingTheContextEndsTheStream(t *testing.T) {
 	script := newConsumeScript()
 	client := newGRPCClient(t, &fakeServer{consume: script.serve(assigned("s1"))}, nil)

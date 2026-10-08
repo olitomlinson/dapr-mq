@@ -3,6 +3,7 @@ package daprmq
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -368,5 +369,63 @@ func TestConsumerRunsMaxConcurrentSessionsSlots(t *testing.T) {
 
 	if p := peak.Load(); p != 2 {
 		t.Fatalf("peak concurrent handlers = %d, want 2", p)
+	}
+}
+
+func TestConsumerIdleStopHalfClosesTheStreamAndReturnsPromptly(t *testing.T) {
+	ended := make(chan error, 1)
+	client := newGRPCClient(t, &fakeServer{consume: func(stream pb.DaprMQ_ConsumeSessionServer) error {
+		if _, err := stream.Recv(); err != nil {
+			return err
+		}
+		_ = stream.Send(assigned("s1"))
+		_, err := stream.Recv()
+		ended <- err // io.EOF on a half-close; a cancellation error otherwise
+		return nil
+	}}, nil)
+	consumer, err := NewSessionQueueConsumer(client, "q", func(context.Context, SessionMessage) error { return nil }, oneSlot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer.Start(bg)
+	time.Sleep(50 * time.Millisecond)
+
+	started := time.Now()
+	if err := consumer.Stop(bg); err != nil {
+		t.Fatal(err)
+	}
+
+	if time.Since(started) > time.Second {
+		t.Fatal("idle Stop was not prompt")
+	}
+	if got := <-ended; !errors.Is(got, io.EOF) {
+		t.Fatalf("stream ended with %v, want a half-close", got)
+	}
+}
+
+func TestConsumerStopDoesNotStartAPrefetchedMessage(t *testing.T) {
+	server := newSessionsServer(session("s1", "L1", "L2"))
+	entered := make(chan struct{})
+	var handled atomic.Int32
+	consumer, _ := newConsumer(t, server, &SessionQueueConsumerOptions{MaxConcurrentSessions: 1, PrefetchCount: 2},
+		func(context.Context, SessionMessage) error {
+			if handled.Add(1) == 1 {
+				close(entered)
+				time.Sleep(100 * time.Millisecond)
+			}
+			return nil
+		})
+	consumer.Start(bg)
+	<-entered
+
+	if err := consumer.Stop(bg); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := handled.Load(); n != 1 {
+		t.Fatalf("handled %d messages, want 1", n)
+	}
+	if got := <-server.settled; got.GetAck().GetLockId() != "L1" {
+		t.Fatalf("settled = %+v", got)
 	}
 }
