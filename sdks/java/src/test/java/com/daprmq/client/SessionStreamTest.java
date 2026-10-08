@@ -1,5 +1,6 @@
 package com.daprmq.client;
 
+import com.daprmq.client.errors.DaprMQException;
 import com.daprmq.client.errors.SessionLockedException;
 import com.daprmq.client.errors.SessionLostException;
 import com.daprmq.client.types.SessionDelivery;
@@ -10,9 +11,11 @@ import com.daprmq.grpc.SessionDelivered;
 import com.daprmq.grpc.SessionError;
 import com.daprmq.grpc.SessionLost;
 import io.grpc.stub.StreamObserver;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.Iterator;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -23,6 +26,19 @@ class SessionStreamTest {
 
     private FakeRequestObserver requestObserver;
     private StreamObserver<ConsumeSessionResponse> responseObserver;
+
+    private final long originalDrainTimeout = SessionStream.drainTimeoutMillis;
+
+    @AfterEach
+    void restoreDrainTimeout() {
+        SessionStream.drainTimeoutMillis = originalDrainTimeout;
+    }
+
+    private static ConsumeSessionResponse delivered(String lockId) {
+        return ConsumeSessionResponse.newBuilder()
+                .setDelivered(SessionDelivered.newBuilder().setLockId(lockId).setItemJson("{}").setPriority(0).setLockExpiresAt(1).build())
+                .build();
+    }
 
     private SessionStream newStream(ConsumeSessionOptions options) {
         requestObserver = new FakeRequestObserver();
@@ -141,5 +157,64 @@ class SessionStreamTest {
         stream.close();
 
         assertTrue(requestObserver.completed);
+    }
+
+    @Test
+    void closeAfterAckingHalfClosesAndLeavesTheCallToTheServer() throws InterruptedException {
+        SessionStream.drainTimeoutMillis = 100;
+        SessionStream stream = newStream(ConsumeSessionOptions.defaults());
+        responseObserver.onNext(delivered("L1"));
+        Iterator<SessionDelivery> it = stream.iterator();
+        it.next().ack().run();
+
+        stream.close();
+        responseObserver.onCompleted(); // the server applies the ack, then ends the stream
+
+        assertFalse(it.hasNext());
+        Thread.sleep(300); // past the drain timeout
+        assertEquals("L1", requestObserver.sent.get(1).getAck().getLockId());
+        assertTrue(requestObserver.completed);
+        assertFalse(requestObserver.cancelled, "the call must not be cancelled once the server has ended it");
+    }
+
+    @Test
+    void closeCancelsTheCallIfTheServerNeverEndsIt() throws InterruptedException {
+        SessionStream.drainTimeoutMillis = 100;
+        SessionStream stream = newStream(ConsumeSessionOptions.defaults());
+
+        stream.close();
+
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (!requestObserver.cancelled && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertTrue(requestObserver.completed);
+        assertTrue(requestObserver.cancelled);
+    }
+
+    @Test
+    void afterCloseNothingMoreIsHandedOut() {
+        SessionStream stream = newStream(ConsumeSessionOptions.defaults());
+        responseObserver.onNext(delivered("L1"));
+        Iterator<SessionDelivery> it = stream.iterator();
+        assertEquals("L1", it.next().lockId());
+
+        stream.close();
+        responseObserver.onNext(delivered("L2"));
+        responseObserver.onCompleted();
+
+        assertFalse(it.hasNext());
+    }
+
+    @Test
+    void settlingAfterCloseThrowsWithoutWriting() {
+        SessionStream stream = newStream(ConsumeSessionOptions.defaults());
+        responseObserver.onNext(delivered("L1"));
+        SessionDelivery delivery = stream.iterator().next();
+
+        stream.close();
+
+        assertThrows(DaprMQException.class, () -> delivery.ack().run());
+        assertEquals(1, requestObserver.sent.size()); // just the Start frame
     }
 }

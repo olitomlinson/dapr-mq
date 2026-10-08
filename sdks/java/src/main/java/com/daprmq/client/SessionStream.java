@@ -16,13 +16,16 @@ import com.daprmq.grpc.ConsumeSessionResponse;
 import com.daprmq.grpc.SessionDelivered;
 import com.daprmq.grpc.SessionError;
 import com.fasterxml.jackson.databind.JsonNode;
+import io.grpc.Status;
 import io.grpc.stub.ClientCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 
 import java.util.Iterator;
 import java.util.NoSuchElementException;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Bridges the async, callback-based {@code ConsumeSession} bidi-streaming RPC into a blocking
@@ -33,16 +36,25 @@ import java.util.concurrent.LinkedBlockingQueue;
  * long as the stream stays open.
  *
  * <p>Single-use: call {@link #iterator()} at most once. Always {@link #close()} (or
- * {@link #cancel()}) when done - closing lets the session drain, cancelling ends the stream
- * (and releases the session) immediately.
+ * {@link #cancel()}) when done. Closing half-closes: the server applies every settlement already
+ * sent, then ends the stream and releases the session. After it, the iterator hands out nothing
+ * more but keeps reading until the server ends the stream (iterate on to wait for that), settling
+ * throws, and the call is cancelled if the server hasn't ended it within 5 s. Cancelling ends the
+ * stream at once, dropping settlements the server hasn't read yet.
  */
 public final class SessionStream implements Iterable<SessionDelivery>, AutoCloseable {
     private static final Object DONE = new Object();
 
+    /** How long a closed stream waits for the server to end it before cancelling the call. Overridable for tests. */
+    static volatile long drainTimeoutMillis = 5_000;
+
     private final BlockingQueue<Object> queue = new LinkedBlockingQueue<>();
-    private final Object lock = new Object();
+    private final Object lock = new Object(); // serialises writes: a close can race an ack
     private final StreamObserver<ConsumeSessionRequest> requestObserver;
     private volatile String assignedSessionId;
+    private volatile boolean closed;
+    private volatile boolean ended;
+    private volatile boolean drainExpired;
     private boolean iteratorCreated;
 
     /** Decouples this class from the generated stub type - lets tests substitute a fake stream. */
@@ -62,11 +74,13 @@ public final class SessionStream implements Iterable<SessionDelivery>, AutoClose
 
             @Override
             public void onError(Throwable t) {
+                ended = true;
                 queue.add(t);
             }
 
             @Override
             public void onCompleted() {
+                ended = true;
                 queue.add(DONE);
             }
         };
@@ -96,17 +110,28 @@ public final class SessionStream implements Iterable<SessionDelivery>, AutoClose
     @Override
     public void close() {
         synchronized (lock) {
+            if (closed) {
+                return;
+            }
+            closed = true;
             try {
                 requestObserver.onCompleted();
             } catch (Exception e) {
                 // best-effort - the stream may already be broken/completed
             }
         }
+        CompletableFuture.delayedExecutor(drainTimeoutMillis, TimeUnit.MILLISECONDS).execute(() -> {
+            if (!ended) {
+                drainExpired = true;
+                cancel();
+            }
+        });
     }
 
-    /** Ends the stream immediately, releasing the session faster than a graceful close would. */
+    /** Ends the stream immediately, dropping settlements the server hasn't read yet. */
     public void cancel() {
         synchronized (lock) {
+            closed = true;
             try {
                 if (requestObserver instanceof ClientCallStreamObserver<ConsumeSessionRequest> cco) {
                     cco.cancel("Consumer stopped", null);
@@ -117,10 +142,15 @@ public final class SessionStream implements Iterable<SessionDelivery>, AutoClose
                 // best-effort - the stream may already be broken/completed
             }
         }
+        // Ends the iterator whether or not the transport reports the cancellation.
+        queue.add(Status.CANCELLED.withDescription("Consumer stopped").asRuntimeException());
     }
 
     private void send(ConsumeSessionRequest request) {
         synchronized (lock) {
+            if (closed) {
+                throw new DaprMQException("The session stream is closing; this message can no longer be settled on it.");
+            }
             requestObserver.onNext(request);
         }
     }
@@ -161,6 +191,11 @@ public final class SessionStream implements Iterable<SessionDelivery>, AutoClose
                     return;
                 }
 
+                if (message instanceof Throwable && drainExpired) {
+                    done = true; // the call was cancelled because the server didn't end it in time
+                    fetched = true;
+                    return;
+                }
                 if (message instanceof RuntimeException re) {
                     done = true;
                     fetched = true;
@@ -175,6 +210,9 @@ public final class SessionStream implements Iterable<SessionDelivery>, AutoClose
                 }
 
                 ConsumeSessionResponse response = (ConsumeSessionResponse) message;
+                if (closed) {
+                    continue; // closing: let the server finish, but hand out nothing more
+                }
                 switch (response.getPayloadCase()) {
                     case SESSION_ASSIGNED -> {
                         assignedSessionId = response.getSessionAssigned().getSessionId();

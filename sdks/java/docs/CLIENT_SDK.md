@@ -127,8 +127,10 @@ var consumer = new SessionQueueConsumer(client, "my-queue", options, context -> 
 
 consumer.start();
 // ... run your application ...
-consumer.stop(); // stops claiming, cancels blocked streams, drains in-flight handlers
+consumer.stop(); // stops claiming, lets in-flight handlers settle, closes streams
 ```
+
+`stop()` stops claiming sessions and closes idle streams at once. A handler that is running finishes and its message is settled (acked, or per `onHandlerException`) before its stream closes; prefetched messages not yet handled return with their session. Handlers still running after `drainTimeoutMillis` (default 30 s) are interrupted and their streams cancelled. `stop()` returns once every stream has closed, so the sessions are released by then. `SessionStream.close()` half-closes: settlements already sent are applied before the session is released (keep iterating to wait for that; nothing more is handed out), and the call is cancelled only if the server hasn't ended it within 5 s. Settling after `close()` throws `DaprMQException`. `cancel()` ends the stream at once, dropping settlements the server hasn't read yet.
 
 `onHandlerException` is one of `DEAD_LETTER_MESSAGE` (default), `NACK_MESSAGE` (return the item to the front of the session for redelivery - counts toward the server's max delivery count, past which it is dead-lettered), `ABANDON_SESSION`, or `BOTH`. Session ordering holds only at the default prefetch of 1: with a larger prefetch, items already delivered are handled before a nacked item comes back.
 

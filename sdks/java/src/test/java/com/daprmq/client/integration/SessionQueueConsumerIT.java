@@ -17,9 +17,13 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -49,6 +53,44 @@ class SessionQueueConsumerIT {
         } catch (Throwable t) {
             server.dumpLogs(); // the client exception rarely says why; daprd's log does
             throw t;
+        }
+    }
+
+    @Test
+    void K09_Stop_DrainsInFlightHandlers_AndReleasesSessions() throws Exception {
+        String queueId = "java-it-" + UUID.randomUUID().toString().replace("-", "");
+        String sessionId = "drain-on-stop";
+
+        try (DaprMQClient client = DaprMQClient.create(server.httpUrl(), server.grpcAddress())) {
+            client.enqueue(queueId, List.of(new EnqueueItem(Map.of("seq", 1), 1, null, sessionId)));
+            CountDownLatch entered = new CountDownLatch(1);
+            AtomicBoolean completed = new AtomicBoolean();
+            AtomicBoolean interrupted = new AtomicBoolean();
+
+            SessionQueueConsumer consumer = new SessionQueueConsumer(client, queueId,
+                    new SessionQueueConsumerOptions().maxConcurrentSessions(1), ctx -> {
+                        entered.countDown();
+                        try {
+                            Thread.sleep(2_000); // stop() lands while this runs; it must not be interrupted
+                        } catch (InterruptedException e) {
+                            interrupted.set(true);
+                            throw e;
+                        }
+                        completed.set(true);
+                    });
+            consumer.start();
+            assertTrue(entered.await(30, TimeUnit.SECONDS));
+
+            long started = System.nanoTime();
+            consumer.stop();
+
+            assertTrue(completed.get(), "stop() returned before the in-flight handler finished");
+            assertFalse(interrupted.get());
+            assertTrue(System.nanoTime() - started < TimeUnit.SECONDS.toNanos(30), "stop() ran past the drain timeout");
+            // The session is released by the time stop() returns, and the handler's ack was applied first.
+            var lease = client.acceptSession(queueId, sessionId, 60);
+            assertNotNull(lease);
+            assertNull(client.dequeueLocked(queueId + "-session-" + sessionId, 1, 30, lease.leaseId()));
         }
     }
 

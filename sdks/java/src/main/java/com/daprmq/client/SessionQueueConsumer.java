@@ -10,8 +10,9 @@ import com.daprmq.client.types.SessionDelivery;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -30,7 +31,7 @@ public final class SessionQueueConsumer implements AutoCloseable {
     private final SessionQueueConsumerOptions options;
     private final SessionHandler handler;
     private final AtomicBoolean stopping = new AtomicBoolean(false);
-    private final Set<SessionStream> activeStreams = ConcurrentHashMap.newKeySet();
+    private final List<Slot> slots = new CopyOnWriteArrayList<>();
 
     /** Test seam - substituted by tests to assert on requested backoff durations without waiting real time. */
     volatile Delay delay = Thread::sleep;
@@ -58,26 +59,36 @@ public final class SessionQueueConsumer implements AutoCloseable {
             t.setDaemon(true);
             return t;
         });
+        slots.clear();
         for (int i = 0; i < options.getMaxConcurrentSessions(); i++) {
-            executor.submit(this::runSlot);
+            Slot slot = new Slot();
+            slots.add(slot);
+            executor.submit(() -> runSlot(slot));
         }
     }
 
     /**
-     * Stops claiming new sessions, cancels any streams currently blocked waiting for a delivery
-     * (releasing their sessions immediately, faster than the lease TTL would), then gives in-flight
-     * handlers up to drainTimeoutMillis to finish.
+     * Stops claiming new sessions and closes idle streams at once. Lets in-flight handlers finish
+     * and settle for up to drainTimeoutMillis, then interrupts them and cancels their streams.
+     * Returns once every stream has closed - closing the stream is itself what releases the
+     * session. Prefetched, unhandled messages return with their session.
      */
     public synchronized void stop() {
         stopping.set(true);
-        for (SessionStream stream : activeStreams) {
-            stream.cancel();
+        for (Slot slot : slots) {
+            slot.closeIfIdle();
         }
 
         if (executor != null) {
             executor.shutdown();
             try {
-                executor.awaitTermination(options.getDrainTimeoutMillis(), TimeUnit.MILLISECONDS);
+                if (!executor.awaitTermination(options.getDrainTimeoutMillis(), TimeUnit.MILLISECONDS)) {
+                    executor.shutdownNow(); // interrupts running handlers
+                    for (Slot slot : slots) {
+                        slot.cancel();
+                    }
+                    executor.awaitTermination(Long.MAX_VALUE, TimeUnit.MILLISECONDS);
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
@@ -90,19 +101,32 @@ public final class SessionQueueConsumer implements AutoCloseable {
         stop();
     }
 
-    private void runSlot() {
+    private void runSlot(Slot slot) {
         int backoffSeconds = options.getMinBackoffSeconds();
 
         while (!stopping.get()) {
             boolean sessionWasClaimed = false;
             SessionStream stream = null;
+            Iterator<SessionDelivery> deliveries = null;
             try {
                 stream = client.consumeSession(queueId, new ConsumeSessionOptions(options.getTargetSessionId(), options.getLeaseSeconds(), options.getPrefetchCount()));
-                activeStreams.add(stream);
+                slot.attach(stream);
+                deliveries = stream.iterator();
 
-                for (SessionDelivery delivery : stream) {
+                while (deliveries.hasNext()) {
+                    SessionDelivery delivery = deliveries.next();
                     sessionWasClaimed = true;
-                    handleDelivery(delivery);
+                    if (!slot.beginHandling()) {
+                        break; // stopping: don't start another message, even a prefetched one
+                    }
+                    try {
+                        handleDelivery(delivery);
+                    } finally {
+                        slot.endHandling();
+                    }
+                    if (stopping.get()) {
+                        break;
+                    }
                 }
                 sessionWasClaimed = true; // stream ended cleanly after a successful claim (drained)
             } catch (StatusRuntimeException e) {
@@ -127,8 +151,11 @@ public final class SessionQueueConsumer implements AutoCloseable {
                 // claim itself had failed.
             } finally {
                 if (stream != null) {
-                    activeStreams.remove(stream);
+                    // Half-close, then wait for the server to apply what was sent and end the stream,
+                    // so the session is released by the time the slot moves on.
                     stream.close();
+                    awaitEnd(deliveries);
+                    slot.attach(null);
                 }
             }
 
@@ -173,8 +200,55 @@ public final class SessionQueueConsumer implements AutoCloseable {
         }
     }
 
+    private static void awaitEnd(Iterator<SessionDelivery> deliveries) {
+        if (deliveries == null) {
+            return;
+        }
+        try {
+            while (deliveries.hasNext()) {
+                deliveries.next(); // a closed stream hands out nothing; this returns once it ends
+            }
+        } catch (RuntimeException e) {
+            // the stream failed, or the slot was interrupted while stopping
+        }
+    }
+
     private static RuntimeException asRuntimeException(Exception e) {
         return e instanceof RuntimeException re ? re : new DaprMQException(e.getMessage());
+    }
+
+    /** One slot's current stream, and whether its handler is running (so stop() must not close it yet). */
+    private final class Slot {
+        private SessionStream stream;
+        private boolean handling;
+
+        synchronized void attach(SessionStream stream) {
+            this.stream = stream;
+            if (stream != null && stopping.get()) {
+                stream.close();
+            }
+        }
+
+        synchronized boolean beginHandling() {
+            handling = !stopping.get();
+            return handling;
+        }
+
+        synchronized void endHandling() {
+            handling = false;
+        }
+
+        synchronized void closeIfIdle() {
+            if (stream != null && !handling) {
+                stream.close();
+            }
+        }
+
+        synchronized void cancel() {
+            if (stream != null) {
+                stream.cancel();
+            }
+        }
     }
 
     @FunctionalInterface

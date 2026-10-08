@@ -12,6 +12,8 @@ final class FakeRequestObserver extends ClientCallStreamObserver<ConsumeSessionR
     final List<ConsumeSessionRequest> sent = new CopyOnWriteArrayList<>();
     volatile boolean cancelled;
     volatile boolean completed;
+    /** Runs when the client half-closes - e.g. a fake server ending the response stream. */
+    volatile Runnable onHalfClose = () -> { };
 
     @Override
     public void cancel(String message, Throwable cause) {
@@ -30,6 +32,7 @@ final class FakeRequestObserver extends ClientCallStreamObserver<ConsumeSessionR
     @Override
     public void onCompleted() {
         completed = true;
+        onHalfClose.run();
     }
 
     @Override
