@@ -101,7 +101,7 @@ Legend: ✅ implemented and passing · ⬜ not yet · 🚫 permanently out of sc
 | K-06 | `TargetSessionId` (requires `MaxConcurrentSessions == 1`) only consumes that session | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
 | K-07 | `MaxConcurrentSessions` is never exceeded | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
 | K-08 | Empty queue backs off (min→max) and picks up sessions enqueued later | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
-| K-09 | `Stop` drains in-flight handlers within `DrainTimeout` and releases sessions | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
+| K-09 | `Stop` drains in-flight handlers within `DrainTimeout` and releases sessions | ✅ | ✅ | ✅ | ✅ | ✅ |
 | K-10 | External cancellation token stops the consumer | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
 | K-11 | `SessionIdleTimeoutSeconds` lets the consumer move on to another session | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
 | **Client lifecycle** | | | | | | |
@@ -120,7 +120,7 @@ Topics/pub-sub, HTTP sink, and large-object offload are server features with no 
 
 ## Notes
 
-- Python, TypeScript, Java and Go cover K-02 and R-01/R-04/R-05 on Testcontainers (Go also Q-01, Q-06, B-01, S-01); the rest of their columns are empty.
+- Python, TypeScript, Java and Go cover K-02, K-09 and R-01/R-04/R-05 on Testcontainers (Go also Q-01, Q-06, B-01, S-01); the rest of their columns are empty.
 - Scenarios relying on TTL expiry (L-02, L-03, S-08) should use the shortest TTL the server accepts and poll with a timeout rather than fixed sleeps. One exception, found while implementing the .NET column:
   - **C-01/C-03**, and any consumer test asserting on post-consumption queue state, must let the server apply the last Ack/DeadLetter before the stream is torn down. Those are fire-and-forget frames on the request stream, so breaking out of the loop immediately after writing one can close the call before it lands. Pairing a short `sessionIdleTimeoutSeconds` with enumerating to the stream's natural end is the reliable shape - the server only ends the stream once nothing is outstanding.
 
