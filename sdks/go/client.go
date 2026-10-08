@@ -391,6 +391,13 @@ func (c *Client) WaitForReady(ctx context.Context, options *WaitForReadyOptions)
 		switch status.Code(err) {
 		case codes.OK, codes.Unavailable:
 			// Stream ended before SERVING, or the server isn't listening yet: reconnect.
+		case codes.DeadlineExceeded:
+			// The server enforced ctx's propagated deadline a moment before ctx itself expired.
+			if _, ok := ctx.Deadline(); ok {
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			return err
 		case codes.Unimplemented:
 			return fmt.Errorf("daprmq: the server does not expose the gRPC health service; upgrade the server: %w", errors.ErrUnsupported)
 		default:
