@@ -19,7 +19,7 @@ export interface SessionQueueConsumerOptions {
   minBackoffSeconds?: number;
   maxBackoffSeconds?: number;
   onHandlerException?: SessionHandlerFailureAction;
-  /** Milliseconds to wait for in-flight handlers to finish on stop() before closing streams. */
+  /** Milliseconds stop() lets in-flight handlers finish and settle before aborting their signal. */
   drainTimeoutMs?: number;
   /**
    * Max time (seconds) to wait for a message on the currently held session before the server
@@ -86,6 +86,15 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+interface Slot {
+  handling: boolean;
+  /**
+   * Closes the slot's current stream: aborted when stopping begins if the slot is idle; otherwise
+   * the slot leaves the stream once the running message is settled.
+   */
+  streamController: AbortController;
+}
+
 /**
  * Manages a pool of `maxConcurrentSessions` independent slots, each looping over a
  * consumeSession stream: claim a session, hand each delivered item to the caller's handler,
@@ -97,7 +106,11 @@ export class SessionQueueConsumer {
   private readonly queueId: string;
   private readonly options: ResolvedOptions;
   private readonly handler: (context: SessionMessageContext, signal: AbortSignal) => Promise<void>;
+  /** Aborted when stopping begins: no more sessions or messages are started. */
   private readonly stopController = new AbortController();
+  /** Handlers' signal: aborted only once drainTimeoutMs runs out. */
+  private readonly handlerController = new AbortController();
+  private readonly slots: Slot[] = [];
 
   private slotPromises: Promise<void>[] | undefined;
 
@@ -132,40 +145,73 @@ export class SessionQueueConsumer {
   }
 
   start(): void {
-    this.slotPromises = Array.from({ length: this.options.maxConcurrentSessions }, () => this.runSlot());
+    this.slotPromises = Array.from({ length: this.options.maxConcurrentSessions }, () => {
+      const slot: Slot = { handling: false, streamController: new AbortController() };
+      this.slots.push(slot);
+      return this.runSlot(slot);
+    });
   }
 
   /**
-   * Stops claiming new sessions, gives in-flight handlers up to drainTimeoutMs to finish, then
-   * closes their streams - closing the stream is itself what releases the session, no separate
-   * releaseSession call is needed here.
+   * Stops claiming new sessions, lets in-flight handlers finish and settle for up to
+   * drainTimeoutMs (then aborts their signal), and resolves once every stream has closed -
+   * closing the stream is itself what releases the session, no separate releaseSession call is
+   * needed here. Prefetched, unhandled messages return with their session.
    */
   async stop(): Promise<void> {
     this.stopController.abort();
+    for (const slot of this.slots) {
+      if (!slot.handling) {
+        slot.streamController.abort();
+      }
+    }
 
     if (this.slotPromises && this.slotPromises.length > 0) {
-      await Promise.race([Promise.all(this.slotPromises), new Promise((resolve) => setTimeout(resolve, this.options.drainTimeoutMs))]);
+      const slots = Promise.all(this.slotPromises);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const drained = await Promise.race([
+        slots.then(() => true),
+        new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(false), this.options.drainTimeoutMs))),
+      ]);
+      clearTimeout(timer);
+      if (!drained) {
+        this.handlerController.abort();
+      }
+      await slots;
     }
   }
 
-  private async runSlot(): Promise<void> {
+  private async runSlot(slot: Slot): Promise<void> {
     const stopSignal = this.stopController.signal;
     let backoffSeconds = this.options.minBackoffSeconds;
 
     while (!stopSignal.aborted) {
       let sessionWasClaimed = false;
+      slot.streamController = new AbortController();
       try {
         const stream = this.client.consumeSession(this.queueId, {
           sessionId: this.options.targetSessionId,
           leaseSeconds: this.options.leaseSeconds,
           prefetchCount: this.options.prefetchCount,
           sessionIdleTimeoutSeconds: this.options.sessionIdleTimeoutSeconds,
-          signal: stopSignal,
+          signal: slot.streamController.signal,
         });
 
+        // Leaving the loop closes the stream and waits for that, which releases the session.
         for await (const delivery of stream) {
           sessionWasClaimed = true;
-          await this.handleDelivery(delivery, stopSignal);
+          if (stopSignal.aborted) {
+            break; // stopping: don't start another message, even a prefetched one
+          }
+          slot.handling = true;
+          try {
+            await this.handleDelivery(delivery);
+          } finally {
+            slot.handling = false;
+          }
+          if (stopSignal.aborted) {
+            break;
+          }
         }
 
         sessionWasClaimed = true; // stream ended cleanly after a successful claim (drained)
@@ -209,7 +255,7 @@ export class SessionQueueConsumer {
     }
   }
 
-  private async handleDelivery(delivery: SessionDelivery, signal: AbortSignal): Promise<void> {
+  private async handleDelivery(delivery: SessionDelivery): Promise<void> {
     const context: SessionMessageContext = {
       queueId: this.queueId,
       sessionId: delivery.sessionId,
@@ -219,11 +265,11 @@ export class SessionQueueConsumer {
     };
 
     try {
-      await this.handler(context, signal);
+      await this.handler(context, this.handlerController.signal);
       await delivery.ack();
     } catch (err) {
-      if (signal.aborted) {
-        throw err;
+      if (this.stopController.signal.aborted) {
+        throw err; // stopping: leave it unsettled to return with the session
       }
       switch (this.options.onHandlerException) {
         case "deadLetterMessage":

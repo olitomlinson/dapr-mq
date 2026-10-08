@@ -80,4 +80,40 @@ describe.skipIf(!dockerAvailable())("SessionQueueConsumer (integration)", () => 
       client.close();
     }
   }, 60_000);
+
+  it("K09_Stop_DrainsInFlightHandlers_AndReleasesSessions", async () => {
+    const queueId = `ts-it-${randomUUID().replaceAll("-", "")}`;
+    const sessionId = "drain-on-stop";
+    const client = new DaprMQClient({ httpBaseUrl: server.httpUrl, grpcAddress: server.grpcAddress });
+
+    try {
+      await client.enqueue(queueId, [{ item: { seq: 1 }, priority: 1, sessionId }]);
+      let entered!: () => void;
+      const handlerEntered = new Promise<void>((resolve) => (entered = resolve));
+      let completed = false;
+      let aborted = false;
+
+      const consumer = new SessionQueueConsumer(client, queueId, { maxConcurrentSessions: 1 }, async (_ctx, signal) => {
+        entered();
+        await sleep(2_000); // stop() lands while this runs; it must not be aborted
+        aborted = signal.aborted;
+        completed = true;
+      });
+
+      consumer.start();
+      await handlerEntered;
+      const started = Date.now();
+      await consumer.stop();
+
+      expect(completed).toBe(true);
+      expect(aborted).toBe(false);
+      expect(Date.now() - started).toBeLessThan(30_000);
+      // The session is released by the time stop() returns, and the handler's ack was applied first.
+      const lease = await client.acceptSession(queueId, { sessionId, leaseSeconds: 60 });
+      expect(lease).not.toBeNull();
+      expect(await client.dequeueLocked(`${queueId}-session-${sessionId}`, { leaseId: lease!.leaseId })).toBeNull();
+    } finally {
+      client.close();
+    }
+  }, 60_000);
 });

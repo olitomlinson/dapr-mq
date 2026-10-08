@@ -10,18 +10,39 @@ export class FakeDuplexStream extends EventEmitter {
   readonly written: ConsumeSessionRequestMessage[] = [];
   ended = false;
   cancelled = false;
+  cancelledBeforeServerEnded = false;
+  private serverEnded = false;
+
+  /**
+   * endsAfterHalfCloseMs: like the real server, end the response stream this long after the client
+   * half-closes (undefined: never, unless the test ends it). onHalfClose: called on the half-close.
+   */
+  constructor(
+    private readonly endsAfterHalfCloseMs?: number,
+    public onHalfClose?: () => void,
+  ) {
+    super();
+  }
 
   write(message: ConsumeSessionRequestMessage): boolean {
+    if (this.ended) {
+      throw new Error("write after end");
+    }
     this.written.push(message);
     return true;
   }
 
   end(): void {
     this.ended = true;
+    this.onHalfClose?.();
+    if (this.endsAfterHalfCloseMs !== undefined) {
+      setTimeout(() => this.emitEnd(), this.endsAfterHalfCloseMs);
+    }
   }
 
   cancel(): void {
     this.cancelled = true;
+    this.cancelledBeforeServerEnded ||= !this.serverEnded;
     this.emit("error", new Error("Cancelled"));
   }
 
@@ -31,6 +52,7 @@ export class FakeDuplexStream extends EventEmitter {
   }
 
   emitEnd(): void {
+    this.serverEnded = true;
     queueMicrotask(() => this.emit("end"));
   }
 

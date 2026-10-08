@@ -18,6 +18,7 @@ import {
 } from "./errors.js";
 import {
   createDaprMQGrpcClient,
+  type ConsumeSessionRequestMessage,
   type ConsumeSessionResponseMessage,
   type DaprMQGrpcClient,
 } from "./grpc/daprmqGrpcClient.js";
@@ -71,6 +72,13 @@ export interface DaprMQClientOptions {
 }
 
 export class DaprMQClient {
+  /**
+   * How long a stopping consumeSession stream waits, after half-closing, for the server to apply
+   * what it was sent and end the stream, before it cancels the call. Overridable for tests.
+   * @internal
+   */
+  static sessionDrainTimeoutMs = 5_000;
+
   private readonly httpBaseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly grpcClient: DaprMQGrpcClient;
@@ -389,6 +397,11 @@ export class DaprMQClient {
    * streams delivered items back, and lets the caller ack/deadLetter each one. No LeaseId is
    * exposed here (unlike the unary session API) - the server tracks the lease internally and the
    * grpc call itself renews it for as long as the stream stays open.
+   *
+   * However the stream stops (`signal`, leaving the loop, or an error), it half-closes rather than
+   * cancelling the call: the server applies every settlement already sent, then ends the stream and
+   * releases the session. Nothing more is handed out meanwhile, settling afterwards rejects, and the
+   * call is cancelled only if the server hasn't ended it within 5 s.
    */
   async *consumeSession(
     queueId: string,
@@ -403,20 +416,57 @@ export class DaprMQClient {
     const { sessionId, leaseSeconds = 30, prefetchCount = 1, sessionIdleTimeoutSeconds = 0, signal } = options;
     const call = this.grpcClient.consumeSession();
 
-    const onAbort = () => call.cancel();
-    signal?.addEventListener("abort", onAbort);
-
     const queue = new AsyncMessageQueue<ConsumeSessionResponseMessage>();
+    let serverEnded!: () => void;
+    const finished = new Promise<void>((resolve) => (serverEnded = resolve));
     call.on("data", (msg) => queue.push(msg));
-    call.on("end", () => queue.end());
-    call.on("error", (err: Error) => queue.fail(err));
+    call.on("end", () => {
+      queue.end();
+      serverEnded();
+    });
+    call.on("error", (err: Error) => {
+      queue.fail(err);
+      serverEnded();
+    });
+
+    let halfClosed = false;
+    let drainExpired = false;
+    let drainTimer: ReturnType<typeof setTimeout> | undefined;
+    const halfClose = () => {
+      if (halfClosed) {
+        return;
+      }
+      halfClosed = true;
+      try {
+        call.end();
+      } catch {
+        // best-effort - the stream may already be broken
+      }
+      drainTimer = setTimeout(() => {
+        drainExpired = true;
+        call.cancel();
+      }, DaprMQClient.sessionDrainTimeoutMs);
+    };
+    const settle = async (request: ConsumeSessionRequestMessage) => {
+      if (halfClosed) {
+        throw new DaprMQError("The session stream is closing; this message can no longer be settled on it.");
+      }
+      call.write(request);
+    };
 
     try {
       call.write({ start: { queueId, sessionId, leaseSeconds, prefetchCount, sessionIdleTimeoutSeconds } });
+      signal?.addEventListener("abort", halfClose);
+      if (signal?.aborted) {
+        halfClose();
+      }
 
       let assignedSessionId = sessionId ?? "";
 
       for await (const response of queue) {
+        if (halfClosed) {
+          continue; // stopping: let the server finish, but hand out nothing more
+        }
         switch (response.payload) {
           case "sessionAssigned":
             assignedSessionId = response.sessionAssigned!.sessionId;
@@ -430,15 +480,9 @@ export class DaprMQClient {
               item: JSON.parse(delivered.itemJson),
               priority: delivered.priority,
               lockExpiresAt: delivered.lockExpiresAt,
-              ack: async () => {
-                call.write({ ack: { lockId: delivered.lockId } });
-              },
-              deadLetter: async () => {
-                call.write({ deadLetter: { lockId: delivered.lockId } });
-              },
-              nack: async () => {
-                call.write({ nack: { lockId: delivered.lockId } });
-              },
+              ack: () => settle({ ack: { lockId: delivered.lockId } }),
+              deadLetter: () => settle({ deadLetter: { lockId: delivered.lockId } }),
+              nack: () => settle({ nack: { lockId: delivered.lockId } }),
             };
             break;
           }
@@ -456,9 +500,16 @@ export class DaprMQClient {
             return;
         }
       }
+    } catch (err) {
+      if (!drainExpired) {
+        throw err; // a drain that ran out cancels the call, which fails the read
+      }
     } finally {
-      signal?.removeEventListener("abort", onAbort);
-      call.end();
+      signal?.removeEventListener("abort", halfClose);
+      // However the stream stopped, let the server apply what it was sent before the call ends.
+      halfClose();
+      await finished;
+      clearTimeout(drainTimer);
     }
   }
 
