@@ -139,4 +139,42 @@ public class RunRecordsTests
             Directory.Delete(dir, recursive: true);
         }
     }
+
+    private static QueueDrainResult QueueResult(int missing = 0, int orderViolations = 0) =>
+        new(SeedSeconds: 0.4, WallClockSeconds: 5, MessagesPerSecond: 800, IdealSeconds: 0.4, Efficiency: 0.08, TimeToFirstMessageSeconds: 0.02,
+            PeakConcurrentHandlers: 100, DeliveryLatencyMs: new Distribution(4000, 2000, 2000, 4000, 4500, 5000),
+            MessagesHandled: 4000 - missing, Duplicates: 0, Missing: missing, OrderViolations: orderViolations,
+            MessagesPerSecondTimeline: [700, 900], BusyHandlersTimeline: [95.5, 99]);
+
+    [Fact]
+    public void QueueDrain_RecordsTheScenario_AndMovesTheTimelinesOutOfTheMetrics()
+    {
+        var run = RunRecords.QueueDrain(Context, "queue-drain", PerfOptions.QueueDrainProfiles["queue-drain"], QueueResult());
+
+        Assert.Equal("P-05", run["scenario"]!["id"]!.GetValue<string>());
+        Assert.Equal("queue-drain", run["scenario"]!["name"]!.GetValue<string>());
+        Assert.Equal("queue:4000@10ms/active100", run["scenario"]!["key"]!.GetValue<string>());
+        Assert.Equal(4000, run["scenario"]!["params"]!["messages"]!.GetValue<int>());
+        Assert.Null(run["scenario"]!["params"]!["key"]);
+        Assert.Equal(800, run["metrics"]!["messagesPerSecond"]!.GetValue<double>());
+        Assert.Equal(4000, run["metrics"]!["deliveryLatencyMs"]!["p95"]!.GetValue<double>());
+        Assert.Null(run["metrics"]!["messagesPerSecondTimeline"]);
+        Assert.Equal("[700,900]", run["timeline"]!["series"]!["messagesPerSecond"]!.ToJsonString());
+        Assert.Equal("[95.5,99]", run["timeline"]!["series"]!["busyHandlers"]!.ToJsonString());
+        Assert.True(run["checks"]!["passed"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public void QueueDrain_FailsItsChecks_OnMissingMessages_OrOutOfOrderUnderStrictOrder()
+    {
+        var missing = RunRecords.QueueDrain(Context, "queue-drain", PerfOptions.QueueDrainProfiles["queue-drain"], QueueResult(missing: 3));
+        Assert.Equal("[\"3 messages missing\"]", missing["checks"]!["failures"]!.ToJsonString());
+
+        var strict = RunRecords.QueueDrain(Context, "queue-strict-order", PerfOptions.QueueDrainProfiles["queue-strict-order"], QueueResult(orderViolations: 2));
+        Assert.Equal("[\"2 order violations\"]", strict["checks"]!["failures"]!.ToJsonString());
+
+        // Without strict order, a window above 1 legitimately hands messages to handlers out of order.
+        var unordered = RunRecords.QueueDrain(Context, "queue-drain", PerfOptions.QueueDrainProfiles["queue-drain"], QueueResult(orderViolations: 2));
+        Assert.True(unordered["checks"]!["passed"]!.GetValue<bool>());
+    }
 }

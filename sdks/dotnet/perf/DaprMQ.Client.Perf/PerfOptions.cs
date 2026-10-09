@@ -52,6 +52,9 @@ public sealed record PerfOptions
     /// <summary>Set when <see cref="Profile"/> is a closed-loop load profile rather than a session drain.</summary>
     public LoadParams? Load => LoadProfiles.GetValueOrDefault(Profile);
 
+    /// <summary>Set when <see cref="Profile"/> is a P-05 queue-drain profile.</summary>
+    public QueueDrainParams? QueueDrain => QueueDrainProfiles.GetValueOrDefault(Profile);
+
     /// <summary>pr / extreme / adhoc, as recorded with the run.</summary>
     public string Scale => Suite ?? (Overridden ? "adhoc" : ProfileScales.GetValueOrDefault(Profile, "adhoc"));
 
@@ -106,18 +109,45 @@ public sealed record PerfOptions
         ["dequeue-ack-ramp"] = new(LoadScenarios.DequeueAck, [1, 2, 4, 8, 16, 32, 64, 128, 256], null, 1, 1, 256, 12000, 5, 30),
     };
 
+    /// <summary>
+    /// P-05 queue-drain profiles: one QueueConsumer at its defaults (100 active messages, unlimited
+    /// handlers) unless a profile says otherwise, exactly as tabled in sdks/testing/PERFORMANCE_TESTS.md.
+    /// </summary>
+    public static readonly IReadOnlyDictionary<string, QueueDrainParams> QueueDrainProfiles = new Dictionary<string, QueueDrainParams>
+    {
+        // Pure overhead: an instant handler, so throughput is the stream's own ceiling.
+        ["queue-drain-instant"] = new(4000, 0, 100, 0),
+        // A fast handler: overhead still dominates.
+        ["queue-drain"] = new(4000, 10, 100, 0),
+        // Handler-bound: how close the consumer gets to the ideal with a full window.
+        ["queue-drain-slow"] = new(3000, 100, 100, 0),
+        // One message in flight: the per-message round trip (deliver, ack, refill).
+        ["queue-strict-order"] = new(300, 0, 100, 0, StrictOrder: true),
+        // A publisher slower than the consumer: how fast a new message reaches an idle consumer.
+        ["queue-live-publish"] = new(50, 10, 100, 0, PublishIntervalMs: 200, PublishJitterMs: 100),
+        ["queue-drain-large"] = new(50000, 10, 500, 0),
+        // Every 20th message takes 5 s: slow handlers mustn't hold up the rest.
+        ["queue-drain-tail"] = new(2000, 100, 100, 0, TailEvery: 20, TailMs: 5000),
+    };
+
     private static readonly Dictionary<string, string> ProfileScales = new()
     {
         ["enqueue"] = "pr", ["enqueue-hot"] = "pr", ["enqueue-batch"] = "pr", ["dequeue-ack"] = "pr",
         ["steady-drain"] = "pr", ["session-churn"] = "pr", ["deep-session"] = "pr", ["live-publish"] = "pr", ["sdk-defaults"] = "pr",
         ["enqueue-ramp"] = "extreme", ["enqueue-hot-ramp"] = "extreme", ["enqueue-batch-ramp"] = "extreme", ["dequeue-ack-ramp"] = "extreme",
         ["full"] = "extreme", ["wide-drain"] = "extreme",
+        ["queue-drain-instant"] = "pr", ["queue-drain"] = "pr", ["queue-drain-slow"] = "pr", ["queue-strict-order"] = "pr", ["queue-live-publish"] = "pr",
+        ["queue-drain-large"] = "extreme", ["queue-drain-tail"] = "extreme",
     };
 
     public static readonly IReadOnlyDictionary<string, string[]> Suites = new Dictionary<string, string[]>
     {
-        ["pr"] = ["enqueue", "enqueue-hot", "enqueue-batch", "dequeue-ack", "steady-drain", "session-churn", "deep-session", "live-publish", "sdk-defaults"],
-        ["extreme"] = ["enqueue-ramp", "enqueue-hot-ramp", "enqueue-batch-ramp", "dequeue-ack-ramp", "full", "wide-drain"],
+        ["pr"] =
+        [
+            "enqueue", "enqueue-hot", "enqueue-batch", "dequeue-ack", "steady-drain", "session-churn", "deep-session", "live-publish", "sdk-defaults",
+            "queue-drain-instant", "queue-drain", "queue-drain-slow", "queue-strict-order", "queue-live-publish",
+        ],
+        ["extreme"] = ["enqueue-ramp", "enqueue-hot-ramp", "enqueue-batch-ramp", "dequeue-ack-ramp", "full", "wide-drain", "queue-drain-large", "queue-drain-tail"],
     };
 
     private static readonly HashSet<string> ScenarioFlags =
@@ -136,8 +166,8 @@ public sealed record PerfOptions
 
     private static PerfOptions WithProfile(PerfOptions options, string profile) =>
         Profiles.TryGetValue(profile, out var apply) ? apply(options) with { Profile = profile }
-        : LoadProfiles.ContainsKey(profile) ? options with { Profile = profile }
-        : throw new ArgumentException($"Unknown profile '{profile}'. Known: {string.Join(", ", Profiles.Keys.Concat(LoadProfiles.Keys))}.");
+        : LoadProfiles.ContainsKey(profile) || QueueDrainProfiles.ContainsKey(profile) ? options with { Profile = profile }
+        : throw new ArgumentException($"Unknown profile '{profile}'. Known: {string.Join(", ", Profiles.Keys.Concat(LoadProfiles.Keys).Concat(QueueDrainProfiles.Keys))}.");
 
     public ScenarioParams Scenario => new(Sessions, MessagesPerSession, SettleMs, MaxConcurrentSessions, PrefetchCount, LeaseSeconds, SessionIdleTimeoutSeconds, PublishMode, PublishIntervalMs, PublishJitterMs);
 
@@ -147,7 +177,7 @@ public sealed record PerfOptions
           --benchmark NAME       session-drain (default) or state-reads: actor state
                                  reads/writes per operation, from the Postgres log
           --profile NAME         any profile in sdks/testing/PERFORMANCE_TESTS.md, e.g.
-                                 enqueue, dequeue-ack, steady-drain, enqueue-ramp;
+                                 enqueue, dequeue-ack, steady-drain, queue-drain, enqueue-ramp;
                                  full: 1000 sessions x 100 msgs (default); quick: 100 x 20
           --suite pr|extreme     run every profile of that scale against one stack
           --api-replicas N       API server replicas behind nginx (default 1; extreme 3)

@@ -46,7 +46,7 @@
       "required": ["id", "name", "profile", "key", "params"],
       "properties": {
         "id": { "type": "string", "pattern": "^P-[0-9]{2}$" },
-        "name": { "enum": ["enqueue", "enqueue-batch", "dequeue-ack", "session-drain"] },
+        "name": { "enum": ["enqueue", "enqueue-batch", "dequeue-ack", "session-drain", "queue-drain"] },
         "profile": { "type": "string" },
         "key": { "type": "string", "description": "Canonical form of params; groups comparable runs" },
         "params": { "type": "object" }
@@ -54,7 +54,7 @@
     },
     "metrics": {
       "type": "object",
-      "description": "Headline numbers. Load scenarios (P-01..P-03): opsPerSecond, messagesPerSecond, latencyMs, ops, messages, errors. P-04: the session-drain metrics (wallClockSeconds, efficiency, peak, claimLatencyMs, ...).",
+      "description": "Headline numbers. Load scenarios (P-01..P-03): opsPerSecond, messagesPerSecond, latencyMs, ops, messages, errors. P-04: the session-drain metrics (wallClockSeconds, efficiency, peak, claimLatencyMs, ...). P-05: the queue-drain metrics (messagesPerSecond, wallClockSeconds, idealSeconds, efficiency, deliveryLatencyMs, peakConcurrentHandlers, ...); idealSeconds and efficiency are null for an instant handler.",
       "properties": {
         "opsPerSecond": { "type": "number" },
         "messagesPerSecond": { "type": "number" },
@@ -91,7 +91,7 @@
         "bucketMs": { "type": "integer" },
         "series": {
           "type": "object",
-          "description": "Load: opsPerSecond, messagesPerSecond, latencyP50Ms, latencyP95Ms, latencyP99Ms, errors, concurrency. P-04: busySlots.",
+          "description": "Load: opsPerSecond, messagesPerSecond, latencyP50Ms, latencyP95Ms, latencyP99Ms, errors, concurrency. P-04: busySlots. P-05: messagesPerSecond, busyHandlers.",
           "additionalProperties": { "type": "array", "items": { "type": ["number", "null"] } }
         }
       }

@@ -97,6 +97,12 @@ try
             var result = await new LoadScenario(client, load).RunAsync(cts.Token);
             record = RunRecords.Load(context, runOptions.Profile, load, result);
         }
+        else if (runOptions.QueueDrain is { } queueDrain)
+        {
+            var result = await new QueueDrainScenario(client, queueDrain).RunAsync(cts.Token);
+            record = RunRecords.QueueDrain(context, runOptions.Profile, queueDrain, result);
+            PrintQueueDrainSummary(result);
+        }
         else
         {
             var result = await new SessionDrainScenario(client, runOptions).RunAsync(cts.Token);
@@ -203,4 +209,17 @@ static void PrintSummary(SessionDrainResult r, int slots)
     Console.WriteLine($"Delivery ms:          p50 {r.DeliveryLatencyMs.P50:F0}  p95 {r.DeliveryLatencyMs.P95:F0}  max {r.DeliveryLatencyMs.Max:F0}  (enqueue -> handler start)");
     Console.WriteLine($"Streams {r.Streams} (failed claims {r.FailedClaims}, re-claimed sessions {r.SessionsClaimedMoreThanOnce})");
     Console.WriteLine($"Messages {r.MessagesHandled} (duplicates {r.Duplicates}, missing {r.Missing}, FIFO violations {r.FifoViolations})");
+}
+
+static void PrintQueueDrainSummary(QueueDrainResult r)
+{
+    Console.WriteLine();
+    Console.WriteLine("=== Queue drain ===");
+    Console.WriteLine($"Publish:              {r.SeedSeconds,10:F1} s");
+    Console.WriteLine($"Wall clock:           {r.WallClockSeconds,10:F1} s" + (r.IdealSeconds is { } ideal ? $"   (ideal {ideal:F1} s, efficiency {r.Efficiency:P1})" : ""));
+    Console.WriteLine($"Throughput:           {r.MessagesPerSecond,10:F0} msg/s");
+    Console.WriteLine($"First message after:  {r.TimeToFirstMessageSeconds,10:F2} s");
+    Console.WriteLine($"Peak handlers:        {r.PeakConcurrentHandlers,10}");
+    Console.WriteLine($"Delivery ms:          p50 {r.DeliveryLatencyMs.P50:F0}  p95 {r.DeliveryLatencyMs.P95:F0}  max {r.DeliveryLatencyMs.Max:F0}  (publish -> handler start)");
+    Console.WriteLine($"Messages {r.MessagesHandled} (duplicates {r.Duplicates}, missing {r.Missing}, order violations {r.OrderViolations})");
 }

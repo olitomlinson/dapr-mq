@@ -118,7 +118,8 @@ public class PerfOptionsTests
         var runs = options.Runs();
 
         Assert.Equal(
-            ["enqueue", "enqueue-hot", "enqueue-batch", "dequeue-ack", "steady-drain", "session-churn", "deep-session", "live-publish", "sdk-defaults"],
+            ["enqueue", "enqueue-hot", "enqueue-batch", "dequeue-ack", "steady-drain", "session-churn", "deep-session", "live-publish", "sdk-defaults",
+             "queue-drain-instant", "queue-drain", "queue-drain-slow", "queue-strict-order", "queue-live-publish"],
             runs.Select(r => r.Profile));
         Assert.All(runs, r =>
         {
@@ -135,10 +136,39 @@ public class PerfOptionsTests
     {
         var runs = PerfOptions.Parse(["--suite", "extreme"]).Runs();
 
-        Assert.Equal(["enqueue-ramp", "enqueue-hot-ramp", "enqueue-batch-ramp", "dequeue-ack-ramp", "full", "wide-drain"], runs.Select(r => r.Profile));
+        Assert.Equal(["enqueue-ramp", "enqueue-hot-ramp", "enqueue-batch-ramp", "dequeue-ack-ramp", "full", "wide-drain", "queue-drain-large", "queue-drain-tail"], runs.Select(r => r.Profile));
         Assert.All(runs, r => Assert.Equal(3, r.ApiReplicas));
         Assert.All(runs, r => Assert.Equal("extreme", r.Scale));
         Assert.Equal(5, PerfOptions.Parse(["--suite", "extreme", "--api-replicas", "5"]).ApiReplicas);
+    }
+
+    [Theory]
+    [InlineData("queue-drain-instant", "pr", 4000, 0, 100, 0, false, 0, 0)]
+    [InlineData("queue-drain", "pr", 4000, 10, 100, 0, false, 0, 0)]
+    [InlineData("queue-drain-slow", "pr", 3000, 100, 100, 0, false, 0, 0)]
+    [InlineData("queue-strict-order", "pr", 300, 0, 100, 0, true, 0, 0)]
+    [InlineData("queue-live-publish", "pr", 50, 10, 100, 0, false, 200, 0)]
+    [InlineData("queue-drain-large", "extreme", 50000, 10, 500, 0, false, 0, 0)]
+    [InlineData("queue-drain-tail", "extreme", 2000, 100, 100, 0, false, 0, 20)]
+    public void QueueDrainProfiles_MatchTheSpec(string profile, string scale, int messages, int settleMs, int active, int handlers, bool strict, int publishIntervalMs, int tailEvery)
+    {
+        var options = PerfOptions.Parse(["--profile", profile]);
+        var q = options.QueueDrain!;
+
+        Assert.Null(options.Load);
+        Assert.Equal(scale, options.Scale);
+        Assert.Equal((messages, settleMs, active, handlers, strict, publishIntervalMs, tailEvery),
+            (q.Messages, q.SettleMs, q.MaxActiveMessages, q.MaxConcurrentHandlers, q.StrictOrder, q.PublishIntervalMs, q.TailEvery));
+    }
+
+    [Fact]
+    public void QueueDrainKey_NamesOnlyNonDefaultSettings()
+    {
+        Assert.Equal("queue:4000@10ms/active100", PerfOptions.QueueDrainProfiles["queue-drain"].Key);
+        Assert.Equal("queue:300@0ms/active100+strict", PerfOptions.QueueDrainProfiles["queue-strict-order"].Key);
+        Assert.Equal("queue:50@10ms/active100+pub200ms~100ms", PerfOptions.QueueDrainProfiles["queue-live-publish"].Key);
+        Assert.Equal("queue:2000@100ms/active100+tail5000ms/20", PerfOptions.QueueDrainProfiles["queue-drain-tail"].Key);
+        Assert.Equal("queue:10@0ms/active100/handlers4", new QueueDrainParams(10, 0, 100, 4).Key);
     }
 
     [Fact]
