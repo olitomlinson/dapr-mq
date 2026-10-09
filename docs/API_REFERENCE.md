@@ -656,7 +656,7 @@ GET /topic/{topicId}/subscribers/{subscriberId}/circuit-breaker
 
 ## Sessions
 
-Exclusive, leased ownership of an ordered sub-group within a queue (modeled on Azure Service Bus sessions). A consumer calls `Accept Session` to claim a session, then calls the existing, unmodified `dequeue`/`acknowledge`/`extend-lock`/`nack`/`deadletter` routes with `{queueId}` set to `{originalQueueId}-session-{sessionId}` and a `lease-id` header carrying the returned `leaseId` — no new routes are needed for those five. See [SESSIONS_IMPLEMENTATION.md](SESSIONS_IMPLEMENTATION.md) for the underlying actor design.
+Exclusive, leased ownership of an ordered sub-group within a queue (modeled on Azure Service Bus sessions). A consumer calls `Accept Session` to claim a session, then calls the existing, unmodified `dequeue`/`acknowledge`/`extend-lock`/`nack`/`deadletter` routes with `{queueId}` set to `{originalQueueId}-session-{sessionId}` and a `lease-id` header carrying the returned `leaseId` — no new routes are needed for those five. See [design/sessions.md](design/sessions.md) for the underlying actor design.
 
 ### Accept Session
 

@@ -171,7 +171,7 @@ result, err := client.DequeueLocked(ctx, sessionQueue, &daprmq.DequeueLockedOpti
 _ = client.ReleaseSession(ctx, "my-queue", lease.SessionID, lease.LeaseID)
 ```
 
-`RenewSessionLease(ctx, queueID, sessionID, leaseID, opts)` extends the lease. See [API_REFERENCE.md](../../../docs/API_REFERENCE.md#sessions) and [SESSIONS_IMPLEMENTATION.md](../../../docs/SESSIONS_IMPLEMENTATION.md) for the actor-id convention and lease semantics.
+`RenewSessionLease(ctx, queueID, sessionID, leaseID, opts)` extends the lease. See [API_REFERENCE.md](../../../docs/API_REFERENCE.md#sessions) and [design/sessions.md](../../../docs/design/sessions.md) for the actor-id convention and lease semantics.
 
 ## Sessions: one stream (`ConsumeSession`)
 
@@ -235,7 +235,7 @@ err = consumer.Stop(context.Background())
 
 ### Why one shared client
 
-All of a consumer's slots share the single `Client` (and its one gRPC connection) passed to `NewSessionQueueConsumer`. A gRPC connection multiplexes every RPC, including long-lived streams, over HTTP/2, which is what makes tens or hundreds of concurrent `ConsumeSession` streams cheap. Don't construct a `Client` per slot. See [SESSIONS_IMPLEMENTATION.md](../../../docs/SESSIONS_IMPLEMENTATION.md) for the reasoning.
+All of a consumer's slots share the single `Client` (and its one gRPC connection) passed to `NewSessionQueueConsumer`. A gRPC connection multiplexes every RPC, including long-lived streams, over HTTP/2, which is what makes tens or hundreds of concurrent `ConsumeSession` streams cheap. Don't construct a `Client` per slot. See [design/sessions.md](../../../docs/design/sessions.md) for the reasoning.
 
 ## Testing
 

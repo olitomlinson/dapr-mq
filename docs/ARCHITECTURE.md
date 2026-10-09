@@ -25,7 +25,7 @@ var queue1 = ActorProxy.Create<IQueueActor>(new ActorId("queue-1"), "QueueActor"
 var queue2 = ActorProxy.Create<IQueueActor>(new ActorId("queue-2"), "QueueActor");
 ```
 
-**Derived/suffixed actor IDs**: several features address a plain `QueueActor` instance under an id derived from another actor's id rather than a user-chosen one — `{id}-deadletter` (dead-letter queue), `{id}-sink` (HTTP sink), `{topicId}-sub-{subscriberId}` (topic subscriber), `{queueId}-session-{sessionId}` (session, see [SESSIONS_IMPLEMENTATION.md](SESSIONS_IMPLEMENTATION.md)). All are still ordinary `QueueActor` instances addressed like any other — the suffix is just a naming convention for predictable discovery, not a different actor type.
+**Derived/suffixed actor IDs**: several features address a plain `QueueActor` instance under an id derived from another actor's id rather than a user-chosen one — `{id}-deadletter` (dead-letter queue), `{id}-sink` (HTTP sink), `{topicId}-sub-{subscriberId}` (topic subscriber), `{queueId}-session-{sessionId}` (session, see [design/sessions.md](design/sessions.md)). All are still ordinary `QueueActor` instances addressed like any other — the suffix is just a naming convention for predictable discovery, not a different actor type.
 
 ## State Management
 
@@ -473,7 +473,7 @@ a per-generation `reap-generation-{id}` reminder deletes a superseded subscriber
 a retention window. Both are bounded by subscriber/generation count, never by total items
 published.
 
-See `PUBSUB-PLAN.md` in the repo root for the full design rationale, including alternatives that
+See [design/pubsub.md](design/pubsub.md) for the full design rationale, including alternatives that
 were considered and rejected.
 
 ## Failure Handling
@@ -594,7 +594,7 @@ metadata:
 
 ## Further Reading
 
-- [SESSIONS_IMPLEMENTATION.md](SESSIONS_IMPLEMENTATION.md) - Session-based ordered sub-queues (SessionCoordinatorActor, leasing, enforcement)
+- [design/sessions.md](design/sessions.md) - Session-based ordered sub-queues (SessionCoordinatorActor, leasing, enforcement)
 - [Dapr Actors Documentation](https://docs.dapr.io/developing-applications/building-blocks/actors/)
 - [Virtual Actor Pattern (Orleans)](https://www.microsoft.com/en-us/research/project/orleans-virtual-actors/)
 - [Actor Model (Wikipedia)](https://en.wikipedia.org/wiki/Actor_model)

@@ -73,7 +73,7 @@ Options considered:
 
 ## Related
 
-- [STATE_READS_BREAKDOWN.md](../../STATE_READS_BREAKDOWN.md#consume-session-19-reads-20-writes-per-session)
+- [state-reads-breakdown.md](../../performance/state-reads-breakdown.md#consume-session-19-reads-20-writes-per-session)
   — the benchmark step that surfaced this.
 - Batching acks on the stream (discussed alongside the benchmark) would make this window larger, so it
   should land after this fix.

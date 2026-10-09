@@ -4,7 +4,7 @@
 
 A producer can optionally attach a client-supplied **idempotency key** to a message when enqueuing directly to a queue or publishing to a Topic. If that key was already used within a configurable TTL window (default 24 hours), the message is silently **not** placed on the destination queue a second time — at-most-once delivery per key, enforced at the point of submission rather than left entirely to the consumer.
 
-This complements, rather than replaces, the existing consumer-side idempotency guidance for HTTP Sink redelivery (see [API_REFERENCE.md](../docs/API_REFERENCE.md#delivery-behavior-by-response-status)): that's about tolerating redelivery of an item already on the queue; this is about stopping a duplicate submission from landing on the queue in the first place.
+This complements, rather than replaces, the existing consumer-side idempotency guidance for HTTP Sink redelivery (see [API_REFERENCE.md](../API_REFERENCE.md#delivery-behavior-by-response-status)): that's about tolerating redelivery of an item already on the queue; this is about stopping a duplicate submission from landing on the queue in the first place.
 
 ## Use Cases
 
@@ -92,4 +92,4 @@ The Postgres v2 state store component (`server/dapr/components/statestore-postgr
 - `EnqueueResponse` / `ApiEnqueueResponse`: new `itemsDeduplicated` field. `success` stays `true` when items are deduped — it's not an error.
 - `SubscribeRequest` / `ApiSubscribeRequest`: new optional `dedupEnabled` field (nullable — omitting it leaves the provisioned queue's default, dedup enabled, untouched).
 
-See [API_REFERENCE.md](../docs/API_REFERENCE.md) for full request/response shapes.
+See [API_REFERENCE.md](../API_REFERENCE.md) for full request/response shapes.

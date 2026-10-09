@@ -8,7 +8,10 @@
 #                               metric and KEDA's default strategy subtracts running Jobs)
 #   3. killed Job redelivered   force-delete a Job mid-work -> its item comes back once the lock
 #                               expires and a later Job completes it
-#   4. push unsupported         an external-push ScaledJob only starts Jobs on its pollingInterval
+#
+# There's no check that external-push is unsupported for ScaledJob (examples/keda/README.md says to
+# use external): creating one crashes the KEDA 2.21.0 operator ("panic: close of closed channel" in
+# externalPushScaler.runStreamMetricSpec when the scaler is closed), which restarts it mid-run.
 #
 # Requires KEDA and a DaprMQ release with operator.enabled=true. Creates (and deletes) its own
 # namespace; queue ids are unique per run.
@@ -285,36 +288,6 @@ if wait_until 120 logs_at_least "$name" 'START n=1 ' 1; then
     fi
 else
     fail "${name}: Job started" "no START within 120s"
-fi
-dump_on_failure "$name"; delete_scaledjob "$name"
-
-# ---------------------------------------------------------------------------
-# 4. KEDA doesn't support external-push for ScaledJob (README tells users to use external).
-# KEDA's first poll lands at an unpredictable time, so anchor on one: the first Job's creation marks
-# a poll. An item enqueued right after it gets a Job within seconds with push, or only at the next
-# poll (~push_poll later) without.
-# ---------------------------------------------------------------------------
-
-log_section "4. external-push is unsupported for ScaledJob"
-name="sj-push"; queue="keda-sj-push-${RUN_ID}"; push_poll=60
-apply_scaledjob "$name" "$queue" external-push "$push_poll"
-enqueue "$queue" 1 1
-if wait_until $((push_poll * 2 + 30)) at_least pod_count "$name" 1; then
-    enqueue "$queue" 2 2
-    enqueued_at=$SECONDS
-    if wait_until $((push_poll + 30)) at_least pod_count "$name" 2; then
-        waited=$((SECONDS - enqueued_at))
-        if [[ $waited -ge $((push_poll * 2 / 3)) ]]; then
-            pass "${name}: second Job waited for the next ${push_poll}s poll (${waited}s), not the push stream"
-        else
-            fail "${name}: second Job waited for the next poll" \
-                "started ${waited}s after enqueue - KEDA may now support push for ScaledJob; update examples/keda/README.md"
-        fi
-    else
-        fail "${name}: second Job started" "none within $((push_poll + 30))s"
-    fi
-else
-    fail "${name}: first Job started" "none within $((push_poll * 2 + 30))s"
 fi
 dump_on_failure "$name"; delete_scaledjob "$name"
 
