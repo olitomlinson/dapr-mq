@@ -722,8 +722,8 @@ done
 
 ## References
 
-- [QueueActor API Reference](../docs/API_REFERENCE.md)
-- [Architecture Documentation](../docs/ARCHITECTURE.md)
+- [QueueActor API Reference](../API_REFERENCE.md)
+- [Architecture Documentation](../ARCHITECTURE.md)
 - [N-Queue Priority System](./n-queue-priority-system.md)
 - [Message Acknowledgement](./message-acknowledgement.md)
 - [Dapr Actors Documentation](https://docs.dapr.io/developing-applications/building-blocks/actors/)

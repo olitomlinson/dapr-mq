@@ -393,9 +393,9 @@ bash examples/curl_examples.sh
 
 ## References
 
-- [QueueActor API Reference](../docs/API_REFERENCE.md)
-- [Architecture Documentation](../docs/ARCHITECTURE.md)
-- [README](../README.md)
+- [QueueActor API Reference](../API_REFERENCE.md)
+- [Architecture Documentation](../ARCHITECTURE.md)
+- [README](../../README.md)
 - [Dapr Actors Documentation](https://docs.dapr.io/developing-applications/building-blocks/actors/)
 
 ## Version

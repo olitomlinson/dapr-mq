@@ -505,7 +505,7 @@ for its lock to expire: it is the holder-initiated, immediate version of the exp
   already delivered after the nacked one are processed before it comes back, as with Azure
   Service Bus abandon + prefetch.
 
-See [API_REFERENCE.md](../docs/API_REFERENCE.md#nack).
+See [API_REFERENCE.md](../API_REFERENCE.md#nack).
 
 ## Best Practices
 
@@ -517,8 +517,8 @@ See [API_REFERENCE.md](../docs/API_REFERENCE.md#nack).
 
 ## References
 
-- [QueueActor API Reference](../docs/API_REFERENCE.md)
-- [Architecture Documentation](../docs/ARCHITECTURE.md)
+- [QueueActor API Reference](../API_REFERENCE.md)
+- [Architecture Documentation](../ARCHITECTURE.md)
 - [N-Queue Priority System](./n-queue-priority-system.md)
 - [Dapr Actors Documentation](https://docs.dapr.io/developing-applications/building-blocks/actors/)
 

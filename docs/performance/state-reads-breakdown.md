@@ -1,7 +1,7 @@
 # Where DaprMQ's actor state reads and writes come from
 
 As of 2026-10-04. Numbers from the perf harness's `state-reads` benchmark
-(`./run-perf-test.sh --benchmark state-reads`, see [sdks/dotnet/perf/README.md](../sdks/dotnet/perf/README.md#state-reads-benchmark)).
+(`./run-perf-test.sh --benchmark state-reads`, see [sdks/dotnet/perf/README.md](../../sdks/dotnet/perf/README.md#state-reads-benchmark)).
 
 ## How to read this
 
@@ -21,11 +21,11 @@ Every statement the state-reads benchmark counts traces back to a specific state
 
 Three mechanics explain almost every count:
 
-1. **Each actor call starts with an empty state cache.** With actor reentrancy enabled (see [Program.cs](../server/src/DaprMQ.ApiServer/Program.cs)), the Dapr SDK gives every call its own state tracker. The first read of a key in a call goes to Postgres; repeat reads in the same call are free. This is why `metadata` is read once per call, not once per actor.
+1. **Each actor call starts with an empty state cache.** With actor reentrancy enabled (see [Program.cs](../../server/src/DaprMQ.ApiServer/Program.cs)), the Dapr SDK gives every call its own state tracker. The first read of a key in a call goes to Postgres; repeat reads in the same call are free. This is why `metadata` is read once per call, not once per actor.
 2. **Writes never cause reads.** In Dapr.Actors 1.18.10, `SetStateAsync` is a blind upsert and a not-found read is cached for the rest of the call. Staged writes go out together at `SaveStateAsync`. A delete counts as a write.
 3. **Reminder callbacks keep their cache.** A reminder (the topic relay tick) runs outside any call, on the actor's long-lived default tracker, so it mostly reads from memory.
 
-In the per-key tables below, ids are collapsed: `*-lock` is every lock, `queue_*_seg_*` every segment, `session-lock_*` every session. "Read" is a `SELECT` and "write" an `INSERT`/`DELETE` against `daprmq_state`. Line numbers refer to [QueueActor.cs](../server/src/DaprMQ/QueueActor.cs) unless another file is named, as of this commit.
+In the per-key tables below, ids are collapsed: `*-lock` is every lock, `queue_*_seg_*` every segment, `session-lock_*` every session. "Read" is a `SELECT` and "write" an `INSERT`/`DELETE` against `daprmq_state`. Line numbers refer to [QueueActor.cs](../../server/src/DaprMQ/QueueActor.cs) unless another file is named, as of this commit.
 
 ## enqueue-new-queue: 3 reads, 3 writes per new queue
 
@@ -33,9 +33,9 @@ A brand-new queue pays for `metadata` twice. Activation reads it, finds nothing,
 
 | Call | Key | Reads | Writes | Why |
 | --- | --- | --- | --- | --- |
-| `OnActivateAsync` | `metadata` | 1 | 1 | Reads to check it exists ([:391](../server/src/DaprMQ/QueueActor.cs#L391)), finds nothing, and saves an empty one immediately ([:406-407](../server/src/DaprMQ/QueueActor.cs#L406-L407)) |
-| `Enqueue` | `metadata` | 1 | 1 | Fresh cache, so it reads again ([:1455](../server/src/DaprMQ/QueueActor.cs#L1455)); writes the new count and sequence on save |
-| `Enqueue` | `queue_*_seg_*` | 1 | 1 | Reads the tail segment ([:944](../server/src/DaprMQ/QueueActor.cs#L944)), finds none, writes it with the item ([:977](../server/src/DaprMQ/QueueActor.cs#L977)) |
+| `OnActivateAsync` | `metadata` | 1 | 1 | Reads to check it exists ([:391](../../server/src/DaprMQ/QueueActor.cs#L391)), finds nothing, and saves an empty one immediately ([:406-407](../../server/src/DaprMQ/QueueActor.cs#L406-L407)) |
+| `Enqueue` | `metadata` | 1 | 1 | Fresh cache, so it reads again ([:1455](../../server/src/DaprMQ/QueueActor.cs#L1455)); writes the new count and sequence on save |
+| `Enqueue` | `queue_*_seg_*` | 1 | 1 | Reads the tail segment ([:944](../../server/src/DaprMQ/QueueActor.cs#L944)), finds none, writes it with the item ([:977](../../server/src/DaprMQ/QueueActor.cs#L977)) |
 | **Total** | | **3** | **3** | |
 
 Only the activation pair is unique to a new queue. Without it, this is exactly the warm `enqueue` step.
@@ -46,11 +46,11 @@ An enqueue costs one read and one write each of `metadata` and the tail segment,
 
 | Call | Key | Reads | Writes | Why |
 | --- | --- | --- | --- | --- |
-| `Enqueue` | `metadata` | 1 | 1 | Read at the start ([:1455](../server/src/DaprMQ/QueueActor.cs#L1455)); later items in the call hit the cache |
-| `Enqueue` | `queue_*_seg_*` | 1 | 1 | Tail segment read once ([:944](../server/src/DaprMQ/QueueActor.cs#L944)); every item appends to the cached copy, which is written once on save ([:977](../server/src/DaprMQ/QueueActor.cs#L977), [:1131](../server/src/DaprMQ/QueueActor.cs#L1131)) |
+| `Enqueue` | `metadata` | 1 | 1 | Read at the start ([:1455](../../server/src/DaprMQ/QueueActor.cs#L1455)); later items in the call hit the cache |
+| `Enqueue` | `queue_*_seg_*` | 1 | 1 | Tail segment read once ([:944](../../server/src/DaprMQ/QueueActor.cs#L944)); every item appends to the cached copy, which is written once on save ([:977](../../server/src/DaprMQ/QueueActor.cs#L977), [:1131](../../server/src/DaprMQ/QueueActor.cs#L1131)) |
 | **Total** | | **2** | **2** | |
 
-**Why the batch shows 2.1 writes.** The batch queue holds 1 item before the step, so its 100th item fills segment 0. The batch that crosses that boundary starts segment 1 without reading it, since a new segment is known to be empty ([:948-953](../server/src/DaprMQ/QueueActor.cs#L948-L953)). It then writes both segments: 10 batches, 11 segment writes. The same happens to any enqueue that straddles a 100-item boundary.
+**Why the batch shows 2.1 writes.** The batch queue holds 1 item before the step, so its 100th item fills segment 0. The batch that crosses that boundary starts segment 1 without reading it, since a new segment is known to be empty ([:948-953](../../server/src/DaprMQ/QueueActor.cs#L948-L953)). It then writes both segments: 10 batches, 11 segment writes. The same happens to any enqueue that straddles a 100-item boundary.
 
 No `Enqueue` runs the lock sweep, and without an `IdempotencyKey` it never touches `idem_*` keys. With a key, each item adds one `idem_*` read and one write.
 
@@ -60,15 +60,15 @@ No `Enqueue` runs the lock sweep, and without an `IdempotencyKey` it never touch
 
 | Call | Key | Reads | Writes | Why |
 | --- | --- | --- | --- | --- |
-| `DequeueLocked` | `metadata` | 1 | 1 | Read by the lock sweep at the top of the call ([:1472](../server/src/DaprMQ/QueueActor.cs#L1472)); the sweep finds no due bucket and returns early |
-| `DequeueLocked` | `queue_*_seg_*` | 1 | 1 | Head segment read and the item removed ([:1349](../server/src/DaprMQ/QueueActor.cs#L1349), [:1419](../server/src/DaprMQ/QueueActor.cs#L1419)) |
-| `DequeueLocked` | `*-lock` | 0 | 1 | The new lock, written without a read ([:1572](../server/src/DaprMQ/QueueActor.cs#L1572)) |
-| `DequeueLocked` | `locks_exp_*` | 1 | 1 | The expiry bucket's id list, read and rewritten with the new lock id ([:217-220](../server/src/DaprMQ/QueueActor.cs#L217-L220)) |
-| `Acknowledge` | `metadata` | 1 | 1 | Read for the session check, written with `LockCount - 1` ([:1644](../server/src/DaprMQ/QueueActor.cs#L1644), [:1700](../server/src/DaprMQ/QueueActor.cs#L1700)) |
-| `Acknowledge` | `*-lock` | 1 | 1 | Lock read to validate it ([:1669](../server/src/DaprMQ/QueueActor.cs#L1669)), then deleted ([:1697](../server/src/DaprMQ/QueueActor.cs#L1697)) |
+| `DequeueLocked` | `metadata` | 1 | 1 | Read by the lock sweep at the top of the call ([:1472](../../server/src/DaprMQ/QueueActor.cs#L1472)); the sweep finds no due bucket and returns early |
+| `DequeueLocked` | `queue_*_seg_*` | 1 | 1 | Head segment read and the item removed ([:1349](../../server/src/DaprMQ/QueueActor.cs#L1349), [:1419](../../server/src/DaprMQ/QueueActor.cs#L1419)) |
+| `DequeueLocked` | `*-lock` | 0 | 1 | The new lock, written without a read ([:1572](../../server/src/DaprMQ/QueueActor.cs#L1572)) |
+| `DequeueLocked` | `locks_exp_*` | 1 | 1 | The expiry bucket's id list, read and rewritten with the new lock id ([:217-220](../../server/src/DaprMQ/QueueActor.cs#L217-L220)) |
+| `Acknowledge` | `metadata` | 1 | 1 | Read for the session check, written with `LockCount - 1` ([:1644](../../server/src/DaprMQ/QueueActor.cs#L1644), [:1700](../../server/src/DaprMQ/QueueActor.cs#L1700)) |
+| `Acknowledge` | `*-lock` | 1 | 1 | Lock read to validate it ([:1669](../../server/src/DaprMQ/QueueActor.cs#L1669)), then deleted ([:1697](../../server/src/DaprMQ/QueueActor.cs#L1697)) |
 | **Total** | | **5** | **6** | |
 
-Acknowledge doesn't remove the id from `locks_exp_*`. That's deliberate ([:230-245](../server/src/DaprMQ/QueueActor.cs#L230-L245)): rewriting the bucket on every ack would make a bulk dequeue O(n²), so the sweep drops ids whose lock is already gone. One side effect is that every `DequeueLocked` in the same TTL window rewrites a growing list. The count stays at one write, but the payload grows with each lock.
+Acknowledge doesn't remove the id from `locks_exp_*`. That's deliberate ([:230-245](../../server/src/DaprMQ/QueueActor.cs#L230-L245)): rewriting the bucket on every ack would make a bulk dequeue O(n²), so the sweep drops ids whose lock is already gone. One side effect is that every `DequeueLocked` in the same TTL window rewrites a growing list. The count stays at one write, but the payload grows with each lock.
 
 The step dequeues 50 items from a 150-item queue, so it never leaves segment 0. A dequeue that empties a segment adds one segment delete, which this step doesn't measure.
 
@@ -93,13 +93,13 @@ Per message, on the session queue actor (`{queue}-session-{id}`):
 
 | Call | Key | Reads | Writes | Why |
 | --- | --- | --- | --- | --- |
-| `DequeueLocked` | `metadata` | 1 | 1 | Read by the session sweep ([:688](../server/src/DaprMQ/QueueActor.cs#L688)); the lease is live, so it returns early |
+| `DequeueLocked` | `metadata` | 1 | 1 | Read by the session sweep ([:688](../../server/src/DaprMQ/QueueActor.cs#L688)); the lease is live, so it returns early |
 | `DequeueLocked` | `queue_*_seg_*` | 1 | 1 | Head segment, as in a plain dequeue |
 | `DequeueLocked` | `*-lock` | 0 | 1 | The new lock |
-| `DequeueLocked` | `locks_session` | 1 | 1 | Lock id appended to the session's index ([:207-210](../server/src/DaprMQ/QueueActor.cs#L207-L210)) |
+| `DequeueLocked` | `locks_session` | 1 | 1 | Lock id appended to the session's index ([:207-210](../../server/src/DaprMQ/QueueActor.cs#L207-L210)) |
 | `Acknowledge` | `metadata` | 1 | 1 | Lease check, then `LockCount - 1` |
 | `Acknowledge` | `*-lock` | 1 | 1 | Read, then deleted |
-| `Acknowledge` | `locks_session` | 1 | 1 | Lock id removed from the index ([:252-270](../server/src/DaprMQ/QueueActor.cs#L252-L270)) |
+| `Acknowledge` | `locks_session` | 1 | 1 | Lock id removed from the index ([:252-270](../../server/src/DaprMQ/QueueActor.cs#L252-L270)) |
 | **Per message** | | **6** | **7** | |
 
 So 3 messages cost 18 reads and 21 writes; the lease calls around them add the rest.
@@ -116,9 +116,9 @@ Per session:
 | Session queue actor | `ClearSessionLease` | `metadata` | 1 | 1 |
 | **Total** | | | **23** | **26** |
 
-- **AcceptSession** ([SessionCoordinatorActor.cs:159](../server/src/DaprMQ/SessionCoordinatorActor.cs#L159)) reads the coordinator's `metadata` to find the session in its directory, and reads `session-lock_{id}` to check nobody holds it. It calls `SetSessionLease` on the session actor, then writes the new `session-lock_{id}` and the directory's `LastClaimedAt`.
-- **SetSessionLease** ([:487](../server/src/DaprMQ/QueueActor.cs#L487)) runs the session sweep, which reads `metadata`, then saves the lease into it.
-- **ReleaseSession** ([SessionCoordinatorActor.cs:376](../server/src/DaprMQ/SessionCoordinatorActor.cs#L376)) reads and deletes `session-lock_{id}`, then calls `ClearSessionLease`, which reads and rewrites the session actor's `metadata` ([:508](../server/src/DaprMQ/QueueActor.cs#L508)).
+- **AcceptSession** ([SessionCoordinatorActor.cs:159](../../server/src/DaprMQ/SessionCoordinatorActor.cs#L159)) reads the coordinator's `metadata` to find the session in its directory, and reads `session-lock_{id}` to check nobody holds it. It calls `SetSessionLease` on the session actor, then writes the new `session-lock_{id}` and the directory's `LastClaimedAt`.
+- **SetSessionLease** ([:487](../../server/src/DaprMQ/QueueActor.cs#L487)) runs the session sweep, which reads `metadata`, then saves the lease into it.
+- **ReleaseSession** ([SessionCoordinatorActor.cs:376](../../server/src/DaprMQ/SessionCoordinatorActor.cs#L376)) reads and deletes `session-lock_{id}`, then calls `ClearSessionLease`, which reads and rewrites the session actor's `metadata` ([:508](../../server/src/DaprMQ/QueueActor.cs#L508)).
 
 The session actors were activated during setup, when their items were enqueued. A cold session actor adds an activation read, plus a `RegisterSession` call to the coordinator.
 
@@ -135,9 +135,9 @@ The gRPC session stream (what `SessionQueueConsumer` uses) costs 5 reads and 6 w
 | Session queue actor | 1 × empty `DequeueLocked` | `metadata` | 1 | 0 |
 | **Total** | | | **18** | **20** |
 
-**Where the empty polls come from.** After a delivery the server's loop ([DaprMQGrpcService.cs:748-845](../server/src/DaprMQ.ApiServer/Services/DaprMQGrpcService.cs#L748-L845)) goes straight back to `DequeueLocked` while the prefetch window has room. The first empty poll follows every non-empty dequeue immediately, then polls repeat every 200 ms until the stream ends. The step stops consuming straight after the last ack, so there is 1. A consumer that idles out the session timeout pays one `metadata` read per 200 ms until it does.
+**Where the empty polls come from.** After a delivery the server's loop ([DaprMQGrpcService.cs:748-845](../../server/src/DaprMQ.ApiServer/Services/DaprMQGrpcService.cs#L748-L845)) goes straight back to `DequeueLocked` while the prefetch window has room. The first empty poll follows every non-empty dequeue immediately, then polls repeat every 200 ms until the stream ends. The step stops consuming straight after the last ack, so there is 1. A consumer that idles out the session timeout pays one `metadata` read per 200 ms until it does.
 
-**Stopping waits for acks.** Ack frames get no reply, so a consumer that stopped straight after acking used to cancel the call before the server had applied them, and those messages were redelivered. An early version of this step lost almost every ack that way. Stopping now half-closes the stream and waits for the server to finish first: see [session-stream-acks-lost-on-disconnect.md](issues/resolved/session-stream-acks-lost-on-disconnect.md).
+**Stopping waits for acks.** Ack frames get no reply, so a consumer that stopped straight after acking used to cancel the call before the server had applied them, and those messages were redelivered. An early version of this step lost almost every ack that way. Stopping now half-closes the stream and waits for the server to finish first: see [session-stream-acks-lost-on-disconnect.md](../issues/resolved/session-stream-acks-lost-on-disconnect.md).
 
 ## lock-expiry-sweep: 24 reads, 27 writes for 20 reclaimed locks
 
@@ -145,17 +145,17 @@ The sweep reads and deletes each expired lock: 20 of the 24 reads and 20 of the 
 
 | Phase | Key | Reads | Writes | Why |
 | --- | --- | --- | --- | --- |
-| Sweep | `metadata` | 1 | 1 | Lists the due expiry buckets; saved with `LockCount - 20` ([:544](../server/src/DaprMQ/QueueActor.cs#L544), [:661](../server/src/DaprMQ/QueueActor.cs#L661)) |
-| Sweep | `locks_exp_*` | 1 | 1 | The due bucket's id list read ([:577](../server/src/DaprMQ/QueueActor.cs#L577)), then deleted once empty ([:630](../server/src/DaprMQ/QueueActor.cs#L630)) |
-| Sweep | `*-lock` | 20 | 20 | Each lock read to check its expiry ([:598](../server/src/DaprMQ/QueueActor.cs#L598)) and deleted ([:625](../server/src/DaprMQ/QueueActor.cs#L625)) |
-| Sweep | `queue_*_seg_*` | 1 | 1 | Head segment read and rewritten with the 20 items merged back in by sequence ([:644](../server/src/DaprMQ/QueueActor.cs#L644)) |
-| Dequeue | `metadata` | 0 | 1 | Cached from the sweep; written again on the dequeue's own save ([:1613](../server/src/DaprMQ/QueueActor.cs#L1613)) |
+| Sweep | `metadata` | 1 | 1 | Lists the due expiry buckets; saved with `LockCount - 20` ([:544](../../server/src/DaprMQ/QueueActor.cs#L544), [:661](../../server/src/DaprMQ/QueueActor.cs#L661)) |
+| Sweep | `locks_exp_*` | 1 | 1 | The due bucket's id list read ([:577](../../server/src/DaprMQ/QueueActor.cs#L577)), then deleted once empty ([:630](../../server/src/DaprMQ/QueueActor.cs#L630)) |
+| Sweep | `*-lock` | 20 | 20 | Each lock read to check its expiry ([:598](../../server/src/DaprMQ/QueueActor.cs#L598)) and deleted ([:625](../../server/src/DaprMQ/QueueActor.cs#L625)) |
+| Sweep | `queue_*_seg_*` | 1 | 1 | Head segment read and rewritten with the 20 items merged back in by sequence ([:644](../../server/src/DaprMQ/QueueActor.cs#L644)) |
+| Dequeue | `metadata` | 0 | 1 | Cached from the sweep; written again on the dequeue's own save ([:1613](../../server/src/DaprMQ/QueueActor.cs#L1613)) |
 | Dequeue | `queue_*_seg_*` | 0 | 1 | Cached; written again with one item removed |
 | Dequeue | `*-lock` | 0 | 1 | The new lock for the dequeued item |
 | Dequeue | `locks_exp_*` | 1 | 1 | A new bucket for the new lock's expiry: read (not found) and written |
 | **Total** | | **24** | **27** | |
 
-The sweep commits on its own (`SaveStateAsync` at [:661](../server/src/DaprMQ/QueueActor.cs#L661)) before the dequeue commits ([:1613](../server/src/DaprMQ/QueueActor.cs#L1613)), so `metadata` and the head segment are each written twice in one call. Folding the sweep into the operation's save would remove 2 writes per sweep; it would also make the sweep's restore and the dequeue one atomic commit.
+The sweep commits on its own (`SaveStateAsync` at [:661](../../server/src/DaprMQ/QueueActor.cs#L661)) before the dequeue commits ([:1613](../../server/src/DaprMQ/QueueActor.cs#L1613)), so `metadata` and the head segment are each written twice in one call. Folding the sweep into the operation's save would remove 2 writes per sweep; it would also make the sweep's restore and the dequeue one atomic commit.
 
 ## topic-relay: 6 reads, 9.1 writes per publish
 
@@ -163,13 +163,13 @@ A publish to 2 subscribers costs 2 reads and 5.1 writes on the topic, plus a ful
 
 | Actor | Call | Key | Reads | Writes | Why |
 | --- | --- | --- | --- | --- | --- |
-| TopicActor | `Publish` | `metadata` | 1 | 1 | Next sequence number ([TopicActor.cs:339](../server/src/DaprMQ/TopicActor.cs#L339), [:373](../server/src/DaprMQ/TopicActor.cs#L373)) |
-| TopicActor | `Publish` | `item_*` | 0 | 1 | The payload, written without a read ([TopicActor.cs:346](../server/src/DaprMQ/TopicActor.cs#L346)) |
-| TopicActor | `Publish` | `publish_*` | 0 | 1 | Publish record, for dedup and the reaper ([TopicActor.cs:359](../server/src/DaprMQ/TopicActor.cs#L359)) |
-| TopicActor | `Publish` | `publish-seq_*` | 0 | 1 | Sequence-to-publish-id map ([TopicActor.cs:365](../server/src/DaprMQ/TopicActor.cs#L365)) |
-| TopicActor | relay tick | `item_*` | 1 | 0 | Each newly published item read to relay it ([TopicActor.cs:598](../server/src/DaprMQ/TopicActor.cs#L598)) |
-| TopicActor | relay tick | `metadata` | 0 | 1.1 | Dispatch cursors saved each tick ([TopicActor.cs:663](../server/src/DaprMQ/TopicActor.cs#L663)); 11 ticks in a 10-publish window |
-| Subscriber queues | `Enqueue` × 2 | `metadata`, `queue_*_seg_*` | 4 | 4 | One enqueue per subscriber ([TopicActor.cs:625](../server/src/DaprMQ/TopicActor.cs#L625)), costed as in `enqueue` |
+| TopicActor | `Publish` | `metadata` | 1 | 1 | Next sequence number ([TopicActor.cs:339](../../server/src/DaprMQ/TopicActor.cs#L339), [:373](../../server/src/DaprMQ/TopicActor.cs#L373)) |
+| TopicActor | `Publish` | `item_*` | 0 | 1 | The payload, written without a read ([TopicActor.cs:346](../../server/src/DaprMQ/TopicActor.cs#L346)) |
+| TopicActor | `Publish` | `publish_*` | 0 | 1 | Publish record, for dedup and the reaper ([TopicActor.cs:359](../../server/src/DaprMQ/TopicActor.cs#L359)) |
+| TopicActor | `Publish` | `publish-seq_*` | 0 | 1 | Sequence-to-publish-id map ([TopicActor.cs:365](../../server/src/DaprMQ/TopicActor.cs#L365)) |
+| TopicActor | relay tick | `item_*` | 1 | 0 | Each newly published item read to relay it ([TopicActor.cs:598](../../server/src/DaprMQ/TopicActor.cs#L598)) |
+| TopicActor | relay tick | `metadata` | 0 | 1.1 | Dispatch cursors saved each tick ([TopicActor.cs:663](../../server/src/DaprMQ/TopicActor.cs#L663)); 11 ticks in a 10-publish window |
+| Subscriber queues | `Enqueue` × 2 | `metadata`, `queue_*_seg_*` | 4 | 4 | One enqueue per subscriber ([TopicActor.cs:625](../../server/src/DaprMQ/TopicActor.cs#L625)), costed as in `enqueue` |
 | **Total** | | | **6** | **9.1** | |
 
 **Why the tick reads so little.** The relay runs from a reminder, outside any call, so it uses the actor's long-lived default cache. Its `metadata`, subscriber generation and circuit-breaker reads are served from memory. That includes the circuit keys, which never exist; Dapr.Actors 1.18.10 caches "not found" ([dapr/dotnet-sdk#1909](https://github.com/dapr/dotnet-sdk/issues/1909)). The one thing it must read is each new `item_*`, because `Publish` wrote it under a call's own cache, not the default one.
@@ -182,9 +182,9 @@ A publish to 2 subscribers costs 2 reads and 5.1 writes on the topic, plus a ful
 
 | Opportunity | Saves | Where | Trade-off |
 | --- | --- | --- | --- |
-| Fold the lock sweep into the operation's save | 2 writes per sweep that reclaims anything | [:661](../server/src/DaprMQ/QueueActor.cs#L661) then [:1613](../server/src/DaprMQ/QueueActor.cs#L1613) | The restore and the dequeue become one atomic commit. That matches the single-`SaveStateAsync()` rule in [CLAUDE.md](../CLAUDE.md), but the sweep's error handling would need checking |
-| Don't save empty `metadata` on activation | 1 read + 1 write per new queue (3/3 → 2/2) | [:391-407](../server/src/DaprMQ/QueueActor.cs#L391-L407) | Every caller must treat missing `metadata` as empty. Also applies to new session, dead-letter and subscriber queues |
-| Drop the session index update on ack | 1 read + 1 write per session message | [:252-270](../server/src/DaprMQ/QueueActor.cs#L252-L270) | The index would then grow with every message under a long lease, which is the reason it is pruned today |
+| Fold the lock sweep into the operation's save | 2 writes per sweep that reclaims anything | [:661](../../server/src/DaprMQ/QueueActor.cs#L661) then [:1613](../../server/src/DaprMQ/QueueActor.cs#L1613) | The restore and the dequeue become one atomic commit. That matches the single-`SaveStateAsync()` rule in [CLAUDE.md](../../CLAUDE.md), but the sweep's error handling would need checking |
+| Don't save empty `metadata` on activation | 1 read + 1 write per new queue (3/3 → 2/2) | [:391-407](../../server/src/DaprMQ/QueueActor.cs#L391-L407) | Every caller must treat missing `metadata` as empty. Also applies to new session, dead-letter and subscriber queues |
+| Drop the session index update on ack | 1 read + 1 write per session message | [:252-270](../../server/src/DaprMQ/QueueActor.cs#L252-L270) | The index would then grow with every message under a long lease, which is the reason it is pruned today |
 | Keep `metadata` cached across calls | Up to 1 read per call (2 of 5 per message, 8 of 23 per session) | Dapr SDK: per-call tracker under reentrancy | Not a DaprMQ change. Needs the SDK's cross-call cache to stay correct with reentrancy, the problem behind [dapr/dotnet-sdk#1908](https://github.com/dapr/dotnet-sdk/pull/1908) |
 
 Two costs are deliberate and should stay: plain queues never remove lock ids from `locks_exp_*` on ack, which keeps acks O(1). And `Publish` writes three records per message, which back dedup and the reaper.

@@ -2,7 +2,7 @@ namespace DaprMQ.Interfaces;
 
 /// <summary>
 /// Tunable defaults for TopicActor's relay/reaper/circuit-breaker behavior. Global for now
-/// (PUBSUB-PLAN.md §9.4) - no per-topic override; exposed as config so tuning never requires a
+/// (docs/design/pubsub.md §9.4) - no per-topic override; exposed as config so tuning never requires a
 /// schema change later.
 /// </summary>
 public class TopicActorConfig

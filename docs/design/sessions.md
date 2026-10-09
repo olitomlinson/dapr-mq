@@ -6,7 +6,7 @@ DaprMQ Sessions add Azure Service Bus-style ordered sub-groups within a queue: a
 
 **Why:** Give ordered sub-groups their own independent consumer without giving up per-group FIFO — the FIFO group/partition key use case, modeled on a leased-ownership pattern rather than a bare partition tag.
 
-**Architecture:** Each session is a full, ordinary `QueueActor` instance, addressed by a derived id (`{queueId}-session-{sessionId}`). A separate, dedicated `SessionCoordinatorActor` type owns the session directory and lease issuance — it never stores queue items itself, mirroring how `TopicActor` delegates storage to sibling `QueueActor` instances rather than growing `QueueActor` (see [SINK_IMPLEMENTATION.md](SINK_IMPLEMENTATION.md) and `PUBSUB-PLAN.md` for the same coordinator-delegates-to-`QueueActor` shape applied elsewhere in this codebase).
+**Architecture:** Each session is a full, ordinary `QueueActor` instance, addressed by a derived id (`{queueId}-session-{sessionId}`). A separate, dedicated `SessionCoordinatorActor` type owns the session directory and lease issuance — it never stores queue items itself, mirroring how `TopicActor` delegates storage to sibling `QueueActor` instances rather than growing `QueueActor` (see [http-sinks.md](http-sinks.md) and [pubsub.md](pubsub.md) for the same coordinator-delegates-to-`QueueActor` shape applied elsewhere in this codebase).
 
 ## Architecture Overview
 
@@ -140,7 +140,7 @@ public double? ActiveSessionLeaseExpiresAt { get; init; }
 
 ## Transport
 
-REST + gRPC unary for `AcceptSession`/`RenewSessionLease`/`ReleaseSession` (admin/manual operations, matching the existing dual-surface convention), plus a gRPC bidirectional streaming RPC, `ConsumeSession`, for the managed consume loop. `DaprMQGrpcService.ConsumeSession` is a stateless orchestrator (Dapr actors can't hold a stream open across turns) that calls `AcceptSession` server-side, then runs a poll loop against the derived session actor and a lease-renewal check at roughly `lease_seconds/2`, using the stream's own liveness as the heartbeat — on stream close, the server releases the session immediately, materially faster than waiting out the lease TTL. See [API_REFERENCE.md](API_REFERENCE.md#sessions) for the wire format.
+REST + gRPC unary for `AcceptSession`/`RenewSessionLease`/`ReleaseSession` (admin/manual operations, matching the existing dual-surface convention), plus a gRPC bidirectional streaming RPC, `ConsumeSession`, for the managed consume loop. `DaprMQGrpcService.ConsumeSession` is a stateless orchestrator (Dapr actors can't hold a stream open across turns) that calls `AcceptSession` server-side, then runs a poll loop against the derived session actor and a lease-renewal check at roughly `lease_seconds/2`, using the stream's own liveness as the heartbeat — on stream close, the server releases the session immediately, materially faster than waiting out the lease TTL. See [API_REFERENCE.md](../API_REFERENCE.md#sessions) for the wire format.
 
 ## Idle-Drain and Selection Order
 

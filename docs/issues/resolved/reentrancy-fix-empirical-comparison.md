@@ -1,8 +1,9 @@
 # Empirical comparison: evict-and-reload vs. refresh-in-place
 
-**Status:** Empirical validation of the theory in `docs/REENTRANCY_FIX_ROUND_TRIP_IMPACT.md`. Answers
-"does the refre◊sh-in-place alternative actually cause fewer Postgres reads, and by how much" with
-measured numbers, not just code-level reasoning.
+**Status:** Resolved 2026-09-24. Refresh-in-place was measured as cheaper and more stable, and is the approach
+upstream shipped ([dapr/dotnet-sdk#1912](https://github.com/dapr/dotnet-sdk/pull/1912), in 1.18.9). This page
+validates the theory in [reentrancy-fix-round-trip-impact.md](reentrancy-fix-round-trip-impact.md) with measured
+Postgres read counts. The local `1.18.4-*` packages it compares are no longer used by the build.
 
 **What's being compared:**
 - `1.18.4-reentrancyfix.1` - upstream `dapr/dotnet-sdk` PR [#1908](https://github.com/dapr/dotnet-sdk/pull/1908)
@@ -169,7 +170,7 @@ fix-attributable diff (~9-21) - most of the total is build-independent baseline 
 > the pinned Dapr SDK, and the two local package builds it needed no longer exist. Its Postgres
 > statement counting lives on as the perf harness's `state-reads` benchmark
 > (`./run-session-perf-test.sh --benchmark state-reads`, see
-> [sdks/dotnet/perf/README.md](../sdks/dotnet/perf/README.md#state-reads-benchmark)), which tracks
+> [sdks/dotnet/perf/README.md](../../../sdks/dotnet/perf/README.md#state-reads-benchmark)), which tracks
 > reads and writes per operation over time. To A/B two server images as this comparison did, run it
 > once per image with `DAPRMQ_API_IMAGE=<image>`. The steps below are kept as a record of how these
 > numbers were produced.
@@ -201,6 +202,7 @@ under ~1.5 minutes per build.
 
 ## Related docs
 
-- `docs/DAPR_REENTRANCY_REMINDER_ISSUE.md` - the original reminder-staleness bug report.
-- `docs/REENTRANCY_FIX_ROUND_TRIP_IMPACT.md` - the code-level (pre-measurement) impact analysis
+- [reentrancy-breaks-reminder-relay.md](reentrancy-breaks-reminder-relay.md) - the original reminder-staleness bug report.
+- [reentrancy-fix-round-trip-impact.md](reentrancy-fix-round-trip-impact.md) - the code-level (pre-measurement) impact analysis
   this document empirically validates.
+- [ADR 0002](../../ADR/0002-enable-actor-reentrancy.md) - the decision to run with reentrancy on.

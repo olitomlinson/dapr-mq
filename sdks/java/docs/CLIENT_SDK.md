@@ -102,7 +102,7 @@ if (lease != null) {
 }
 ```
 
-See [API_REFERENCE.md](../../../docs/API_REFERENCE.md#sessions) and [SESSIONS_IMPLEMENTATION.md](../../../docs/SESSIONS_IMPLEMENTATION.md) for the underlying actor-id convention and lease semantics.
+See [API_REFERENCE.md](../../../docs/API_REFERENCE.md#sessions) and [design/sessions.md](../../../docs/design/sessions.md) for the underlying actor-id convention and lease semantics.
 
 ## Sessions - managed consume loop (`SessionQueueConsumer`)
 
@@ -146,7 +146,7 @@ On a failed claim (no session currently available), a slot backs off with a doub
 
 ### Why one shared client
 
-**All of a `SessionQueueConsumer`'s `maxConcurrentSessions` slots share the single `DaprMQClient` (and its one gRPC channel) passed into its constructor** - never construct a separate `DaprMQClient` per slot. A gRPC channel multiplexes every RPC, including long-lived streams, over one (or a small number of, if the server's per-connection stream cap is exceeded) underlying HTTP/2 connection - this is what makes running 10s-100s of concurrent `consumeSession` streams cheap. Giving each slot its own channel would open that many separate HTTP/2 connections for no benefit - see the "multiplexing many sessions over one stream" discussion in [SESSIONS_IMPLEMENTATION.md](../../../docs/SESSIONS_IMPLEMENTATION.md) for the full reasoning.
+**All of a `SessionQueueConsumer`'s `maxConcurrentSessions` slots share the single `DaprMQClient` (and its one gRPC channel) passed into its constructor** - never construct a separate `DaprMQClient` per slot. A gRPC channel multiplexes every RPC, including long-lived streams, over one (or a small number of, if the server's per-connection stream cap is exceeded) underlying HTTP/2 connection - this is what makes running 10s-100s of concurrent `consumeSession` streams cheap. Giving each slot its own channel would open that many separate HTTP/2 connections for no benefit - see the "multiplexing many sessions over one stream" discussion in [design/sessions.md](../../../docs/design/sessions.md) for the full reasoning.
 
 ## Testing your own code against this SDK
 

@@ -249,7 +249,7 @@ if (registerActors)
         // wrote the same key, so a read-modify-write silently saw stale data). That required a
         // locally-built SDK for a while; it is fixed upstream as of the pinned Dapr version, so no
         // local package source is needed. Kept only as context for
-        // docs/DAPR_REENTRANCY_REMINDER_ISSUE.md and docs/REENTRANCY_FIX_ROUND_TRIP_IMPACT.md.
+        // docs/ADR/0002-enable-actor-reentrancy.md and docs/issues/resolved/reentrancy-*.md.
         options.ReentrancyConfig = new Dapr.Actors.ActorReentrancyConfig { Enabled = true };
         options.JsonSerializerOptions = new JsonSerializerOptions
         {

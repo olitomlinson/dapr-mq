@@ -7,7 +7,7 @@ namespace DaprMQ;
 
 /// <summary>
 /// A single published item's target subscriber set, resolved once per generation rather than
-/// copied onto every item. Immutable once written (PUBSUB-PLAN.md §2.3).
+/// copied onto every item. Immutable once written (docs/design/pubsub.md §2.3).
 /// </summary>
 public record SubscriberSetGeneration
 {
@@ -75,7 +75,7 @@ public record TopicMetadata
 
 /// <summary>
 /// TopicActor - fan-out pub/sub built by delegating to per-subscriber QueueActor instances.
-/// See PUBSUB-PLAN.md for the full design and the reasoning behind rejected alternatives.
+/// See docs/design/pubsub.md for the full design and the reasoning behind rejected alternatives.
 /// </summary>
 public class TopicActor : Actor, ITopicActor, IRemindable
 {

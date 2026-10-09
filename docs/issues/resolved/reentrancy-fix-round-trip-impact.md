@@ -1,8 +1,12 @@
 # Reentrancy fix: defaultTracker staleness round-trip impact
 
-**Status:** Informational — documents a known, accepted tradeoff of the reentrancy fix in
-`docs/DAPR_REENTRANCY_REMINDER_ISSUE.md`. Not a bug. For triaging future performance questions
-("why did Postgres load go up", "why is this actor slower than expected") against a known cause.
+**Status:** Superseded 2026-09-24. This analyses the evict-and-reload fix
+([dapr/dotnet-sdk#1908](https://github.com/dapr/dotnet-sdk/pull/1908)), which was not shipped. Upstream took
+refresh-in-place instead ([#1912](https://github.com/dapr/dotnet-sdk/pull/1912), in 1.18.9), which avoids most of
+the extra reads listed here; see [reentrancy-fix-empirical-comparison.md](reentrancy-fix-empirical-comparison.md)
+for the measured difference. Kept because the per-actor list of keys shared between reminder/activation callbacks
+and method calls is still accurate and useful when triaging state-store load. Bug:
+[reentrancy-breaks-reminder-relay.md](reentrancy-breaks-reminder-relay.md).
 
 **Context:** After enabling `options.ReentrancyConfig` (see `server/src/DaprMQ.ApiServer/Program.cs`)
 with the patched `Dapr.Actors` SDK (`1.18.4-reentrancyfix.1`, `server/nuget-local/`), actor state
@@ -19,7 +23,7 @@ cache of state key values. Normally, once a key is read once during an activatio
 that same key (across many separate method calls, for the life of the activation) are served from
 this dictionary with zero I/O.
 
-The original bug (`docs/DAPR_REENTRANCY_REMINDER_ISSUE.md`) was that `defaultTracker` was never
+The original bug ([reentrancy-breaks-reminder-relay.md](reentrancy-breaks-reminder-relay.md)) was that `defaultTracker` was never
 invalidated when a *different* call path wrote the same key — specifically, reminder/timer/
 activation callbacks (which never carry a `Dapr-Reentrancy-Id` header) share the actor instance
 with ordinary method calls (which, once reentrancy is enabled for the actor type, always do carry
@@ -207,7 +211,7 @@ Not evaluated end-to-end in DaprMQ, documented here for awareness:
   `defaultTracker`. If `defaultTracker` already has an uncommitted write to a key at the exact
   moment a reentrant call's save lands, that pending write is left alone and will overwrite the
   reentrant write when `defaultTracker` eventually saves. Per Dapr's per-instance call
-  serialization (documented in `docs/DAPR_REENTRANCY_REMINDER_ISSUE.md` Phase 3 — one call chain
+  serialization (documented in [reentrancy-breaks-reminder-relay.md](reentrancy-breaks-reminder-relay.md) Phase 3 — one call chain
   occupies an actor instance's lock at a time, reentrancy only lets a chain re-enter *itself*),
   this shouldn't be reachable across genuinely unrelated call chains in DaprMQ's actors — but this
   has not been proven with a dedicated test the way `SessionReentrancyTests` proved the A→B→A
@@ -231,5 +235,5 @@ If Postgres load or actor state-read latency looks higher than expected after th
    spike usually means a consumer is slow or failing, not a QueueActor problem per se.
 4. This is a known, accepted tradeoff (silently losing writes vs. an occasional extra local/DB
    round trip) — the fix should not be reverted or reentrancy disabled to "solve" this without
-   reintroducing the original deadlock (`docs/DAPR_REENTRANCY_REMINDER_ISSUE.md`) and reminder
+   reintroducing the original deadlock ([reentrancy-breaks-reminder-relay.md](reentrancy-breaks-reminder-relay.md)) and reminder
    staleness bug it fixes.
