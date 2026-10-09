@@ -419,6 +419,46 @@ public class QueueActorTests
         }
     }
 
+    /// <summary>
+    /// Once a queue's backlog spans more segments than the buffer keeps loaded, an enqueue offloads the
+    /// older full segments. Doing that must not undo the batch it was called for: every enqueue that
+    /// reports success has to be counted and dequeued, however many separate calls built the backlog.
+    /// </summary>
+    [Fact]
+    public async Task EnqueueAsync_ManySeparateBatches_KeepsEveryItem_WhenSegmentsAreOffloaded()
+    {
+        var mockStateManager = CreateMockStateManager();
+        var actor = await CreateActorAsync(mockStateManager);
+
+        const int batches = 10, batchSize = 100;
+        for (int b = 0; b < batches; b++)
+        {
+            var items = Enumerable.Range(b * batchSize, batchSize)
+                .Select(i => new Interfaces.EnqueueItem { ItemJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["index"] = i }), Priority = 1 })
+                .ToList();
+            var result = await actor.Enqueue(new Interfaces.EnqueueRequest { Items = items });
+            Assert.Equal(batchSize, result.ItemsEnqueued);
+        }
+
+        var metadata = await mockStateManager.Object.GetStateAsync<ActorMetadata>("metadata");
+        Assert.Equal(batches * batchSize, metadata.Queues[1].Count);
+        Assert.Equal(batches * batchSize, metadata.NextSequence);
+
+        var dequeued = new List<int>();
+        while (true)
+        {
+            var result = await actor.Dequeue(new Interfaces.DequeueRequest { Count = 100 });
+            if (result.Items.Count == 0)
+            {
+                break;
+            }
+
+            dequeued.AddRange(result.Items.Select(i => System.Text.Json.JsonDocument.Parse(i.ItemJson).RootElement.GetProperty("index").GetInt32()));
+        }
+
+        Assert.Equal(Enumerable.Range(0, batches * batchSize), dequeued);
+    }
+
     [Fact]
     public async Task EnqueueAsync_WithOneInvalidItem_ReturnsFailureWithZeroItemsEnqueued()
     {
