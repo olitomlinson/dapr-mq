@@ -109,7 +109,8 @@ public final class SessionQueueConsumer implements AutoCloseable {
             SessionStream stream = null;
             Iterator<SessionDelivery> deliveries = null;
             try {
-                stream = client.consumeSession(queueId, new ConsumeSessionOptions(options.getTargetSessionId(), options.getLeaseSeconds(), options.getPrefetchCount()));
+                stream = client.consumeSession(queueId, new ConsumeSessionOptions(options.getTargetSessionId(), options.getLeaseSeconds(), options.getPrefetchCount(),
+                        options.getSessionIdleTimeoutSeconds()));
                 slot.attach(stream);
                 deliveries = stream.iterator();
 

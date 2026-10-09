@@ -90,7 +90,8 @@ public final class SessionStream implements Iterable<SessionDelivery>, AutoClose
         com.daprmq.grpc.ConsumeSessionStart.Builder start = com.daprmq.grpc.ConsumeSessionStart.newBuilder()
                 .setQueueId(queueId)
                 .setLeaseSeconds(options.leaseSeconds())
-                .setPrefetchCount(options.prefetchCount());
+                .setPrefetchCount(options.prefetchCount())
+                .setSessionIdleTimeoutSeconds(options.sessionIdleTimeoutSeconds());
         if (options.sessionId() != null) {
             start.setSessionId(options.sessionId());
         }

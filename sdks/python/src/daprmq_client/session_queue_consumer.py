@@ -34,6 +34,9 @@ class SessionQueueConsumerOptions:
     target_session_id: str | None = None
     lease_seconds: int = 30
     prefetch_count: int = 1
+    session_idle_timeout_seconds: int = 0
+    """Releases a session once no message has arrived for this long, so the slot moves on to the
+    next one. 0 = the server default (lease_seconds)."""
     min_backoff_seconds: int = 1
     max_backoff_seconds: int = 60
     on_handler_exception: SessionHandlerFailureAction = SessionHandlerFailureAction.DEAD_LETTER_MESSAGE
@@ -71,6 +74,7 @@ class SessionCapableClient(Protocol):
         session_id: str | None = None,
         lease_seconds: int = 30,
         prefetch_count: int = 1,
+        session_idle_timeout_seconds: int = 0,
         cancel: asyncio.Event | None = None,
     ) -> Any: ...
 
@@ -144,6 +148,7 @@ class SessionQueueConsumer:
                     session_id=self.options.target_session_id,
                     lease_seconds=self.options.lease_seconds,
                     prefetch_count=self.options.prefetch_count,
+                    session_idle_timeout_seconds=self.options.session_idle_timeout_seconds,
                     cancel=slot.close_stream,
                 )
                 # aclosing: leaving the loop waits for the stream to close, which releases the session.

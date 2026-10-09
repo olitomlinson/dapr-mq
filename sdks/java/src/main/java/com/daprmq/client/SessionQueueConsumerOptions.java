@@ -5,6 +5,7 @@ public final class SessionQueueConsumerOptions {
     private String targetSessionId;
     private int leaseSeconds = 30;
     private int prefetchCount = 1;
+    private int sessionIdleTimeoutSeconds;
     private int minBackoffSeconds = 1;
     private int maxBackoffSeconds = 60;
     private SessionHandlerFailureAction onHandlerException = SessionHandlerFailureAction.DEAD_LETTER_MESSAGE;
@@ -28,6 +29,15 @@ public final class SessionQueueConsumerOptions {
 
     public SessionQueueConsumerOptions prefetchCount(int value) {
         this.prefetchCount = value;
+        return this;
+    }
+
+    /**
+     * Releases a session once no message has arrived for this long, so the slot moves on to the
+     * next one. 0 = the server default (leaseSeconds).
+     */
+    public SessionQueueConsumerOptions sessionIdleTimeoutSeconds(int value) {
+        this.sessionIdleTimeoutSeconds = value;
         return this;
     }
 
@@ -66,6 +76,10 @@ public final class SessionQueueConsumerOptions {
 
     public int getPrefetchCount() {
         return prefetchCount;
+    }
+
+    public int getSessionIdleTimeoutSeconds() {
+        return sessionIdleTimeoutSeconds;
     }
 
     public int getMinBackoffSeconds() {

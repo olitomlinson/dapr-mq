@@ -373,6 +373,29 @@ async def test_stop_drains_gracefully_without_throwing() -> None:
     await consumer.stop()  # must not raise
 
 
+async def test_passes_session_idle_timeout_seconds_to_each_stream() -> None:
+    calls: list[dict[str, object]] = []
+    claimed = asyncio.Event()
+
+    async def handler(_ctx: SessionMessageContext) -> None:
+        pass
+
+    class RecordingClient:
+        def consume_session(self, queue_id: str, **kwargs: object) -> AsyncIterator[SessionDelivery]:
+            calls.append(kwargs)
+            claimed.set()
+            return throwing_sequence(NoSessionsAvailableError("none"))
+
+    consumer = SessionQueueConsumer(
+        RecordingClient(), "q", SessionQueueConsumerOptions(max_concurrent_sessions=1, session_idle_timeout_seconds=2), handler
+    )
+    consumer.start()
+    await claimed.wait()
+    await consumer.stop()
+
+    assert calls[0]["session_idle_timeout_seconds"] == 2
+
+
 def test_raises_when_target_session_id_set_without_max_concurrent_sessions_1() -> None:
     client = FakeClient(lambda: single_item_then_complete(make_delivery("s1", "L1").delivery))
 
