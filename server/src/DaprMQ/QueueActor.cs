@@ -1131,8 +1131,11 @@ public class QueueActor : Actor, IQueueActor
                     totalEnqueued++;
                 }
 
-                // Check and offload segments for this priority (non-blocking, best-effort)
-                await CheckAndOffloadSegmentsAsync(priority, metadata);
+                // Check and offload segments for this priority (non-blocking, best-effort). It
+                // stages the metadata it's given, so it must be the metadata after this batch:
+                // `metadata` was read before EnqueueInternal staged the items, and offloading
+                // from it would write the batch's count, tail and sequence back out.
+                await CheckAndOffloadSegmentsAsync(priority, await GetMetadataAsync());
             }
 
             // Commit all staged changes atomically (all items across all priorities)
