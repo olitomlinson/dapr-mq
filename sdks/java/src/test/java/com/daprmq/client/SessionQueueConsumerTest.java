@@ -1,5 +1,7 @@
 package com.daprmq.client;
 
+import com.daprmq.grpc.ConsumeSessionRequest;
+
 import com.daprmq.client.errors.NoSessionsAvailableException;
 import com.daprmq.grpc.ConsumeSessionResponse;
 import com.daprmq.grpc.SessionDelivered;
@@ -20,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SessionQueueConsumerTest {
 
-    private void awaitFrames(FakeRequestObserver requestObserver, int count) throws InterruptedException {
+    private void awaitFrames(FakeRequestObserver<ConsumeSessionRequest> requestObserver, int count) throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
         while (requestObserver.sent.size() < count && System.nanoTime() < deadline) {
             Thread.sleep(10);
@@ -28,7 +30,7 @@ class SessionQueueConsumerTest {
         assertEquals(count, requestObserver.sent.size());
     }
 
-    private SessionStream streamDeliveringOneItem(FakeRequestObserver requestObserver, String lockId) {
+    private SessionStream streamDeliveringOneItem(FakeRequestObserver<ConsumeSessionRequest> requestObserver, String lockId) {
         AtomicReference<StreamObserver<ConsumeSessionResponse>> captured = new AtomicReference<>();
         SessionStream.StreamFactory factory = observer -> {
             captured.set(observer);
@@ -51,7 +53,7 @@ class SessionQueueConsumerTest {
 
     @Test
     void processesADeliveryAndAcksItThenDrainsCleanly() throws InterruptedException {
-        FakeRequestObserver requestObserver = new FakeRequestObserver();
+        FakeRequestObserver<ConsumeSessionRequest> requestObserver = new FakeRequestObserver<>();
         SessionStream stream = streamDeliveringOneItem(requestObserver, "L1");
 
         CountDownLatch handled = new CountDownLatch(1);
@@ -78,7 +80,7 @@ class SessionQueueConsumerTest {
 
     @Test
     void deadLettersOnHandlerExceptionByDefault() throws InterruptedException {
-        FakeRequestObserver requestObserver = new FakeRequestObserver();
+        FakeRequestObserver<ConsumeSessionRequest> requestObserver = new FakeRequestObserver<>();
         SessionStream stream = streamDeliveringOneItem(requestObserver, "L2");
 
         CountDownLatch handled = new CountDownLatch(1);
@@ -105,7 +107,7 @@ class SessionQueueConsumerTest {
 
     @Test
     void nacksOnHandlerExceptionWhenConfigured() throws InterruptedException {
-        FakeRequestObserver requestObserver = new FakeRequestObserver();
+        FakeRequestObserver<ConsumeSessionRequest> requestObserver = new FakeRequestObserver<>();
         SessionStream stream = streamDeliveringOneItem(requestObserver, "L3");
 
         CountDownLatch handled = new CountDownLatch(1);
@@ -165,7 +167,7 @@ class SessionQueueConsumerTest {
     }
 
     /** A stream that delivers the given items, then - like the real server - ends only once the client half-closes. */
-    private SessionStream streamEndingOnHalfClose(FakeRequestObserver requestObserver, String... lockIds) {
+    private SessionStream streamEndingOnHalfClose(FakeRequestObserver<ConsumeSessionRequest> requestObserver, String... lockIds) {
         AtomicReference<StreamObserver<ConsumeSessionResponse>> captured = new AtomicReference<>();
         SessionStream.StreamFactory factory = observer -> {
             captured.set(observer);
@@ -183,7 +185,7 @@ class SessionQueueConsumerTest {
 
     @Test
     void stopDuringAHandlerLetsItFinishAndAckBeforeClosingTheStream() throws InterruptedException {
-        FakeRequestObserver requestObserver = new FakeRequestObserver();
+        FakeRequestObserver<ConsumeSessionRequest> requestObserver = new FakeRequestObserver<>();
         SessionStream stream = streamEndingOnHalfClose(requestObserver, "L1");
         CountDownLatch entered = new CountDownLatch(1);
         AtomicBoolean interrupted = new AtomicBoolean();
@@ -212,7 +214,7 @@ class SessionQueueConsumerTest {
 
     @Test
     void stopPastTheDrainTimeoutInterruptsTheHandler() throws InterruptedException {
-        FakeRequestObserver requestObserver = new FakeRequestObserver();
+        FakeRequestObserver<ConsumeSessionRequest> requestObserver = new FakeRequestObserver<>();
         SessionStream stream = streamEndingOnHalfClose(requestObserver, "L1");
         CountDownLatch entered = new CountDownLatch(1);
         AtomicBoolean interrupted = new AtomicBoolean();
@@ -239,7 +241,7 @@ class SessionQueueConsumerTest {
 
     @Test
     void idleStopHalfClosesTheStreamPromptly() throws InterruptedException {
-        FakeRequestObserver requestObserver = new FakeRequestObserver();
+        FakeRequestObserver<ConsumeSessionRequest> requestObserver = new FakeRequestObserver<>();
         CountDownLatch opened = new CountDownLatch(1);
         SessionQueueConsumer consumer = new SessionQueueConsumer((queueId, options) -> {
             opened.countDown();
@@ -260,7 +262,7 @@ class SessionQueueConsumerTest {
 
     @Test
     void stopDuringAHandlerDoesNotStartAPrefetchedMessage() throws InterruptedException {
-        FakeRequestObserver requestObserver = new FakeRequestObserver();
+        FakeRequestObserver<ConsumeSessionRequest> requestObserver = new FakeRequestObserver<>();
         SessionStream stream = streamEndingOnHalfClose(requestObserver, "L1", "L2");
         CountDownLatch entered = new CountDownLatch(1);
         List<String> handled = new CopyOnWriteArrayList<>();

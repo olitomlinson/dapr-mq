@@ -99,6 +99,24 @@ class SessionDelivery:
     """Returns the item to the front of the session for redelivery."""
 
 
+@dataclass
+class QueueDelivery:
+    """One delivered, locked item from :meth:`DaprMQClient.consume`. The server renews its lock
+    until it is settled. A rejected settlement arrives later through ``on_settle_failed``; the
+    awaitables here only cover sending the frame."""
+
+    lock_id: str
+    item: Any
+    priority: int
+    lock_expires_at: float
+    delivery_count: int
+    """1 on a first delivery, 2 on the first redelivery after a nack or a lapsed lock, and so on."""
+    ack: Callable[[], Awaitable[None]]
+    nack: Callable[[], Awaitable[None]]
+    """Returns the item to its original position for redelivery (+1 delivery count)."""
+    dead_letter: Callable[[], Awaitable[None]]
+
+
 @dataclass(frozen=True)
 class RetryOptions:
     """How calls ride out a DaprMQ that can't serve them yet (sdks/testing/RETRIES_AND_READINESS.md)."""

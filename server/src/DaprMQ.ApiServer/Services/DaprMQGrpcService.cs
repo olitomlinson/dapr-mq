@@ -25,6 +25,13 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
     internal TimeSpan PollInterval { get; set; } = TimeSpan.FromMilliseconds(200);
 
     /// <summary>
+    /// Cap on a Consume stream's wait while its queue stays empty: the wait doubles from
+    /// PollInterval up to this, and resets on a delivery. Each idle stream polls its queue actor,
+    /// so without this, N idle consumers cost about 5N actor calls a second.
+    /// </summary>
+    internal TimeSpan MaxIdlePollInterval { get; set; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>
     /// Upper bound on applying one Ack/DeadLetter/Nack frame on a ConsumeSession stream. Settlement runs
     /// on its own token, not the call's: the client was already told the ack succeeded, so the
     /// client going away mid-ack must not abandon it.
@@ -1244,6 +1251,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         });
 
         var lastRenewal = DateTime.UtcNow;
+        var idleWait = PollInterval;
         try
         {
             while (true)
@@ -1293,11 +1301,16 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
 
                 if (dequeueResult.Items.Count == 0)
                 {
-                    // Empty, or held by another consumer when competing consumers are off.
-                    await Task.Delay(PollInterval, cts.Token);
+                    // Empty, or held by another consumer when competing consumers are off. Back off,
+                    // but never past the next renewal of locks already delivered.
+                    var untilRenewal = renewInterval - (DateTime.UtcNow - lastRenewal);
+                    var wait = outstanding.IsEmpty ? idleWait : TimeSpan.FromTicks(Math.Clamp(idleWait.Ticks, 0, Math.Max(untilRenewal.Ticks, 0)));
+                    await Task.Delay(wait, cts.Token);
+                    idleWait = TimeSpan.FromTicks(Math.Min(idleWait.Ticks * 2, Math.Max(MaxIdlePollInterval.Ticks, PollInterval.Ticks)));
                     continue;
                 }
 
+                idleWait = PollInterval;
                 foreach (var item in dequeueResult.Items)
                 {
                     outstanding[item.LockId] = 0;

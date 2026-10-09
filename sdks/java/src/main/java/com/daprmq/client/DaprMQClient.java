@@ -57,7 +57,7 @@ import java.util.concurrent.TimeUnit;
  * acknowledge, extendLock, deadLetter, nack, acceptSession, renewSessionLease, releaseSession) is a
  * plain HTTP call under the hood.
  */
-public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
+public final class DaprMQClient implements AutoCloseable, SessionCapableClient, QueueCapableClient {
     /** The health service {@link #waitForReady()} watches by default: queue operations can be served. */
     public static final String OPERATIONS_HEALTH_SERVICE = "daprmq.DaprMQ.operations";
 
@@ -383,6 +383,21 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
         }
     }
 
+    public QueueStream consume(String queueId) {
+        return consume(queueId, ConsumeOptions.defaults());
+    }
+
+    /**
+     * Opens a Consume stream on a plain queue: the server keeps up to {@code prefetchCount} locked
+     * items delivered, refills as they are settled, and renews their locks. Iterate the returned
+     * stream's deliveries; {@link QueueStream#close()} returns the unsettled ones straight away. See
+     * {@link QueueConsumer}, which runs a handler over one.
+     */
+    @Override
+    public QueueStream consume(String queueId, ConsumeOptions options) {
+        return new QueueStream(asyncStub::consume, queueId, options);
+    }
+
     public SessionStream consumeSession(String queueId) {
         return consumeSession(queueId, ConsumeSessionOptions.defaults());
     }
@@ -580,7 +595,7 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
         };
     }
 
-    private static DaprMQException mapLockError(String errorCode, String message) {
+    static DaprMQException mapLockError(String errorCode, String message) {
         if (errorCode == null) {
             return new DaprMQException(message);
         }
@@ -589,7 +604,7 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient {
             case "LOCK_EXPIRED" -> new LockExpiredException(message);
             case "SESSION_LEASE_EXPIRED" -> new SessionLeaseExpiredException(message);
             case "INVALID_LEASE_ID" -> new InvalidLeaseIdException(message);
-            case "INVALID_LOCK_ID", "INVALID_TTL", "VALIDATION_ERROR" -> new ValidationException(message);
+            case "INVALID_LOCK_ID", "INVALID_TTL", "VALIDATION_ERROR", "INVALID_ARGUMENT" -> new ValidationException(message);
             default -> new DaprMQException(message, errorCode);
         };
     }

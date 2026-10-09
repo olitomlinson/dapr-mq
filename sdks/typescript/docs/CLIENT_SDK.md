@@ -86,6 +86,51 @@ if (result) {
 
 **Competing consumers.** By default a queue serves one lock at a time - while any item is locked, further locked dequeues come back `locked` (HTTP 423). When several consumers share a queue (e.g. replicas scaled out by KEDA), pass `{ allowCompetingConsumers: true }` so each can hold its own locks concurrently.
 
+## Consuming a queue over a stream (`consume`, `QueueConsumer`)
+
+`consume` opens a gRPC stream on a plain queue. The server keeps up to `prefetchCount` locked items delivered, refills as they are settled, and renews their locks until they are settled, so there's no polling and no `extendLock`:
+
+```ts
+for await (const delivery of client.consume("my-queue", {
+  prefetchCount: 50,
+  allowCompetingConsumers: true,
+  onSettleFailed: (lockId, err) => console.warn(`settle ${lockId}: ${err.message}`),
+  signal,
+})) {
+  // ... process delivery.item; delivery.deliveryCount is 1 on a first delivery ...
+  await delivery.ack(); // or nack() / deadLetter()
+}
+```
+
+A rejected settle doesn't end the stream: it goes to `onSettleFailed`. Leaving the loop, or aborting `signal`, half-closes the stream: the server applies the settles already sent and returns every unsettled item straight away. Settling afterwards rejects with `StreamClosedError`.
+
+`QueueConsumer` is the recommended way to run a long-lived consumer. It runs your handler over the stream and reopens it with backoff if it breaks:
+
+```ts
+import { QueueConsumer } from "daprmq-client";
+
+const consumer = new QueueConsumer(client, "my-queue", { maxConcurrentHandlers: 10 }, async (ctx, signal) => {
+  // ctx.lockId, ctx.item, ctx.priority, ctx.deliveryCount
+  await process(ctx.item, signal); // resolving acks; rejecting applies onHandlerError
+});
+consumer.start();
+// ... run your application ...
+await consumer.stop();
+```
+
+Stopping - `await consumer.stop()` - stops handing out messages, lets running handlers finish and settle for up to `drainTimeoutMs`, then closes the stream, so the server returns every message the consumer held but hadn't started straight away. For a job that takes a batch and exits (a KEDA ScaledJob, a cron job), use `dequeueLocked` instead: a stream's prefetch would lock messages the job never handles.
+
+| Option | Default | Notes |
+| --- | --- | --- |
+| `maxActiveMessages` | 100 | The stream's prefetch count: messages locked to this consumer, handled or waiting |
+| `maxConcurrentHandlers` | 0 (unlimited) | Bounded by `maxActiveMessages` |
+| `lockTtlMs` | 30 s | The server renews each lock until its message is settled |
+| `allowCompetingConsumers` | `true` | Replicas share the queue |
+| `strictOrder` | `false` | Queue order even after a nack: a window of 1, one handler, no competing consumers |
+| `onHandlerError` | `"nack"` | Or `"deadLetter"` |
+| `maxRetriableErrorsPerSec` | 10 | Paces nacks after handler errors; 0 for unpaced |
+| `minBackoffSeconds` / `maxBackoffSeconds` | 1 / 60 | Seconds before reopening a broken stream; doubles per break, resets after a delivery |
+| `drainTimeoutMs` | 30 s | |
 ## Sessions - manual API
 
 For sticky routing, admin tooling, or callers who don't want a managed consume loop:

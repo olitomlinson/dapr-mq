@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
 import type {
+  ConsumeRequestMessage,
+  ConsumeResponseMessage,
   ConsumeSessionRequestMessage,
   ConsumeSessionResponseMessage,
   DaprMQGrpcClient,
@@ -7,7 +9,7 @@ import type {
 
 /** Minimal fake duplex stream standing in for grpc-js's ClientDuplexStream in tests. */
 export class FakeDuplexStream extends EventEmitter {
-  readonly written: ConsumeSessionRequestMessage[] = [];
+  readonly written: (ConsumeSessionRequestMessage & ConsumeRequestMessage)[] = [];
   ended = false;
   cancelled = false;
   cancelledBeforeServerEnded = false;
@@ -24,7 +26,7 @@ export class FakeDuplexStream extends EventEmitter {
     super();
   }
 
-  write(message: ConsumeSessionRequestMessage): boolean {
+  write(message: ConsumeSessionRequestMessage & ConsumeRequestMessage): boolean {
     if (this.ended) {
       throw new Error("write after end");
     }
@@ -47,7 +49,7 @@ export class FakeDuplexStream extends EventEmitter {
   }
 
   /** Test helper: deliver a server frame asynchronously, like a real stream would. */
-  emitData(message: ConsumeSessionResponseMessage): void {
+  emitData(message: ConsumeSessionResponseMessage | ConsumeResponseMessage): void {
     queueMicrotask(() => this.emit("data", message));
   }
 
@@ -64,6 +66,7 @@ export class FakeDuplexStream extends EventEmitter {
 export function fakeGrpcClient(stream: FakeDuplexStream): DaprMQGrpcClient {
   return {
     consumeSession: () => stream as unknown as ReturnType<DaprMQGrpcClient["consumeSession"]>,
+    consume: () => stream as unknown as ReturnType<DaprMQGrpcClient["consume"]>,
     close: () => {},
   } as unknown as DaprMQGrpcClient;
 }

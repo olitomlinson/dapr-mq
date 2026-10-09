@@ -129,11 +129,13 @@ than one worker can clear quickly.
 consumed by the separate, KEDA-scaled `<lang>-worker` Deployment, and the control-API consumer pod must not compete
 with it.
 
-**Worker** (`<lang>-worker` Deployment — the consumer image with `WORKER_QUEUE_SUFFIX=autoscale`): loops forever —
-dequeue with ack (`count=WORKER_BATCH_SIZE`, **competing consumers enabled** so every replica gets its own locks
-instead of `423 Locked`), sleep `WORKER_ITEM_DELAY_MS` per item to simulate work, acknowledge, log
-`processed N items from <queueId> (total T)`. A batch already dequeued is finished even during shutdown (KEDA
-scaling in), so its locks aren't left to expire. Idle queue → 1s back-off.
+**Worker** (`<lang>-worker` Deployment — the consumer image with `WORKER_QUEUE_SUFFIX=autoscale`): runs a
+`QueueConsumer` (the SDK's managed consumer over the `Consume` stream) with **competing consumers enabled**, so every
+replica holds its own locks instead of getting `423 Locked`. It keeps `WORKER_BATCH_SIZE` messages in flight and runs
+one handler at a time, which sleeps `WORKER_ITEM_DELAY_MS` to simulate work; success acks. It logs
+`processed N items from <queueId> (total T)` every `WORKER_BATCH_SIZE` items. On shutdown (KEDA scaling in) the
+running handler finishes and acks, and the messages this replica held but hadn't started go straight back to the
+queue.
 
 **KEDA**: a `ScaledObject` (`external-push` trigger → the operator) scales the worker `0..maxReplicaCount` at
 `targetValue` items per replica, and back to 0 `cooldownPeriod` seconds after the queue is empty.
