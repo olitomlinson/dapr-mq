@@ -182,11 +182,11 @@ Legend: ✅ implemented and passing · ⬜ not yet
 | `deep-session` | ✅ | ⬜ | ⬜ | ⬜ |
 | `live-publish` | ✅ | ⬜ | ⬜ | ⬜ |
 | `sdk-defaults` | ✅ | ⬜ | ⬜ | ⬜ |
-| `queue-drain-instant` | ⬜ | ⬜ | ⬜ | ⬜ |
-| `queue-drain` | ⬜ | ⬜ | ⬜ | ⬜ |
-| `queue-drain-slow` | ⬜ | ⬜ | ⬜ | ⬜ |
-| `queue-strict-order` | ⬜ | ⬜ | ⬜ | ⬜ |
-| `queue-live-publish` | ⬜ | ⬜ | ⬜ | ⬜ |
+| `queue-drain-instant` | ✅ | ⬜ | ⬜ | ⬜ |
+| `queue-drain` | ✅ | ⬜ | ⬜ | ⬜ |
+| `queue-drain-slow` | ✅ | ⬜ | ⬜ | ⬜ |
+| `queue-strict-order` | ✅ | ⬜ | ⬜ | ⬜ |
+| `queue-live-publish` | ✅ | ⬜ | ⬜ | ⬜ |
 | **extreme** | | | | |
 | `enqueue-ramp` | ⬜ | ⬜ | ⬜ | ⬜ |
 | `enqueue-hot-ramp` | ⬜ | ⬜ | ⬜ | ⬜ |
