@@ -31,6 +31,9 @@
       sdks/python/scripts/generate_grpc.py regenerates stubs from it, rather than duplicating the
       contract here).
     -->
+    <!-- Flags for the perf harness (see the perf profile). -->
+    <perf.args></perf.args>
+
     <daprmq.protoSourceRoot>${project.basedir}/../../server/src/DaprMQ.ApiServer/Protos</daprmq.protoSourceRoot>
   </properties>
 
@@ -189,4 +192,29 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <profile>
+      <!--
+        The performance harness (sdks/testing/PERFORMANCE_TESTS.md), in the test sources since it
+        shares the Testcontainers fixture. Run with the perf profile, the test-compile phase and the
+        exec:exec goal, passing the harness flags in perf.args; usage is in PerfMain.
+      -->
+      <id>perf</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <version>3.5.0</version>
+            <configuration>
+              <executable>java</executable>
+              <classpathScope>test</classpathScope>
+              <commandlineArgs>-classpath %classpath com.daprmq.client.perf.PerfMain ${perf.args}</commandlineArgs>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

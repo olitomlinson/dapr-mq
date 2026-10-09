@@ -32,6 +32,10 @@ on:
         description: '.NET harness flags, e.g. --suite pr | --profile enqueue | --profile steady-drain --idle-timeout 1'
         required: false
         default: '--suite pr'
+      sdk_args:
+        description: 'Python, TypeScript and Java harness flags, e.g. --suite pr | --profile enqueue'
+        required: false
+        default: '--suite pr'
 
 permissions:
   contents: write
@@ -49,6 +53,10 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       dotnet: ${{ steps.decide.outputs.dotnet }}
+      python: ${{ steps.decide.outputs.python }}
+      typescript: ${{ steps.decide.outputs.typescript }}
+      java: ${{ steps.decide.outputs.java }}
+      any: ${{ steps.decide.outputs.any }}
     steps:
       - uses: actions/checkout@v4
 
@@ -63,15 +71,32 @@ jobs:
               - '.github/workflows/perf.yml'
             dotnet:
               - 'sdks/dotnet/**'
+            python:
+              - 'sdks/python/**'
+            typescript:
+              - 'sdks/typescript/**'
+            java:
+              - 'sdks/java/**'
 
       - name: Decide
         id: decide
         run: |
           all=${{ steps.filter.outputs.all }}
           [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "schedule" ]] && all=true
-          dotnet=$all
+          dotnet=$all; python=$all; typescript=$all; java=$all
           [[ "${{ steps.filter.outputs.dotnet }}" == "true" ]] && dotnet=true
-          echo "dotnet=$dotnet" | tee -a "$GITHUB_OUTPUT"
+          [[ "${{ steps.filter.outputs.python }}" == "true" ]] && python=true
+          [[ "${{ steps.filter.outputs.typescript }}" == "true" ]] && typescript=true
+          [[ "${{ steps.filter.outputs.java }}" == "true" ]] && java=true
+          any=false
+          [[ $dotnet == true || $python == true || $typescript == true || $java == true ]] && any=true
+          {
+            echo "dotnet=$dotnet"
+            echo "python=$python"
+            echo "typescript=$typescript"
+            echo "java=$java"
+            echo "any=$any"
+          } | tee -a "$GITHUB_OUTPUT"
 
   # Harness and report-tool unit tests: quick, and catch a broken harness before the stack starts.
   unit:
@@ -88,7 +113,7 @@ jobs:
   build-image:
     name: Build daprmq-api image
     needs: changes
-    if: needs.changes.outputs.dotnet == 'true'
+    if: needs.changes.outputs.any == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -153,11 +178,140 @@ jobs:
           path: perf-results/sdk-dotnet
           if-no-files-found: ignore
 
+  # The other SDKs' harnesses: each runs its own unit tests first (a broken harness fails before the
+  # stack starts), then its pr profiles on its own Testcontainers stack. .NET is still needed for the
+  # report tool's `check`, which the harness calls at the end.
+  python:
+    name: Python SDK
+    needs: [changes, unit, build-image]
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./sdks/testing/actions/load-api-image
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install SDK
+        working-directory: sdks/python
+        run: pip install -e '.[dev]'
+
+      - name: Harness unit tests
+        working-directory: sdks/python
+        run: pytest perf/tests -q
+
+      - uses: ./sdks/testing/actions/checkout-perf-results
+
+      - name: Run pr profiles
+        working-directory: sdks/python
+        env:
+          ARGS: ${{ inputs.sdk_args || '--suite pr' }}
+        run: python -m perf --env-label ci-ubuntu-latest --out ../../perf-results $ARGS
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: perf-sdk-python
+          path: perf-results/sdk-python
+          if-no-files-found: ignore
+
+  typescript:
+    name: TypeScript SDK
+    needs: [changes, unit, build-image]
+    if: needs.changes.outputs.typescript == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./sdks/testing/actions/load-api-image
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: sdks/typescript/package-lock.json
+
+      - name: Install SDK
+        working-directory: sdks/typescript
+        run: npm ci
+
+      - name: Harness unit tests
+        working-directory: sdks/typescript
+        run: npm run perf:typecheck && npx vitest run perf
+
+      - uses: ./sdks/testing/actions/checkout-perf-results
+
+      - name: Run pr profiles
+        working-directory: sdks/typescript
+        env:
+          ARGS: ${{ inputs.sdk_args || '--suite pr' }}
+        run: npm run perf -- --env-label ci-ubuntu-latest --out ../../perf-results $ARGS
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: perf-sdk-typescript
+          path: perf-results/sdk-typescript
+          if-no-files-found: ignore
+
+  java:
+    name: Java SDK
+    needs: [changes, unit, build-image]
+    if: needs.changes.outputs.java == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./sdks/testing/actions/load-api-image
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Harness unit tests
+        working-directory: sdks/java
+        run: mvn -B -q test -Dtest='com.daprmq.client.perf.*Test'
+
+      - uses: ./sdks/testing/actions/checkout-perf-results
+
+      - name: Run pr profiles
+        working-directory: sdks/java
+        env:
+          ARGS: ${{ inputs.sdk_args || '--suite pr' }}
+        run: mvn -B -q -Pperf test-compile exec:exec -Dperf.args="--env-label ci-ubuntu-latest --out ../../perf-results $ARGS"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: perf-sdk-java
+          path: perf-results/sdk-java
+          if-no-files-found: ignore
+
   # Merges every SDK job's results into perf-results, regenerates the cross-SDK report, and pushes
   # (not on PRs). Each SDK job only ever writes its own sdk-<sdk>/ directory.
   publish:
     name: Report and publish
-    needs: [dotnet]
+    needs: [dotnet, python, typescript, java]
     if: ${{ !cancelled() && (contains(needs.*.result, 'success') || contains(needs.*.result, 'failure')) }}
     runs-on: ubuntu-latest
     steps:
