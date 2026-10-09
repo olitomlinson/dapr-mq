@@ -92,6 +92,11 @@ Legend: ✅ implemented and passing · ⬜ not yet · 🚫 permanently out of sc
 | C-07 | Second stream on a leased session surfaces `SessionLocked` | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
 | C-08 | Unacked delivery at disconnect is redelivered to the next consumer | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
 | C-09 | Lease lost mid-stream surfaces `SessionLost` | 🚫 | 🚫 | 🚫 | 🚫 | 🚫 |
+| **Queue streaming (`Consume`)** | | | | | | |
+| QS-01 | Stream delivers a plain queue's items in order with `DeliveryCount` 1, Ack removes them, and the window refills as they settle | ⬜ | ⬜ | ⬜ | ⬜ | ✅ |
+| QS-02 | Nack redelivers the item on the same stream with `DeliveryCount` 2 | ⬜ | ⬜ | ⬜ | ⬜ | ✅ |
+| QS-03 | The server keeps a delivered item locked past its `LockTTL` until it is settled | ⬜ | ⬜ | ⬜ | ⬜ | ✅ |
+| QS-04 | Closing the stream returns unsettled items to the queue straight away, not after `LockTTL` | ⬜ | ⬜ | ⬜ | ⬜ | ✅ |
 | **SessionQueueConsumer (high-level)** | | | | | | |
 | K-01 | Handler success auto-acks; queue ends empty | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
 | K-02 | Multi-session: per-session FIFO preserved and slow session doesn't stall fast one (`MaxConcurrentSessions` ≥ 2) | ✅ | ✅ | ✅ | ✅ | ✅ |

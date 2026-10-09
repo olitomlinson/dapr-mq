@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Threading.Channels;
 using Dapr.Actors;
 using Grpc.Core;
 using DaprMQ.ApiServer.Constants;
@@ -1070,6 +1072,373 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to release session {SessionId} after ConsumeSession stream ended", sessionId);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Managed consume loop for a plain (non-session) queue: keeps up to prefetch_count locked items
+    /// delivered, refills as Ack/Nack/DeadLetter frames settle them, and renews the locks of every
+    /// delivered-but-unsettled item for as long as the stream is open, so the client never calls
+    /// ExtendLock. When the stream ends, every item still outstanding is nacked straight back to its
+    /// position rather than waiting out its lock.
+    /// </summary>
+    public override async Task Consume(
+        IAsyncStreamReader<ConsumeRequest> requestStream,
+        IServerStreamWriter<ConsumeResponse> responseStream,
+        ServerCallContext context)
+    {
+        // The reader and the poll loop both write, and gRPC forbids overlapping writes on one stream.
+        using var writeLock = new SemaphoreSlim(1, 1);
+        async Task WriteAsync(ConsumeResponse response)
+        {
+            await writeLock.WaitAsync();
+            try
+            {
+                await responseStream.WriteAsync(response);
+            }
+            finally
+            {
+                writeLock.Release();
+            }
+        }
+
+        static ConsumeResponse Error(string code, string message) =>
+            new() { Error = new ConsumeError { ErrorCode = code, Message = message } };
+
+        static ConsumeResponse SettleFailed(string lockId, string code, string? message) =>
+            new() { SettleFailed = new ConsumeSettleFailed { LockId = lockId, ErrorCode = code, Message = message ?? string.Empty } };
+
+        if (!await requestStream.MoveNext(context.CancellationToken) ||
+            requestStream.Current.PayloadCase != ConsumeRequest.PayloadOneofCase.Start)
+        {
+            await WriteAsync(Error("INVALID_ARGUMENT", "First message on a Consume stream must be Start"));
+            return;
+        }
+
+        var start = requestStream.Current.Start;
+        if (string.IsNullOrWhiteSpace(start.QueueId))
+        {
+            await WriteAsync(Error("INVALID_ARGUMENT", "queue_id is required"));
+            return;
+        }
+
+        var prefetchCount = Math.Clamp(start.PrefetchCount > 0 ? start.PrefetchCount : 1, 1, 1000);
+        var lockTtlSeconds = Math.Clamp(start.LockTtlSeconds > 0 ? start.LockTtlSeconds : 30, 1, 300);
+        // Renewal resets each lock to lockTtlSeconds from now, so a tick that runs late loses nothing.
+        // Every third of the TTL leaves room for a renewal call that's slow or a tick that's late.
+        var renewInterval = TimeSpan.FromSeconds(lockTtlSeconds / 3.0);
+        var actorId = new ActorId(start.QueueId);
+
+        _logger.LogDebug("gRPC Consume request for queue {QueueId}, prefetch={Prefetch}", start.QueueId, prefetchCount);
+
+        // Locks delivered and not yet settled: renewed while the stream is open, nacked when it ends.
+        var outstanding = new ConcurrentDictionary<string, byte>();
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken);
+
+        // Released when settles drain the window to half full, so the poll loop refills while the
+        // client still has messages in hand (ADR 0001).
+        using var refillSignal = new SemaphoreSlim(0, 1);
+        var refillThreshold = prefetchCount / 2;
+        void SignalRefill()
+        {
+            if (outstanding.Count <= refillThreshold && refillSignal.CurrentCount == 0)
+            {
+                try
+                {
+                    refillSignal.Release();
+                }
+                catch (SemaphoreFullException)
+                {
+                    // Already signalled - a rare double release is harmless.
+                }
+            }
+        }
+
+        // Settle frames the reader has accepted, applied by the settler below. Acks that pile up
+        // while one batch is in flight go to the actor together in the next AcknowledgeBatch, so a
+        // stream isn't capped at one Acknowledge round trip per message.
+        var settles = Channel.CreateUnbounded<ConsumeRequest>();
+
+        var readerTask = Task.Run(async () =>
+        {
+            try
+            {
+                while (await requestStream.MoveNext(cts.Token))
+                {
+                    var req = requestStream.Current;
+                    var lockId = req.PayloadCase switch
+                    {
+                        ConsumeRequest.PayloadOneofCase.Ack => req.Ack.LockId,
+                        ConsumeRequest.PayloadOneofCase.Nack => req.Nack.LockId,
+                        ConsumeRequest.PayloadOneofCase.DeadLetter => req.DeadLetter.LockId,
+                        _ => null
+                    };
+                    if (lockId == null)
+                    {
+                        continue;
+                    }
+
+                    // Stop renewing before settling, so a renewal can't race the settle. A lock that
+                    // isn't outstanding was never delivered here, or its renewal already found it lost.
+                    if (!outstanding.TryRemove(lockId, out _))
+                    {
+                        await WriteAsync(SettleFailed(lockId, "LOCK_NOT_FOUND", "Lock is not outstanding on this stream"));
+                        continue;
+                    }
+
+                    settles.Writer.TryWrite(req);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected on cancellation from either side.
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error reading Consume request stream for queue {QueueId}", start.QueueId);
+            }
+            finally
+            {
+                settles.Writer.TryComplete();
+                cts.Cancel();
+            }
+        });
+
+        // Runs until the reader completes the channel, not until the call is cancelled: every frame
+        // the reader accepted is applied even if the client has gone away.
+        var settlerTask = Task.Run(async () =>
+        {
+            while (await settles.Reader.WaitToReadAsync())
+            {
+                var batch = new List<ConsumeRequest>();
+                while (batch.Count < MaxSettleBatchSize && settles.Reader.TryRead(out var req))
+                {
+                    batch.Add(req);
+                }
+
+                var acks = batch.Where(r => r.PayloadCase == ConsumeRequest.PayloadOneofCase.Ack).Select(r => r.Ack.LockId).ToList();
+                if (acks.Count > 0)
+                {
+                    foreach (var (lockId, errorCode, message) in await AcknowledgeAsync(actorId, acks))
+                    {
+                        _logger.LogWarning("Ack rejected for lock {LockId} on queue {QueueId}: {ErrorCode} {Message}", lockId, start.QueueId, errorCode, message);
+                        await WriteAsync(SettleFailed(lockId, errorCode, message));
+                    }
+                }
+
+                foreach (var req in batch.Where(r => r.PayloadCase != ConsumeRequest.PayloadOneofCase.Ack))
+                {
+                    var (errorCode, message) = await SettleAsync(actorId, req);
+                    if (errorCode != null)
+                    {
+                        var lockId = req.PayloadCase == ConsumeRequest.PayloadOneofCase.Nack ? req.Nack.LockId : req.DeadLetter.LockId;
+                        _logger.LogWarning("{Operation} rejected for lock {LockId} on queue {QueueId}: {ErrorCode} {Message}",
+                            req.PayloadCase, lockId, start.QueueId, errorCode, message);
+                        await WriteAsync(SettleFailed(lockId, errorCode, message));
+                    }
+                }
+
+                SignalRefill();
+            }
+        });
+
+        var lastRenewal = DateTime.UtcNow;
+        try
+        {
+            while (true)
+            {
+                cts.Token.ThrowIfCancellationRequested();
+
+                if (DateTime.UtcNow - lastRenewal >= renewInterval)
+                {
+                    await RenewLocksAsync(actorId, outstanding, lockTtlSeconds, cts.Token);
+                    lastRenewal = DateTime.UtcNow;
+                }
+
+                var capacity = prefetchCount - outstanding.Count;
+                if (capacity <= 0)
+                {
+                    await refillSignal.WaitAsync(PollInterval, cts.Token);
+                    continue;
+                }
+
+                ActorModels.DequeueLockedResponse dequeueResult;
+                try
+                {
+                    dequeueResult = await _queueActorInvoker.InvokeMethodAsync<ActorModels.DequeueLockedRequest, ActorModels.DequeueLockedResponse>(
+                        actorId,
+                        ActorMethodNames.DequeueLocked,
+                        new ActorModels.DequeueLockedRequest
+                        {
+                            Count = capacity,
+                            TtlSeconds = lockTtlSeconds,
+                            AllowCompetingConsumers = start.AllowCompetingConsumers
+                        },
+                        cts.Token);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // A worker gap: keep the stream and its locks, and try again shortly.
+                    _logger.LogWarning(ex, "Dequeue failed on Consume stream for queue {QueueId}", start.QueueId);
+                    await Task.Delay(PollInterval, cts.Token);
+                    continue;
+                }
+
+                if (dequeueResult.ErrorCode != null)
+                {
+                    await WriteAsync(Error(dequeueResult.ErrorCode, dequeueResult.Message ?? "Dequeue failed"));
+                    break;
+                }
+
+                if (dequeueResult.Items.Count == 0)
+                {
+                    // Empty, or held by another consumer when competing consumers are off.
+                    await Task.Delay(PollInterval, cts.Token);
+                    continue;
+                }
+
+                foreach (var item in dequeueResult.Items)
+                {
+                    outstanding[item.LockId] = 0;
+                    await WriteAsync(new ConsumeResponse
+                    {
+                        Delivered = new ConsumeDelivered
+                        {
+                            LockId = item.LockId,
+                            ItemJson = item.ItemJson,
+                            Priority = item.Priority,
+                            LockExpiresAt = item.LockExpiresAt,
+                            DeliveryCount = item.DeliveryCount + 1
+                        }
+                    });
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The client closed the stream, or the call was cancelled.
+        }
+        finally
+        {
+            cts.Cancel();
+            try
+            {
+                await readerTask;
+                await settlerTask;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error awaiting Consume reader or settler for queue {QueueId}", start.QueueId);
+            }
+
+            // Return what the client never settled to its position now, not when its lock lapses.
+            await Task.WhenAll(outstanding.Keys.Select(async lockId =>
+            {
+                try
+                {
+                    using var settleCts = new CancellationTokenSource(SettleTimeout);
+                    await _queueActorInvoker.InvokeMethodAsync<ActorModels.NackRequest, ActorModels.NackResponse>(
+                        actorId, ActorMethodNames.Nack, new ActorModels.NackRequest { LockId = lockId }, settleCts.Token);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to nack lock {LockId} on queue {QueueId} after Consume stream ended", lockId, start.QueueId);
+                }
+            }));
+        }
+    }
+
+    /// <summary>
+    /// Acknowledges the locks in one AcknowledgeBatch call, on its own token like SettleAsync.
+    /// Returns the locks that weren't acknowledged, with why.
+    /// </summary>
+    private async Task<List<(string LockId, string ErrorCode, string? Message)>> AcknowledgeAsync(ActorId actorId, List<string> lockIds)
+    {
+        using var settleCts = new CancellationTokenSource(SettleTimeout);
+        try
+        {
+            var result = await _queueActorInvoker.InvokeMethodAsync<ActorModels.AcknowledgeBatchRequest, ActorModels.AcknowledgeBatchResponse>(
+                actorId, ActorMethodNames.AcknowledgeBatch, new ActorModels.AcknowledgeBatchRequest { LockIds = lockIds }, settleCts.Token);
+            if (!result.Success)
+            {
+                return lockIds.Select(id => (id, result.ErrorCode ?? "ACK_FAILED", (string?)result.Message)).ToList();
+            }
+            return result.Results
+                .Where(r => r.Outcome != "ACKNOWLEDGED")
+                .Select(r => (r.LockId, r.Outcome, (string?)$"Lock was not acknowledged: {r.Outcome}"))
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            return lockIds.Select(id => (id, "SETTLE_FAILED", (string?)ex.Message)).ToList();
+        }
+    }
+
+    /// <summary>
+    /// Applies one Nack/DeadLetter frame (acks go through AcknowledgeAsync). Runs on its own token, not the call's: once the frame
+    /// is read, the client going away must not abandon the settle. Returns the error code and
+    /// message when the actor rejects it, or nulls on success.
+    /// </summary>
+    private async Task<(string? ErrorCode, string? Message)> SettleAsync(ActorId actorId, ConsumeRequest req)
+    {
+        using var settleCts = new CancellationTokenSource(SettleTimeout);
+        try
+        {
+            switch (req.PayloadCase)
+            {
+                case ConsumeRequest.PayloadOneofCase.Ack:
+                    var ack = await _queueActorInvoker.InvokeMethodAsync<ActorModels.AcknowledgeRequest, ActorModels.AcknowledgeResponse>(
+                        actorId, ActorMethodNames.Acknowledge, new ActorModels.AcknowledgeRequest { LockId = req.Ack.LockId }, settleCts.Token);
+                    return ack.Success ? (null, null) : (ack.ErrorCode ?? "ACK_FAILED", ack.Message);
+
+                case ConsumeRequest.PayloadOneofCase.Nack:
+                    var nack = await _queueActorInvoker.InvokeMethodAsync<ActorModels.NackRequest, ActorModels.NackResponse>(
+                        actorId, ActorMethodNames.Nack, new ActorModels.NackRequest { LockId = req.Nack.LockId }, settleCts.Token);
+                    return nack.Success ? (null, null) : (nack.ErrorCode ?? "NACK_FAILED", nack.Message);
+
+                default:
+                    var dlq = await _queueActorInvoker.InvokeMethodAsync<ActorModels.DeadLetterRequest, ActorModels.DeadLetterResponse>(
+                        actorId, ActorMethodNames.DeadLetter, new ActorModels.DeadLetterRequest { LockId = req.DeadLetter.LockId }, settleCts.Token);
+                    return dlq.Status == "SUCCESS" ? (null, null) : (dlq.ErrorCode ?? "DEAD_LETTER_FAILED", dlq.Message);
+            }
+        }
+        catch (Exception ex)
+        {
+            return ("SETTLE_FAILED", ex.Message);
+        }
+    }
+
+    // The actor caps AcknowledgeBatch and ExtendLockBatch at 1000 locks a call.
+    private const int MaxSettleBatchSize = 1000;
+
+    /// <summary>
+    /// Renews every outstanding lock to lockTtlSeconds from now, in batches of up to 1000. A lock the actor
+    /// no longer has is dropped from the set: its item is already on its way back to the queue, and
+    /// the client learns that when it tries to settle it. A failed call leaves the set as it is, so
+    /// the next tick retries.
+    /// </summary>
+    private async Task RenewLocksAsync(ActorId actorId, ConcurrentDictionary<string, byte> outstanding, int lockTtlSeconds, CancellationToken cancellationToken)
+    {
+        foreach (var batch in outstanding.Keys.Chunk(MaxSettleBatchSize))
+        {
+            try
+            {
+                var result = await _queueActorInvoker.InvokeMethodAsync<ActorModels.ExtendLockBatchRequest, ActorModels.ExtendLockBatchResponse>(
+                    actorId,
+                    ActorMethodNames.ExtendLockBatch,
+                    new ActorModels.ExtendLockBatchRequest { LockIds = batch.ToList(), TtlSeconds = lockTtlSeconds },
+                    cancellationToken);
+
+                foreach (var lost in result.Results.Where(r => r.Outcome != "EXTENDED"))
+                {
+                    outstanding.TryRemove(lost.LockId, out _);
+                    _logger.LogWarning("Lock {LockId} lost on Consume stream for queue {QueueId}: {Outcome}", lost.LockId, actorId, lost.Outcome);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Lock renewal failed on Consume stream for queue {QueueId}", actorId);
             }
         }
     }

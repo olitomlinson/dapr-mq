@@ -77,6 +77,26 @@ type EnqueueResult struct {
 	ItemsDeduplicated int
 }
 
+// PublishOptions is reserved for future options; pass nil.
+type PublishOptions struct{}
+
+type PublishResult struct {
+	PublishID string
+	Sequence  int64
+}
+
+// SubscribeOptions configures [Client.Subscribe]. A nil value uses the defaults.
+type SubscribeOptions struct {
+	// DedupEnabled turns idempotency-key de-duplication on for the subscriber's queue.
+	// Unset uses the server default.
+	DedupEnabled *bool
+}
+
+type SubscribeResult struct {
+	// QueueID is the subscriber's queue.
+	QueueID string
+}
+
 // DequeueLockedOptions configures [Client.DequeueLocked]. A nil value uses the defaults.
 type DequeueLockedOptions struct {
 	// Count is the most items to return (1-1000). Default 1.
@@ -179,6 +199,23 @@ type ConsumeSessionOptions struct {
 	// SessionIdleTimeout ends the stream (io.EOF) once no message has arrived for this long,
 	// releasing the session. Default: the lease duration.
 	SessionIdleTimeout time.Duration
+}
+
+// ConsumeOptions configures [Client.Consume]. A nil value uses the defaults.
+type ConsumeOptions struct {
+	// PrefetchCount is how many delivered but unsettled items to keep in flight (1-1000). Default 1.
+	// Above 1, a Nack can reorder the queue: items already in flight are delivered before it comes back.
+	PrefetchCount int
+	// LockTTL in whole seconds (1-300, rounded up). The server renews each delivered item's lock
+	// until it is settled, so this only bounds how long an item stays locked after this client
+	// disappears without closing the stream. Default 30 s.
+	LockTTL time.Duration
+	// AllowCompetingConsumers lets this stream hold locks while other consumers hold theirs. By
+	// default the queue serves one lock holder at a time.
+	AllowCompetingConsumers bool
+	// OnSettleFailed, if set, is called from Receive when the server rejects an Ack, Nack or
+	// DeadLetter (for example CodeLockNotFound once the lock was lost). The stream carries on.
+	OnSettleFailed func(lockID string, err error)
 }
 
 // WaitForReadyOptions configures [Client.WaitForReady]. A nil value uses the defaults.

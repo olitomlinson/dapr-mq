@@ -17,11 +17,16 @@ import (
 // health, the health service) to exercise the real client end to end over a real gRPC stream.
 type fakeServer struct {
 	pb.UnimplementedDaprMQServer
-	consume func(stream pb.DaprMQ_ConsumeSessionServer) error
+	consume      func(stream pb.DaprMQ_ConsumeSessionServer) error
+	consumeQueue func(stream pb.DaprMQ_ConsumeServer) error
 }
 
 func (f *fakeServer) ConsumeSession(stream pb.DaprMQ_ConsumeSessionServer) error {
 	return f.consume(stream)
+}
+
+func (f *fakeServer) Consume(stream pb.DaprMQ_ConsumeServer) error {
+	return f.consumeQueue(stream)
 }
 
 type fakeHealth struct {

@@ -305,6 +305,11 @@ public record DequeueLockedItem
     /// token itself, but surfaced here too so callers don't need to decode the token to know it.
     /// </summary>
     public string? BlobContentType { get; init; }
+
+    /// <summary>
+    /// How many earlier deliveries of this item were nacked or lapsed (0 on a first delivery).
+    /// </summary>
+    public int DeliveryCount { get; init; }
 }
 
 /// <summary>
@@ -459,6 +464,66 @@ public record AcknowledgeBatchResponse
     /// One entry per requested lock, in request order.
     /// </summary>
     public List<AcknowledgeResult> Results { get; init; } = new();
+
+    public string? ErrorCode { get; init; }
+}
+
+/// <summary>
+/// Request model for ExtendLockBatch operation.
+/// </summary>
+public record ExtendLockBatchRequest
+{
+    /// <summary>
+    /// Lock IDs to extend (1-1000, no duplicates).
+    /// </summary>
+    public List<string> LockIds { get; init; } = new();
+
+    /// <summary>
+    /// Renews each lock to expire this many seconds from now. Unlike ExtendLock, nothing is added
+    /// to the current expiry, so renewing late or twice can't drift, and a lock that already
+    /// expires later is left as it is.
+    /// </summary>
+    public int TtlSeconds { get; init; } = 30;
+
+    /// <summary>
+    /// Required when calling a session-scoped queue actor with an active lease synced onto it
+    /// (null otherwise, e.g. an ordinary queue). Checked once for the whole batch.
+    /// </summary>
+    public string? LeaseId { get; init; }
+}
+
+/// <summary>
+/// Outcome of one lock in an ExtendLockBatch call.
+/// </summary>
+public record ExtendLockResult
+{
+    public string LockId { get; init; } = string.Empty;
+
+    /// <summary>
+    /// EXTENDED, LOCK_NOT_FOUND, LOCK_EXPIRED or INVALID_LOCK_ID.
+    /// </summary>
+    public string Outcome { get; init; } = string.Empty;
+
+    /// <summary>
+    /// The lock's new expiry (Unix seconds) when EXTENDED, else 0.
+    /// </summary>
+    public double NewExpiresAt { get; init; }
+}
+
+/// <summary>
+/// Response model for ExtendLockBatch operation. Success is true whenever the request was valid,
+/// whatever the per-lock outcomes; ErrorCode is set only for whole-call failures.
+/// </summary>
+public record ExtendLockBatchResponse
+{
+    public bool Success { get; init; }
+
+    public string Message { get; init; } = string.Empty;
+
+    /// <summary>
+    /// One entry per requested lock, in request order.
+    /// </summary>
+    public List<ExtendLockResult> Results { get; init; } = new();
 
     public string? ErrorCode { get; init; }
 }

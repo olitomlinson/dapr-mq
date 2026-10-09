@@ -353,3 +353,67 @@ func TestNewClientRequiresAnHTTPBaseURL(t *testing.T) {
 		t.Fatal("want an error")
 	}
 }
+
+func TestPublishPostsItemsToTheTopicAndReturnsThePublishID(t *testing.T) {
+	transport := newSequence(respond(202, map[string]any{"accepted": true, "publishId": "p1", "sequence": 7}, nil))
+
+	result, err := newTestClient(t, transport, fastRetry).Publish(bg, "my topic", []EnqueueItem{
+		{Item: map[string]string{"task": "a"}, Priority: Ptr(PriorityFastLane), IdempotencyKey: "k1"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := transport.requests[0]
+	if req.Method != "POST" || req.URL.EscapedPath() != "/topic/my%20topic/publish" {
+		t.Fatalf("%s %s", req.Method, req.URL.EscapedPath())
+	}
+	if !contains(transport.bodies[0], `"priority":0`) || !contains(transport.bodies[0], `"idempotencyKey":"k1"`) || !contains(transport.bodies[0], `"task":"a"`) {
+		t.Fatal(transport.bodies[0])
+	}
+	if result.PublishID != "p1" || result.Sequence != 7 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestPublishValidationErrorMapsToValidation(t *testing.T) {
+	transport := newSequence(respond(400, map[string]any{"message": "Items array cannot be empty"}, nil))
+
+	_, err := newTestClient(t, transport, fastRetry).Publish(bg, "t", []EnqueueItem{{Item: 1}}, nil)
+
+	requireCode(t, err, CodeValidation)
+}
+
+func TestSubscribePostsTheSubscriberAndReturnsItsQueue(t *testing.T) {
+	transport := newSequence(respond(201, map[string]any{"success": true, "queueActorId": "t-sub-app"}, nil))
+
+	result, err := newTestClient(t, transport, fastRetry).Subscribe(bg, "my topic", "app 1", &SubscribeOptions{DedupEnabled: Ptr(true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := transport.requests[0]
+	if req.Method != "POST" || req.URL.EscapedPath() != "/topic/my%20topic/subscribers/app%201" {
+		t.Fatalf("%s %s", req.Method, req.URL.EscapedPath())
+	}
+	if !contains(transport.bodies[0], `"dedupEnabled":true`) {
+		t.Fatal(transport.bodies[0])
+	}
+	if result.QueueID != "t-sub-app" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestSubscribeAnExistingSubscriberIsSubscriberExists(t *testing.T) {
+	transport := newSequence(respond(409, map[string]any{"message": "Subscriber already exists"}, nil))
+
+	_, err := newTestClient(t, transport, fastRetry).Subscribe(bg, "t", "app", nil)
+
+	requireCode(t, err, CodeSubscriberExists)
+}
+
+func TestTopicSubscriberQueueID(t *testing.T) {
+	if got := TopicSubscriberQueueID("orders", "billing"); got != "orders-sub-billing" {
+		t.Fatal(got)
+	}
+}

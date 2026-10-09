@@ -14,6 +14,7 @@ Most endpoints are scoped to a queue via `{queueId}` in the path — each distin
 - [Extend Lock](#extend-lock)
 - [Nack](#nack)
 - [Dead Letter](#dead-letter)
+- [Consume (gRPC stream)](#consume-grpc-stream)
 - [HTTP Sink](#http-sink)
 - [Topics](#topics)
 - [Sessions](#sessions)
@@ -419,6 +420,22 @@ Content-Type: application/json
 ```
 
 The dead letter queue is itself a normal queue — dequeue from `{queueId}-deadletter` the same way you would any other queue.
+
+---
+
+## Consume (gRPC stream)
+
+A managed consume loop for a plain queue, gRPC only: `rpc Consume(stream ConsumeRequest) returns (stream ConsumeResponse)`. Instead of polling `DequeueLocked`, the client opens one stream and the server pushes locked items to it.
+
+1. The client sends `Start { queue_id, prefetch_count, lock_ttl_seconds, allow_competing_consumers }` first. `prefetch_count` (1-1000, default 1) is how many delivered-but-unsettled items the stream holds; `lock_ttl_seconds` is 1-300, default 30.
+2. The server sends a `Delivered { lock_id, item_json, priority, lock_expires_at, delivery_count }` frame per item. `delivery_count` counts this delivery: 1 is the first, 2 the first redelivery after a nack or a lapsed lock.
+3. The client settles each item with an `Ack`, `Nack` or `DeadLetter` frame carrying its `lock_id`. When settles bring the window down to half, the server dequeues more.
+
+**Locks.** The server renews the lock of every delivered, unsettled item at about `lock_ttl_seconds / 2` for as long as the stream is open, so the client never calls Extend Lock. When the stream ends, the server nacks every item still unsettled, so each goes back to its original position straight away; if the server itself goes away, the locks lapse after `lock_ttl_seconds` as usual.
+
+**Errors.** A rejected settle (for example `LOCK_NOT_FOUND` after a lock was lost) comes back as a `SettleFailed { lock_id, error_code, message }` frame, and the stream carries on. An `Error { error_code, message }` frame ends the stream, for example `INVALID_ARGUMENT` when the first frame isn't `Start` or `queue_id` is empty.
+
+**Ordering.** With `prefetch_count` 1 and `allow_competing_consumers` false, items are delivered strictly in queue order. Above 1, a nacked item comes back after the items already in flight.
 
 ---
 

@@ -126,6 +126,70 @@ func (c *Client) Enqueue(ctx context.Context, queueID string, items []EnqueueIte
 	return result, decode(resp, &result)
 }
 
+// Publish adds items to a topic, in order, for relay to every subscriber's queue. The server
+// accepts the publish and relays it afterwards, so a nil error means accepted, not delivered.
+// A publish whose outcome is unknown is not retried: the topic doesn't de-duplicate.
+func (c *Client) Publish(ctx context.Context, topicID string, items []EnqueueItem, _ *PublishOptions) (PublishResult, error) {
+	wire := make([]enqueueWireItem, len(items))
+	for i, item := range items {
+		priority := PriorityNormal
+		if item.Priority != nil {
+			priority = *item.Priority
+		}
+		wire[i] = enqueueWireItem{Item: item.Item, Priority: priority, IdempotencyKey: item.IdempotencyKey}
+	}
+
+	resp, err := c.send(ctx, request{
+		operation: "Publish", path: topicPath(topicID, "publish"), body: map[string]any{"items": wire},
+	})
+	if err != nil {
+		return PublishResult{}, err
+	}
+	if !resp.ok() {
+		return PublishResult{}, genericError(resp)
+	}
+
+	var result PublishResult
+	return result, decode(resp, &result)
+}
+
+// Subscribe registers subscriberID on a topic, provisioning its queue: every item published from
+// then on is relayed to it. Consume it with DequeueLocked on the returned QueueID. An existing
+// subscriber fails with CodeSubscriberExists; its queue is [TopicSubscriberQueueID].
+func (c *Client) Subscribe(ctx context.Context, topicID, subscriberID string, options *SubscribeOptions) (SubscribeResult, error) {
+	body := map[string]any{}
+	if options != nil && options.DedupEnabled != nil {
+		body["dedupEnabled"] = *options.DedupEnabled
+	}
+
+	resp, err := c.send(ctx, request{
+		operation: "Subscribe", path: topicPath(topicID, "subscribers/"+url.PathEscape(subscriberID)), body: body,
+		unknownIsRetryable: true,
+	})
+	if err != nil {
+		return SubscribeResult{}, err
+	}
+	if resp.status == http.StatusConflict {
+		return SubscribeResult{}, &Error{Code: CodeSubscriberExists, Message: errorMessage(resp.status, resp.body), StatusCode: resp.status}
+	}
+	if !resp.ok() {
+		return SubscribeResult{}, genericError(resp)
+	}
+
+	var wire struct {
+		QueueActorID string `json:"queueActorId"`
+	}
+	if err := decode(resp, &wire); err != nil {
+		return SubscribeResult{}, err
+	}
+	return SubscribeResult{QueueID: wire.QueueActorID}, nil
+}
+
+// TopicSubscriberQueueID is the queue a topic subscriber consumes from.
+func TopicSubscriberQueueID(topicID, subscriberID string) string {
+	return topicID + "-sub-" + subscriberID
+}
+
 // DequeueLocked takes items off the front of the queue under a lock. Settle each with
 // Acknowledge, AcknowledgeBatch, Nack or DeadLetter before the lock expires, or ExtendLock it;
 // an expired lock returns its item to the position it was taken from.
@@ -434,6 +498,10 @@ func (c *Client) watchHealth(ctx context.Context, service string, backoff *time.
 
 func queuePath(queueID, suffix string) string {
 	return "/queue/" + url.PathEscape(queueID) + "/" + suffix
+}
+
+func topicPath(topicID, suffix string) string {
+	return "/topic/" + url.PathEscape(topicID) + "/" + suffix
 }
 
 func lockRequest(operation, queueID, suffix string, body any, options *LockOptions) request {

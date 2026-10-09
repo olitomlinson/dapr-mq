@@ -31,6 +31,7 @@ const (
 	DaprMQ_RenewSessionLease_FullMethodName = "/daprmq.DaprMQ/RenewSessionLease"
 	DaprMQ_ReleaseSession_FullMethodName    = "/daprmq.DaprMQ/ReleaseSession"
 	DaprMQ_ConsumeSession_FullMethodName    = "/daprmq.DaprMQ/ConsumeSession"
+	DaprMQ_Consume_FullMethodName           = "/daprmq.DaprMQ/Consume"
 )
 
 // DaprMQClient is the client API for DaprMQ service.
@@ -83,6 +84,12 @@ type DaprMQClient interface {
 	// One stream = one session (see plan §2.4.1) - a client wanting N concurrent sessions opens N
 	// of these streams, which multiplex cheaply over one gRPC channel/HTTP2 connection.
 	ConsumeSession(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ConsumeSessionRequest, ConsumeSessionResponse], error)
+	// Managed consume loop for a plain (non-session) queue: streams up to prefetch_count locked items
+	// at a time, accepts Ack/Nack/DeadLetter frames, and refills the window as they settle. The
+	// server renews the locks of every item it has delivered and the client hasn't settled, for as
+	// long as the stream stays open - the client never calls ExtendLock. When the stream ends, every
+	// still-outstanding item is nacked back to its position straight away.
+	Consume(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ConsumeRequest, ConsumeResponse], error)
 }
 
 type daprMQClient struct {
@@ -216,6 +223,19 @@ func (c *daprMQClient) ConsumeSession(ctx context.Context, opts ...grpc.CallOpti
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type DaprMQ_ConsumeSessionClient = grpc.BidiStreamingClient[ConsumeSessionRequest, ConsumeSessionResponse]
 
+func (c *daprMQClient) Consume(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ConsumeRequest, ConsumeResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &DaprMQ_ServiceDesc.Streams[1], DaprMQ_Consume_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[ConsumeRequest, ConsumeResponse]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type DaprMQ_ConsumeClient = grpc.BidiStreamingClient[ConsumeRequest, ConsumeResponse]
+
 // DaprMQServer is the server API for DaprMQ service.
 // All implementations must embed UnimplementedDaprMQServer
 // for forward compatibility.
@@ -266,6 +286,12 @@ type DaprMQServer interface {
 	// One stream = one session (see plan §2.4.1) - a client wanting N concurrent sessions opens N
 	// of these streams, which multiplex cheaply over one gRPC channel/HTTP2 connection.
 	ConsumeSession(grpc.BidiStreamingServer[ConsumeSessionRequest, ConsumeSessionResponse]) error
+	// Managed consume loop for a plain (non-session) queue: streams up to prefetch_count locked items
+	// at a time, accepts Ack/Nack/DeadLetter frames, and refills the window as they settle. The
+	// server renews the locks of every item it has delivered and the client hasn't settled, for as
+	// long as the stream stays open - the client never calls ExtendLock. When the stream ends, every
+	// still-outstanding item is nacked back to its position straight away.
+	Consume(grpc.BidiStreamingServer[ConsumeRequest, ConsumeResponse]) error
 	mustEmbedUnimplementedDaprMQServer()
 }
 
@@ -311,6 +337,9 @@ func (UnimplementedDaprMQServer) ReleaseSession(context.Context, *ReleaseSession
 }
 func (UnimplementedDaprMQServer) ConsumeSession(grpc.BidiStreamingServer[ConsumeSessionRequest, ConsumeSessionResponse]) error {
 	return status.Error(codes.Unimplemented, "method ConsumeSession not implemented")
+}
+func (UnimplementedDaprMQServer) Consume(grpc.BidiStreamingServer[ConsumeRequest, ConsumeResponse]) error {
+	return status.Error(codes.Unimplemented, "method Consume not implemented")
 }
 func (UnimplementedDaprMQServer) mustEmbedUnimplementedDaprMQServer() {}
 func (UnimplementedDaprMQServer) testEmbeddedByValue()                {}
@@ -538,6 +567,13 @@ func _DaprMQ_ConsumeSession_Handler(srv interface{}, stream grpc.ServerStream) e
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type DaprMQ_ConsumeSessionServer = grpc.BidiStreamingServer[ConsumeSessionRequest, ConsumeSessionResponse]
 
+func _DaprMQ_Consume_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(DaprMQServer).Consume(&grpc.GenericServerStream[ConsumeRequest, ConsumeResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type DaprMQ_ConsumeServer = grpc.BidiStreamingServer[ConsumeRequest, ConsumeResponse]
+
 // DaprMQ_ServiceDesc is the grpc.ServiceDesc for DaprMQ service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -594,6 +630,12 @@ var DaprMQ_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "ConsumeSession",
 			Handler:       _DaprMQ_ConsumeSession_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "Consume",
+			Handler:       _DaprMQ_Consume_Handler,
 			ServerStreams: true,
 			ClientStreams: true,
 		},

@@ -2797,4 +2797,131 @@ public class QueueActorTests
         Assert.Equal(0, metadata.LockCount);
     }
 
+    private async Task<(QueueActor Actor, Mock<IActorStateManager> State, List<Interfaces.DequeueLockedItem> Locked)> LockItemsAsync(int count, int ttlSeconds = 10)
+    {
+        var mockStateManager = CreateMockStateManager();
+        var actor = await CreateActorAsync(mockStateManager);
+        await actor.Enqueue(new Interfaces.EnqueueRequest
+        {
+            Items = Enumerable.Range(1, count).Select(i => new Interfaces.EnqueueItem { ItemJson = $"{{\"id\":{i}}}", Priority = 1 }).ToList()
+        });
+        var locked = await actor.DequeueLocked(new Interfaces.DequeueLockedRequest { TtlSeconds = ttlSeconds, Count = count, AllowCompetingConsumers = true });
+        Assert.Equal(count, locked.Items.Count);
+        return (actor, mockStateManager, locked.Items);
+    }
+
+    [Fact]
+    public async Task ExtendLockBatch_RenewsEveryLockToTtlFromNow_InOneSave()
+    {
+        var (actor, state, locked) = await LockItemsAsync(2, ttlSeconds: 10);
+        state.Invocations.Clear();
+
+        var result = await actor.ExtendLockBatch(new Interfaces.ExtendLockBatchRequest
+        {
+            LockIds = locked.Select(l => l.LockId).ToList(),
+            TtlSeconds = 30
+        });
+
+        Assert.True(result.Success);
+        Assert.Null(result.ErrorCode);
+        Assert.Equal(locked.Select(l => l.LockId), result.Results.Select(r => r.LockId));
+        double now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        foreach (var r in result.Results)
+        {
+            Assert.Equal("EXTENDED", r.Outcome);
+            Assert.True(Math.Abs(r.NewExpiresAt - (now + 30)) < 2);
+        }
+        state.Verify(m => m.SaveStateAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExtendLockBatch_RepeatedRenewalsDontAccumulate_AndNeverShortenALock()
+    {
+        var (actor, _, locked) = await LockItemsAsync(1, ttlSeconds: 60);
+        var lockIds = new List<string> { locked[0].LockId };
+
+        var first = await actor.ExtendLockBatch(new Interfaces.ExtendLockBatchRequest { LockIds = lockIds, TtlSeconds = 30 });
+        var second = await actor.ExtendLockBatch(new Interfaces.ExtendLockBatchRequest { LockIds = lockIds, TtlSeconds = 30 });
+
+        // A 30s renewal never pulls a 60s lock in, and renewing twice doesn't add up to 60s more.
+        Assert.Equal(locked[0].LockExpiresAt, first.Results[0].NewExpiresAt);
+        Assert.Equal(locked[0].LockExpiresAt, second.Results[0].NewExpiresAt);
+    }
+
+    [Fact]
+    public async Task ExtendLockBatch_ReportsAnOutcomePerLock_InRequestOrder()
+    {
+        var (actor, _, locked) = await LockItemsAsync(1);
+
+        var result = await actor.ExtendLockBatch(new Interfaces.ExtendLockBatchRequest
+        {
+            LockIds = new List<string> { "missing-lock", locked[0].LockId, "" },
+            TtlSeconds = 30
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "LOCK_NOT_FOUND", "EXTENDED", "INVALID_LOCK_ID" }, result.Results.Select(r => r.Outcome));
+        Assert.Equal(0, result.Results[0].NewExpiresAt);
+    }
+
+    [Fact]
+    public async Task ExtendLockBatch_ExpiredLock_IsLockExpired()
+    {
+        var (actor, _, locked) = await LockItemsAsync(1, ttlSeconds: 1);
+        await Task.Delay(TimeSpan.FromSeconds(2));
+
+        var result = await actor.ExtendLockBatch(new Interfaces.ExtendLockBatchRequest
+        {
+            LockIds = new List<string> { locked[0].LockId },
+            TtlSeconds = 30
+        });
+
+        Assert.Equal("LOCK_EXPIRED", Assert.Single(result.Results).Outcome);
+    }
+
+    [Theory]
+    [InlineData(0, 30)]
+    [InlineData(1001, 30)]
+    [InlineData(1, 0)]
+    public async Task ExtendLockBatch_InvalidRequest_IsValidationError(int lockCount, int ttlSeconds)
+    {
+        var actor = await CreateActorAsync(CreateMockStateManager());
+
+        var result = await actor.ExtendLockBatch(new Interfaces.ExtendLockBatchRequest
+        {
+            LockIds = Enumerable.Range(0, lockCount).Select(i => $"lock-{i}").ToList(),
+            TtlSeconds = ttlSeconds
+        });
+
+        Assert.False(result.Success);
+        Assert.Equal("VALIDATION_ERROR", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task ExtendLockBatch_DuplicateLockIds_IsValidationError()
+    {
+        var actor = await CreateActorAsync(CreateMockStateManager());
+
+        var result = await actor.ExtendLockBatch(new Interfaces.ExtendLockBatchRequest
+        {
+            LockIds = new List<string> { "lock-1", "lock-1" },
+            TtlSeconds = 30
+        });
+
+        Assert.False(result.Success);
+        Assert.Equal("VALIDATION_ERROR", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task DequeueLocked_ReportsHowManyEarlierDeliveriesFailed()
+    {
+        var (actor, _, locked) = await LockItemsAsync(1);
+        Assert.Equal(0, locked[0].DeliveryCount);
+
+        await actor.Nack(new Interfaces.NackRequest { LockId = locked[0].LockId });
+        var redelivered = await actor.DequeueLocked(new Interfaces.DequeueLockedRequest { TtlSeconds = 10, AllowCompetingConsumers = true });
+
+        Assert.Equal(1, Assert.Single(redelivered.Items).DeliveryCount);
+    }
 }
+
