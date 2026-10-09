@@ -1,6 +1,6 @@
 # daprmq (Go)
 
-A Go client for DaprMQ's HTTP/gRPC API: `Client` for direct queue and session operations, plus `SessionQueueConsumer`, a managed multi-session consume loop built on the `ConsumeSession` streaming RPC. Lives at `sdks/go/` (module `github.com/olitomlinson/dapr-mq/sdks/go`, package `daprmq`). Built on `net/http` (REST) and `grpc-go` (streaming and health). Requires Go 1.25+.
+A Go client for DaprMQ's HTTP/gRPC API: `Client` for direct queue and session operations, plus `SessionQueueConsumer`, a managed multi-session consume loop built on the `ConsumeSession` streaming RPC. Lives at `sdks/go/` (module `github.com/olitomlinson/dapr-mq/sdks/go`, package `daprmq`). Built on `net/http` (REST) and `grpc-go` (streaming and health). Requires Go 1.24+.
 
 The API follows the conventions of the Azure SDK for Go (`azservicebus`): every method takes a `context.Context` first and, where it has options, a nil-able `*XxxOptions` struct last; failures are one error type, `*daprmq.Error`, with a `Code` you check through `errors.As`.
 
@@ -111,6 +111,50 @@ for _, item := range result.Items {
 - `DeadLetter(ctx, queueID, lockID, opts)` moves the item to `{queueID}-deadletter`.
 
 Durations sent to the server (`TTL`, `LeaseDuration`, `ExtendLock`'s `additional`) are whole seconds, rounded up.
+
+## Consuming a queue over a stream (`Consume`)
+
+`Consume` opens a gRPC stream on a plain queue. The server keeps up to `PrefetchCount` locked items delivered, refills as they are settled, and renews the lock of every delivered item until it is settled, so there's no polling and no `ExtendLock`:
+
+```go
+stream, err := client.Consume(ctx, "my-queue", &daprmq.ConsumeOptions{
+    PrefetchCount: 50, AllowCompetingConsumers: true,
+    OnSettleFailed: func(lockID string, err error) { log.Printf("settle %s: %v", lockID, err) },
+})
+if err != nil {
+    return err
+}
+defer stream.Close()
+for {
+    delivery, err := stream.Receive()
+    if err != nil {
+        return err // io.EOF once the stream ends after Close
+    }
+    // ... process delivery.Item; delivery.DeliveryCount is 1 on a first delivery ...
+    _ = delivery.Ack() // or Nack() / DeadLetter()
+}
+```
+
+`Receive` is for one goroutine; settle from any. A rejected settle doesn't end the stream: it is reported to `OnSettleFailed` (for example `CodeLockNotFound` after a lost lock). `Close()` half-closes: the server applies the settles already sent, returns every unsettled item to its position straight away, then ends the stream. Settling after `Close` returns `ErrStreamClosed`. With `PrefetchCount` 1 and `AllowCompetingConsumers` false, items arrive strictly in queue order.
+
+## Topics
+
+A topic fans each published item out to every subscriber's own queue, which is consumed with the queue calls above.
+
+```go
+sub, err := client.Subscribe(ctx, "orders", "billing", nil)
+var mqErr *daprmq.Error
+if errors.As(err, &mqErr) && mqErr.Code == daprmq.CodeSubscriberExists {
+    sub.QueueID, err = daprmq.TopicSubscriberQueueID("orders", "billing"), nil
+}
+
+_, err = client.Publish(ctx, "orders", []daprmq.EnqueueItem{{Item: order}}, nil)
+
+result, err := client.DequeueLocked(ctx, sub.QueueID, nil)
+```
+
+- `Subscribe(ctx, topicID, subscriberID, opts)` provisions the subscriber's queue and returns `SubscribeResult{QueueID}`. A subscriber receives only items published after it subscribed. `SubscribeOptions.DedupEnabled` turns de-duplication on for its queue.
+- `Publish(ctx, topicID, items, nil)` returns `PublishResult{PublishID, Sequence}` once the topic has accepted the items; relay to the subscriber queues happens afterwards, in publish order per subscriber. A publish whose outcome is unknown isn't retried, since the topic doesn't de-duplicate (`SessionID` is ignored).
 
 ## Sessions: manual API
 

@@ -26,6 +26,7 @@ const (
 	CodeInvalidLeaseID          Code = "INVALID_LEASE_ID"
 	CodeSessionActorUnavailable Code = "SESSION_ACTOR_UNAVAILABLE"
 	CodeNoSessionsAvailable     Code = "NO_SESSIONS_AVAILABLE"
+	CodeSubscriberExists        Code = "SUBSCRIBER_EXISTS"
 	// CodeSessionLost: a session was claimed but its lease could not be maintained afterwards
 	// (the server sent a terminal SessionLost frame), as distinct from a claim that never succeeded.
 	CodeSessionLost Code = "SESSION_LOST"
@@ -66,6 +67,9 @@ func (e *Error) Unwrap() error { return e.cause }
 
 // ErrSessionStreamClosed is returned when settling a delivery after its [SessionStream] was closed.
 var ErrSessionStreamClosed = errors.New("daprmq: session stream is closed")
+
+// ErrStreamClosed is returned when settling a delivery after its [QueueStream] was closed.
+var ErrStreamClosed = errors.New("daprmq: stream is closed")
 
 func lockError(code, message string, status int) *Error {
 	switch code {

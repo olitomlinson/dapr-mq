@@ -2825,6 +2825,628 @@ func (x *SessionDrained) GetSessionId() string {
 	return ""
 }
 
+// Client -> server frame on the Consume stream.
+type ConsumeRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Payload:
+	//
+	//	*ConsumeRequest_Start
+	//	*ConsumeRequest_Ack
+	//	*ConsumeRequest_Nack
+	//	*ConsumeRequest_DeadLetter
+	Payload       isConsumeRequest_Payload `protobuf_oneof:"payload"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConsumeRequest) Reset() {
+	*x = ConsumeRequest{}
+	mi := &file_daprmq_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConsumeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConsumeRequest) ProtoMessage() {}
+
+func (x *ConsumeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_daprmq_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConsumeRequest.ProtoReflect.Descriptor instead.
+func (*ConsumeRequest) Descriptor() ([]byte, []int) {
+	return file_daprmq_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *ConsumeRequest) GetPayload() isConsumeRequest_Payload {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *ConsumeRequest) GetStart() *ConsumeStart {
+	if x != nil {
+		if x, ok := x.Payload.(*ConsumeRequest_Start); ok {
+			return x.Start
+		}
+	}
+	return nil
+}
+
+func (x *ConsumeRequest) GetAck() *ConsumeAck {
+	if x != nil {
+		if x, ok := x.Payload.(*ConsumeRequest_Ack); ok {
+			return x.Ack
+		}
+	}
+	return nil
+}
+
+func (x *ConsumeRequest) GetNack() *ConsumeNack {
+	if x != nil {
+		if x, ok := x.Payload.(*ConsumeRequest_Nack); ok {
+			return x.Nack
+		}
+	}
+	return nil
+}
+
+func (x *ConsumeRequest) GetDeadLetter() *ConsumeDeadLetter {
+	if x != nil {
+		if x, ok := x.Payload.(*ConsumeRequest_DeadLetter); ok {
+			return x.DeadLetter
+		}
+	}
+	return nil
+}
+
+type isConsumeRequest_Payload interface {
+	isConsumeRequest_Payload()
+}
+
+type ConsumeRequest_Start struct {
+	// Must be the first message sent on the stream.
+	Start *ConsumeStart `protobuf:"bytes,1,opt,name=start,proto3,oneof"`
+}
+
+type ConsumeRequest_Ack struct {
+	// Acknowledge and permanently remove a delivered item.
+	Ack *ConsumeAck `protobuf:"bytes,2,opt,name=ack,proto3,oneof"`
+}
+
+type ConsumeRequest_Nack struct {
+	// Return a delivered item to its original position for redelivery (+1 delivery count; past the
+	// server's max delivery count it is dead-lettered instead).
+	Nack *ConsumeNack `protobuf:"bytes,3,opt,name=nack,proto3,oneof"`
+}
+
+type ConsumeRequest_DeadLetter struct {
+	// Move a delivered item to the dead letter queue.
+	DeadLetter *ConsumeDeadLetter `protobuf:"bytes,4,opt,name=dead_letter,json=deadLetter,proto3,oneof"`
+}
+
+func (*ConsumeRequest_Start) isConsumeRequest_Payload() {}
+
+func (*ConsumeRequest_Ack) isConsumeRequest_Payload() {}
+
+func (*ConsumeRequest_Nack) isConsumeRequest_Payload() {}
+
+func (*ConsumeRequest_DeadLetter) isConsumeRequest_Payload() {}
+
+// Configures the Consume loop. Must be the first message sent on a Consume stream.
+type ConsumeStart struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Queue identifier.
+	QueueId string `protobuf:"bytes,1,opt,name=queue_id,json=queueId,proto3" json:"queue_id,omitempty"`
+	// How many delivered-but-unsettled items to keep in flight at once (1-1000, default: 1). Above 1,
+	// a Nack can reorder delivery: items already in flight are delivered before the nacked one
+	// comes back.
+	PrefetchCount int32 `protobuf:"varint,2,opt,name=prefetch_count,json=prefetchCount,proto3" json:"prefetch_count,omitempty"`
+	// Lock time-to-live in seconds (1-300, default: 30). The server renews each outstanding lock at
+	// roughly lock_ttl_seconds/2 for as long as the stream stays open.
+	LockTtlSeconds int32 `protobuf:"varint,3,opt,name=lock_ttl_seconds,json=lockTtlSeconds,proto3" json:"lock_ttl_seconds,omitempty"`
+	// Let this stream hold locks while other consumers hold theirs, as on DequeueLocked. When false,
+	// the queue serves one lock holder at a time.
+	AllowCompetingConsumers bool `protobuf:"varint,4,opt,name=allow_competing_consumers,json=allowCompetingConsumers,proto3" json:"allow_competing_consumers,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
+}
+
+func (x *ConsumeStart) Reset() {
+	*x = ConsumeStart{}
+	mi := &file_daprmq_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConsumeStart) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConsumeStart) ProtoMessage() {}
+
+func (x *ConsumeStart) ProtoReflect() protoreflect.Message {
+	mi := &file_daprmq_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConsumeStart.ProtoReflect.Descriptor instead.
+func (*ConsumeStart) Descriptor() ([]byte, []int) {
+	return file_daprmq_proto_rawDescGZIP(), []int{42}
+}
+
+func (x *ConsumeStart) GetQueueId() string {
+	if x != nil {
+		return x.QueueId
+	}
+	return ""
+}
+
+func (x *ConsumeStart) GetPrefetchCount() int32 {
+	if x != nil {
+		return x.PrefetchCount
+	}
+	return 0
+}
+
+func (x *ConsumeStart) GetLockTtlSeconds() int32 {
+	if x != nil {
+		return x.LockTtlSeconds
+	}
+	return 0
+}
+
+func (x *ConsumeStart) GetAllowCompetingConsumers() bool {
+	if x != nil {
+		return x.AllowCompetingConsumers
+	}
+	return false
+}
+
+type ConsumeAck struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	LockId        string                 `protobuf:"bytes,1,opt,name=lock_id,json=lockId,proto3" json:"lock_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConsumeAck) Reset() {
+	*x = ConsumeAck{}
+	mi := &file_daprmq_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConsumeAck) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConsumeAck) ProtoMessage() {}
+
+func (x *ConsumeAck) ProtoReflect() protoreflect.Message {
+	mi := &file_daprmq_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConsumeAck.ProtoReflect.Descriptor instead.
+func (*ConsumeAck) Descriptor() ([]byte, []int) {
+	return file_daprmq_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *ConsumeAck) GetLockId() string {
+	if x != nil {
+		return x.LockId
+	}
+	return ""
+}
+
+type ConsumeNack struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	LockId        string                 `protobuf:"bytes,1,opt,name=lock_id,json=lockId,proto3" json:"lock_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConsumeNack) Reset() {
+	*x = ConsumeNack{}
+	mi := &file_daprmq_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConsumeNack) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConsumeNack) ProtoMessage() {}
+
+func (x *ConsumeNack) ProtoReflect() protoreflect.Message {
+	mi := &file_daprmq_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConsumeNack.ProtoReflect.Descriptor instead.
+func (*ConsumeNack) Descriptor() ([]byte, []int) {
+	return file_daprmq_proto_rawDescGZIP(), []int{44}
+}
+
+func (x *ConsumeNack) GetLockId() string {
+	if x != nil {
+		return x.LockId
+	}
+	return ""
+}
+
+type ConsumeDeadLetter struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	LockId        string                 `protobuf:"bytes,1,opt,name=lock_id,json=lockId,proto3" json:"lock_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConsumeDeadLetter) Reset() {
+	*x = ConsumeDeadLetter{}
+	mi := &file_daprmq_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConsumeDeadLetter) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConsumeDeadLetter) ProtoMessage() {}
+
+func (x *ConsumeDeadLetter) ProtoReflect() protoreflect.Message {
+	mi := &file_daprmq_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConsumeDeadLetter.ProtoReflect.Descriptor instead.
+func (*ConsumeDeadLetter) Descriptor() ([]byte, []int) {
+	return file_daprmq_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *ConsumeDeadLetter) GetLockId() string {
+	if x != nil {
+		return x.LockId
+	}
+	return ""
+}
+
+// Server -> client frame on the Consume stream.
+type ConsumeResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Payload:
+	//
+	//	*ConsumeResponse_Delivered
+	//	*ConsumeResponse_SettleFailed
+	//	*ConsumeResponse_Error
+	Payload       isConsumeResponse_Payload `protobuf_oneof:"payload"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConsumeResponse) Reset() {
+	*x = ConsumeResponse{}
+	mi := &file_daprmq_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConsumeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConsumeResponse) ProtoMessage() {}
+
+func (x *ConsumeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_daprmq_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConsumeResponse.ProtoReflect.Descriptor instead.
+func (*ConsumeResponse) Descriptor() ([]byte, []int) {
+	return file_daprmq_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *ConsumeResponse) GetPayload() isConsumeResponse_Payload {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *ConsumeResponse) GetDelivered() *ConsumeDelivered {
+	if x != nil {
+		if x, ok := x.Payload.(*ConsumeResponse_Delivered); ok {
+			return x.Delivered
+		}
+	}
+	return nil
+}
+
+func (x *ConsumeResponse) GetSettleFailed() *ConsumeSettleFailed {
+	if x != nil {
+		if x, ok := x.Payload.(*ConsumeResponse_SettleFailed); ok {
+			return x.SettleFailed
+		}
+	}
+	return nil
+}
+
+func (x *ConsumeResponse) GetError() *ConsumeError {
+	if x != nil {
+		if x, ok := x.Payload.(*ConsumeResponse_Error); ok {
+			return x.Error
+		}
+	}
+	return nil
+}
+
+type isConsumeResponse_Payload interface {
+	isConsumeResponse_Payload()
+}
+
+type ConsumeResponse_Delivered struct {
+	// One per delivered item.
+	Delivered *ConsumeDelivered `protobuf:"bytes,1,opt,name=delivered,proto3,oneof"`
+}
+
+type ConsumeResponse_SettleFailed struct {
+	// Not terminal: the server could not settle one item (for example LOCK_NOT_FOUND after its lock
+	// was lost). The stream carries on.
+	SettleFailed *ConsumeSettleFailed `protobuf:"bytes,2,opt,name=settle_failed,json=settleFailed,proto3,oneof"`
+}
+
+type ConsumeResponse_Error struct {
+	// Terminal - no further messages follow (for example, the first message wasn't Start).
+	Error *ConsumeError `protobuf:"bytes,3,opt,name=error,proto3,oneof"`
+}
+
+func (*ConsumeResponse_Delivered) isConsumeResponse_Payload() {}
+
+func (*ConsumeResponse_SettleFailed) isConsumeResponse_Payload() {}
+
+func (*ConsumeResponse_Error) isConsumeResponse_Payload() {}
+
+// One delivered, locked item.
+type ConsumeDelivered struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	LockId        string                 `protobuf:"bytes,1,opt,name=lock_id,json=lockId,proto3" json:"lock_id,omitempty"`
+	ItemJson      string                 `protobuf:"bytes,2,opt,name=item_json,json=itemJson,proto3" json:"item_json,omitempty"`
+	Priority      int32                  `protobuf:"varint,3,opt,name=priority,proto3" json:"priority,omitempty"`
+	LockExpiresAt float64                `protobuf:"fixed64,4,opt,name=lock_expires_at,json=lockExpiresAt,proto3" json:"lock_expires_at,omitempty"`
+	// How many times this item has been delivered, counting this delivery (1 = first delivery).
+	DeliveryCount int32 `protobuf:"varint,5,opt,name=delivery_count,json=deliveryCount,proto3" json:"delivery_count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConsumeDelivered) Reset() {
+	*x = ConsumeDelivered{}
+	mi := &file_daprmq_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConsumeDelivered) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConsumeDelivered) ProtoMessage() {}
+
+func (x *ConsumeDelivered) ProtoReflect() protoreflect.Message {
+	mi := &file_daprmq_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConsumeDelivered.ProtoReflect.Descriptor instead.
+func (*ConsumeDelivered) Descriptor() ([]byte, []int) {
+	return file_daprmq_proto_rawDescGZIP(), []int{47}
+}
+
+func (x *ConsumeDelivered) GetLockId() string {
+	if x != nil {
+		return x.LockId
+	}
+	return ""
+}
+
+func (x *ConsumeDelivered) GetItemJson() string {
+	if x != nil {
+		return x.ItemJson
+	}
+	return ""
+}
+
+func (x *ConsumeDelivered) GetPriority() int32 {
+	if x != nil {
+		return x.Priority
+	}
+	return 0
+}
+
+func (x *ConsumeDelivered) GetLockExpiresAt() float64 {
+	if x != nil {
+		return x.LockExpiresAt
+	}
+	return 0
+}
+
+func (x *ConsumeDelivered) GetDeliveryCount() int32 {
+	if x != nil {
+		return x.DeliveryCount
+	}
+	return 0
+}
+
+type ConsumeSettleFailed struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	LockId        string                 `protobuf:"bytes,1,opt,name=lock_id,json=lockId,proto3" json:"lock_id,omitempty"`
+	ErrorCode     string                 `protobuf:"bytes,2,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
+	Message       string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConsumeSettleFailed) Reset() {
+	*x = ConsumeSettleFailed{}
+	mi := &file_daprmq_proto_msgTypes[48]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConsumeSettleFailed) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConsumeSettleFailed) ProtoMessage() {}
+
+func (x *ConsumeSettleFailed) ProtoReflect() protoreflect.Message {
+	mi := &file_daprmq_proto_msgTypes[48]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConsumeSettleFailed.ProtoReflect.Descriptor instead.
+func (*ConsumeSettleFailed) Descriptor() ([]byte, []int) {
+	return file_daprmq_proto_rawDescGZIP(), []int{48}
+}
+
+func (x *ConsumeSettleFailed) GetLockId() string {
+	if x != nil {
+		return x.LockId
+	}
+	return ""
+}
+
+func (x *ConsumeSettleFailed) GetErrorCode() string {
+	if x != nil {
+		return x.ErrorCode
+	}
+	return ""
+}
+
+func (x *ConsumeSettleFailed) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+type ConsumeError struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ErrorCode     string                 `protobuf:"bytes,1,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConsumeError) Reset() {
+	*x = ConsumeError{}
+	mi := &file_daprmq_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConsumeError) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConsumeError) ProtoMessage() {}
+
+func (x *ConsumeError) ProtoReflect() protoreflect.Message {
+	mi := &file_daprmq_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConsumeError.ProtoReflect.Descriptor instead.
+func (*ConsumeError) Descriptor() ([]byte, []int) {
+	return file_daprmq_proto_rawDescGZIP(), []int{49}
+}
+
+func (x *ConsumeError) GetErrorCode() string {
+	if x != nil {
+		return x.ErrorCode
+	}
+	return ""
+}
+
+func (x *ConsumeError) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 var File_daprmq_proto protoreflect.FileDescriptor
 
 const file_daprmq_proto_rawDesc = "" +
@@ -3019,7 +3641,46 @@ const file_daprmq_proto_rawDesc = "" +
 	"\amessage\x18\x01 \x01(\tR\amessage\"/\n" +
 	"\x0eSessionDrained\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId2\xf8\x06\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"\xda\x01\n" +
+	"\x0eConsumeRequest\x12,\n" +
+	"\x05start\x18\x01 \x01(\v2\x14.daprmq.ConsumeStartH\x00R\x05start\x12&\n" +
+	"\x03ack\x18\x02 \x01(\v2\x12.daprmq.ConsumeAckH\x00R\x03ack\x12)\n" +
+	"\x04nack\x18\x03 \x01(\v2\x13.daprmq.ConsumeNackH\x00R\x04nack\x12<\n" +
+	"\vdead_letter\x18\x04 \x01(\v2\x19.daprmq.ConsumeDeadLetterH\x00R\n" +
+	"deadLetterB\t\n" +
+	"\apayload\"\xb6\x01\n" +
+	"\fConsumeStart\x12\x19\n" +
+	"\bqueue_id\x18\x01 \x01(\tR\aqueueId\x12%\n" +
+	"\x0eprefetch_count\x18\x02 \x01(\x05R\rprefetchCount\x12(\n" +
+	"\x10lock_ttl_seconds\x18\x03 \x01(\x05R\x0elockTtlSeconds\x12:\n" +
+	"\x19allow_competing_consumers\x18\x04 \x01(\bR\x17allowCompetingConsumers\"%\n" +
+	"\n" +
+	"ConsumeAck\x12\x17\n" +
+	"\alock_id\x18\x01 \x01(\tR\x06lockId\"&\n" +
+	"\vConsumeNack\x12\x17\n" +
+	"\alock_id\x18\x01 \x01(\tR\x06lockId\",\n" +
+	"\x11ConsumeDeadLetter\x12\x17\n" +
+	"\alock_id\x18\x01 \x01(\tR\x06lockId\"\xc8\x01\n" +
+	"\x0fConsumeResponse\x128\n" +
+	"\tdelivered\x18\x01 \x01(\v2\x18.daprmq.ConsumeDeliveredH\x00R\tdelivered\x12B\n" +
+	"\rsettle_failed\x18\x02 \x01(\v2\x1b.daprmq.ConsumeSettleFailedH\x00R\fsettleFailed\x12,\n" +
+	"\x05error\x18\x03 \x01(\v2\x14.daprmq.ConsumeErrorH\x00R\x05errorB\t\n" +
+	"\apayload\"\xb3\x01\n" +
+	"\x10ConsumeDelivered\x12\x17\n" +
+	"\alock_id\x18\x01 \x01(\tR\x06lockId\x12\x1b\n" +
+	"\titem_json\x18\x02 \x01(\tR\bitemJson\x12\x1a\n" +
+	"\bpriority\x18\x03 \x01(\x05R\bpriority\x12&\n" +
+	"\x0flock_expires_at\x18\x04 \x01(\x01R\rlockExpiresAt\x12%\n" +
+	"\x0edelivery_count\x18\x05 \x01(\x05R\rdeliveryCount\"g\n" +
+	"\x13ConsumeSettleFailed\x12\x17\n" +
+	"\alock_id\x18\x01 \x01(\tR\x06lockId\x12\x1d\n" +
+	"\n" +
+	"error_code\x18\x02 \x01(\tR\terrorCode\x12\x18\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"G\n" +
+	"\fConsumeError\x12\x1d\n" +
+	"\n" +
+	"error_code\x18\x01 \x01(\tR\terrorCode\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage2\xb8\a\n" +
 	"\x06DaprMQ\x12:\n" +
 	"\aEnqueue\x12\x16.daprmq.EnqueueRequest\x1a\x17.daprmq.EnqueueResponse\x12:\n" +
 	"\aDequeue\x12\x16.daprmq.DequeueRequest\x1a\x17.daprmq.DequeueResponse\x12L\n" +
@@ -3034,7 +3695,8 @@ const file_daprmq_proto_rawDesc = "" +
 	"\rAcceptSession\x12\x1c.daprmq.AcceptSessionRequest\x1a\x1d.daprmq.AcceptSessionResponse\x12X\n" +
 	"\x11RenewSessionLease\x12 .daprmq.RenewSessionLeaseRequest\x1a!.daprmq.RenewSessionLeaseResponse\x12O\n" +
 	"\x0eReleaseSession\x12\x1d.daprmq.ReleaseSessionRequest\x1a\x1e.daprmq.ReleaseSessionResponse\x12S\n" +
-	"\x0eConsumeSession\x12\x1d.daprmq.ConsumeSessionRequest\x1a\x1e.daprmq.ConsumeSessionResponse(\x010\x01B+\n" +
+	"\x0eConsumeSession\x12\x1d.daprmq.ConsumeSessionRequest\x1a\x1e.daprmq.ConsumeSessionResponse(\x010\x01\x12>\n" +
+	"\aConsume\x12\x16.daprmq.ConsumeRequest\x1a\x17.daprmq.ConsumeResponse(\x010\x01B+\n" +
 	"\x0fcom.daprmq.grpcP\x01\xaa\x02\x15DaprMQ.ApiServer.Grpcb\x06proto3"
 
 var (
@@ -3049,7 +3711,7 @@ func file_daprmq_proto_rawDescGZIP() []byte {
 	return file_daprmq_proto_rawDescData
 }
 
-var file_daprmq_proto_msgTypes = make([]protoimpl.MessageInfo, 41)
+var file_daprmq_proto_msgTypes = make([]protoimpl.MessageInfo, 50)
 var file_daprmq_proto_goTypes = []any{
 	(*EnqueueItem)(nil),               // 0: daprmq.EnqueueItem
 	(*EnqueueRequest)(nil),            // 1: daprmq.EnqueueRequest
@@ -3092,6 +3754,15 @@ var file_daprmq_proto_goTypes = []any{
 	(*SessionError)(nil),              // 38: daprmq.SessionError
 	(*SessionLost)(nil),               // 39: daprmq.SessionLost
 	(*SessionDrained)(nil),            // 40: daprmq.SessionDrained
+	(*ConsumeRequest)(nil),            // 41: daprmq.ConsumeRequest
+	(*ConsumeStart)(nil),              // 42: daprmq.ConsumeStart
+	(*ConsumeAck)(nil),                // 43: daprmq.ConsumeAck
+	(*ConsumeNack)(nil),               // 44: daprmq.ConsumeNack
+	(*ConsumeDeadLetter)(nil),         // 45: daprmq.ConsumeDeadLetter
+	(*ConsumeResponse)(nil),           // 46: daprmq.ConsumeResponse
+	(*ConsumeDelivered)(nil),          // 47: daprmq.ConsumeDelivered
+	(*ConsumeSettleFailed)(nil),       // 48: daprmq.ConsumeSettleFailed
+	(*ConsumeError)(nil),              // 49: daprmq.ConsumeError
 }
 var file_daprmq_proto_depIdxs = []int32{
 	0,  // 0: daprmq.EnqueueRequest.items:type_name -> daprmq.EnqueueItem
@@ -3113,35 +3784,44 @@ var file_daprmq_proto_depIdxs = []int32{
 	38, // 16: daprmq.ConsumeSessionResponse.error:type_name -> daprmq.SessionError
 	39, // 17: daprmq.ConsumeSessionResponse.session_lost:type_name -> daprmq.SessionLost
 	40, // 18: daprmq.ConsumeSessionResponse.session_drained:type_name -> daprmq.SessionDrained
-	1,  // 19: daprmq.DaprMQ.Enqueue:input_type -> daprmq.EnqueueRequest
-	3,  // 20: daprmq.DaprMQ.Dequeue:input_type -> daprmq.DequeueRequest
-	8,  // 21: daprmq.DaprMQ.DequeueLocked:input_type -> daprmq.DequeueLockedRequest
-	11, // 22: daprmq.DaprMQ.Acknowledge:input_type -> daprmq.AcknowledgeRequest
-	13, // 23: daprmq.DaprMQ.AcknowledgeBatch:input_type -> daprmq.AcknowledgeBatchRequest
-	16, // 24: daprmq.DaprMQ.Nack:input_type -> daprmq.NackRequest
-	18, // 25: daprmq.DaprMQ.ExtendLock:input_type -> daprmq.ExtendLockRequest
-	20, // 26: daprmq.DaprMQ.DeadLetter:input_type -> daprmq.DeadLetterRequest
-	24, // 27: daprmq.DaprMQ.AcceptSession:input_type -> daprmq.AcceptSessionRequest
-	26, // 28: daprmq.DaprMQ.RenewSessionLease:input_type -> daprmq.RenewSessionLeaseRequest
-	28, // 29: daprmq.DaprMQ.ReleaseSession:input_type -> daprmq.ReleaseSessionRequest
-	30, // 30: daprmq.DaprMQ.ConsumeSession:input_type -> daprmq.ConsumeSessionRequest
-	2,  // 31: daprmq.DaprMQ.Enqueue:output_type -> daprmq.EnqueueResponse
-	4,  // 32: daprmq.DaprMQ.Dequeue:output_type -> daprmq.DequeueResponse
-	9,  // 33: daprmq.DaprMQ.DequeueLocked:output_type -> daprmq.DequeueLockedResponse
-	12, // 34: daprmq.DaprMQ.Acknowledge:output_type -> daprmq.AcknowledgeResponse
-	15, // 35: daprmq.DaprMQ.AcknowledgeBatch:output_type -> daprmq.AcknowledgeBatchResponse
-	17, // 36: daprmq.DaprMQ.Nack:output_type -> daprmq.NackResponse
-	19, // 37: daprmq.DaprMQ.ExtendLock:output_type -> daprmq.ExtendLockResponse
-	21, // 38: daprmq.DaprMQ.DeadLetter:output_type -> daprmq.DeadLetterResponse
-	25, // 39: daprmq.DaprMQ.AcceptSession:output_type -> daprmq.AcceptSessionResponse
-	27, // 40: daprmq.DaprMQ.RenewSessionLease:output_type -> daprmq.RenewSessionLeaseResponse
-	29, // 41: daprmq.DaprMQ.ReleaseSession:output_type -> daprmq.ReleaseSessionResponse
-	35, // 42: daprmq.DaprMQ.ConsumeSession:output_type -> daprmq.ConsumeSessionResponse
-	31, // [31:43] is the sub-list for method output_type
-	19, // [19:31] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	19, // [19:19] is the sub-list for extension extendee
-	0,  // [0:19] is the sub-list for field type_name
+	42, // 19: daprmq.ConsumeRequest.start:type_name -> daprmq.ConsumeStart
+	43, // 20: daprmq.ConsumeRequest.ack:type_name -> daprmq.ConsumeAck
+	44, // 21: daprmq.ConsumeRequest.nack:type_name -> daprmq.ConsumeNack
+	45, // 22: daprmq.ConsumeRequest.dead_letter:type_name -> daprmq.ConsumeDeadLetter
+	47, // 23: daprmq.ConsumeResponse.delivered:type_name -> daprmq.ConsumeDelivered
+	48, // 24: daprmq.ConsumeResponse.settle_failed:type_name -> daprmq.ConsumeSettleFailed
+	49, // 25: daprmq.ConsumeResponse.error:type_name -> daprmq.ConsumeError
+	1,  // 26: daprmq.DaprMQ.Enqueue:input_type -> daprmq.EnqueueRequest
+	3,  // 27: daprmq.DaprMQ.Dequeue:input_type -> daprmq.DequeueRequest
+	8,  // 28: daprmq.DaprMQ.DequeueLocked:input_type -> daprmq.DequeueLockedRequest
+	11, // 29: daprmq.DaprMQ.Acknowledge:input_type -> daprmq.AcknowledgeRequest
+	13, // 30: daprmq.DaprMQ.AcknowledgeBatch:input_type -> daprmq.AcknowledgeBatchRequest
+	16, // 31: daprmq.DaprMQ.Nack:input_type -> daprmq.NackRequest
+	18, // 32: daprmq.DaprMQ.ExtendLock:input_type -> daprmq.ExtendLockRequest
+	20, // 33: daprmq.DaprMQ.DeadLetter:input_type -> daprmq.DeadLetterRequest
+	24, // 34: daprmq.DaprMQ.AcceptSession:input_type -> daprmq.AcceptSessionRequest
+	26, // 35: daprmq.DaprMQ.RenewSessionLease:input_type -> daprmq.RenewSessionLeaseRequest
+	28, // 36: daprmq.DaprMQ.ReleaseSession:input_type -> daprmq.ReleaseSessionRequest
+	30, // 37: daprmq.DaprMQ.ConsumeSession:input_type -> daprmq.ConsumeSessionRequest
+	41, // 38: daprmq.DaprMQ.Consume:input_type -> daprmq.ConsumeRequest
+	2,  // 39: daprmq.DaprMQ.Enqueue:output_type -> daprmq.EnqueueResponse
+	4,  // 40: daprmq.DaprMQ.Dequeue:output_type -> daprmq.DequeueResponse
+	9,  // 41: daprmq.DaprMQ.DequeueLocked:output_type -> daprmq.DequeueLockedResponse
+	12, // 42: daprmq.DaprMQ.Acknowledge:output_type -> daprmq.AcknowledgeResponse
+	15, // 43: daprmq.DaprMQ.AcknowledgeBatch:output_type -> daprmq.AcknowledgeBatchResponse
+	17, // 44: daprmq.DaprMQ.Nack:output_type -> daprmq.NackResponse
+	19, // 45: daprmq.DaprMQ.ExtendLock:output_type -> daprmq.ExtendLockResponse
+	21, // 46: daprmq.DaprMQ.DeadLetter:output_type -> daprmq.DeadLetterResponse
+	25, // 47: daprmq.DaprMQ.AcceptSession:output_type -> daprmq.AcceptSessionResponse
+	27, // 48: daprmq.DaprMQ.RenewSessionLease:output_type -> daprmq.RenewSessionLeaseResponse
+	29, // 49: daprmq.DaprMQ.ReleaseSession:output_type -> daprmq.ReleaseSessionResponse
+	35, // 50: daprmq.DaprMQ.ConsumeSession:output_type -> daprmq.ConsumeSessionResponse
+	46, // 51: daprmq.DaprMQ.Consume:output_type -> daprmq.ConsumeResponse
+	39, // [39:52] is the sub-list for method output_type
+	26, // [26:39] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_daprmq_proto_init() }
@@ -3186,13 +3866,24 @@ func file_daprmq_proto_init() {
 		(*ConsumeSessionResponse_SessionLost)(nil),
 		(*ConsumeSessionResponse_SessionDrained)(nil),
 	}
+	file_daprmq_proto_msgTypes[41].OneofWrappers = []any{
+		(*ConsumeRequest_Start)(nil),
+		(*ConsumeRequest_Ack)(nil),
+		(*ConsumeRequest_Nack)(nil),
+		(*ConsumeRequest_DeadLetter)(nil),
+	}
+	file_daprmq_proto_msgTypes[46].OneofWrappers = []any{
+		(*ConsumeResponse_Delivered)(nil),
+		(*ConsumeResponse_SettleFailed)(nil),
+		(*ConsumeResponse_Error)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_daprmq_proto_rawDesc), len(file_daprmq_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   41,
+			NumMessages:   50,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

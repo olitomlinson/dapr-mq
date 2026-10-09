@@ -12,6 +12,7 @@ public static class ActorMethodNames
     public const string AcknowledgeBatch = "AcknowledgeBatch";
     public const string Nack = "Nack";
     public const string ExtendLock = "ExtendLock";
+    public const string ExtendLockBatch = "ExtendLockBatch";
     public const string DeadLetter = "DeadLetter";
     public const string InitializeHttpSink = "InitializeHttpSink";
     public const string UninitializeHttpSink = "UninitializeHttpSink";

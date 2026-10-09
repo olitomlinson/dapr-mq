@@ -1593,7 +1593,8 @@ public class QueueActor : Actor, IQueueActor
                     LockId = lockId,
                     LockExpiresAt = lockExpiresAt,
                     ObjectClaimToken = isItemBlobRef ? _objectClaimTokenIssuer.Issue(blobEnvelope!.BlobReference, blobEnvelope.ContentType) : null,
-                    BlobContentType = isItemBlobRef ? blobEnvelope!.ContentType : null
+                    BlobContentType = isItemBlobRef ? blobEnvelope!.ContentType : null,
+                    DeliveryCount = segmentItem.DeliveryCount
                 });
 
                 Logger.LogDebug("Created lock {LockId} ({Index}/{Count}) with TTL {TtlSeconds}s", lockId, i + 1, count, ttlSeconds);
@@ -1930,6 +1931,108 @@ public class QueueActor : Actor, IQueueActor
                 ErrorCode = "INTERNAL_ERROR",
                 ErrorMessage = $"Error: {ex.Message}"
             };
+        }
+    }
+
+    private const string ExtendOutcomeExtended = "EXTENDED";
+
+    /// <summary>
+    /// Renews up to MaxAcknowledgeBatchSize locks in one turn, each checked as ExtendLock checks it,
+    /// with every change in a single save. A lock is renewed to expire TtlSeconds from now rather
+    /// than having time added, so a renewer that runs late, or renews twice, can't let it drift.
+    /// </summary>
+    public async Task<ExtendLockBatchResponse> ExtendLockBatch(ExtendLockBatchRequest request)
+    {
+        try
+        {
+            var lockIds = request.LockIds ?? [];
+            string? validationError =
+                lockIds.Count == 0 || lockIds.Count > MaxAcknowledgeBatchSize ? $"lockIds must contain between 1 and {MaxAcknowledgeBatchSize} ids"
+                : lockIds.Distinct().Count() != lockIds.Count ? "lockIds must not contain duplicates"
+                : request.TtlSeconds <= 0 ? "ttlSeconds must be positive"
+                : null;
+            if (validationError != null)
+            {
+                return new ExtendLockBatchResponse { Success = false, Message = validationError, ErrorCode = "VALIDATION_ERROR" };
+            }
+
+            var metadata = await GetMetadataAsync();
+            if (!TryAuthorizeSessionLease(metadata, request.LeaseId, out var leaseErrorCode, out var leaseErrorMessage))
+            {
+                return new ExtendLockBatchResponse { Success = false, Message = leaseErrorMessage ?? string.Empty, ErrorCode = leaseErrorCode };
+            }
+
+            var results = new List<ExtendLockResult>(lockIds.Count);
+            var reindex = new List<(string LockId, double NewExpiresAt)>();
+            // Sub-second, unlike the whole seconds elsewhere: truncating now would cost a renewed
+            // lock up to a second of its TTL, which a short TTL can't spare between renewals.
+            double now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
+
+            foreach (var lockId in lockIds)
+            {
+                if (string.IsNullOrEmpty(lockId))
+                {
+                    results.Add(new ExtendLockResult { LockId = string.Empty, Outcome = "INVALID_LOCK_ID" });
+                    continue;
+                }
+
+                var lockState = await StateManager.TryGetStateAsync<LockState>($"{lockId}-lock");
+                if (!lockState.HasValue)
+                {
+                    results.Add(new ExtendLockResult { LockId = lockId, Outcome = "LOCK_NOT_FOUND" });
+                    continue;
+                }
+
+                var lockData = lockState.Value;
+                if (now >= lockData.ExpiresAt)
+                {
+                    results.Add(new ExtendLockResult { LockId = lockId, Outcome = "LOCK_EXPIRED" });
+                    continue;
+                }
+
+                double newExpiresAt = Math.Max(lockData.ExpiresAt, now + request.TtlSeconds);
+                if (newExpiresAt == lockData.ExpiresAt)
+                {
+                    results.Add(new ExtendLockResult { LockId = lockId, Outcome = ExtendOutcomeExtended, NewExpiresAt = newExpiresAt });
+                    continue;
+                }
+                await StateManager.SetStateAsync($"{lockId}-lock", lockData with { ExpiresAt = newExpiresAt });
+                if (!IsSessionActor() && ExpiryBucketFor(newExpiresAt) != ExpiryBucketFor(lockData.ExpiresAt))
+                {
+                    reindex.Add((lockId, newExpiresAt));
+                }
+
+                results.Add(new ExtendLockResult { LockId = lockId, Outcome = ExtendOutcomeExtended, NewExpiresAt = newExpiresAt });
+            }
+
+            if (results.Any(r => r.Outcome == ExtendOutcomeExtended))
+            {
+                // File each moved lock under its new expiry bucket, one index write per bucket. As in
+                // ExtendLock, the stale entry in the old bucket is left for the sweep to skip.
+                foreach (var bucket in reindex.GroupBy(r => ExpiryBucketFor(r.NewExpiresAt)))
+                {
+                    metadata = await IndexLocksAsync(metadata, bucket.Select(r => r.LockId).ToList(), bucket.First().NewExpiresAt);
+                }
+                if (reindex.Count > 0)
+                {
+                    await SetMetadataAsync(metadata);
+                }
+
+                await StateManager.SaveStateAsync();
+            }
+
+            int extended = results.Count(r => r.Outcome == ExtendOutcomeExtended);
+            return new ExtendLockBatchResponse
+            {
+                Success = true,
+                Message = $"Extended {extended} of {lockIds.Count} locks",
+                Results = results
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error in ExtendLockBatch");
+            return new ExtendLockBatchResponse { Success = false, Message = $"Error: {ex.Message}", ErrorCode = "INTERNAL_ERROR" };
         }
     }
 

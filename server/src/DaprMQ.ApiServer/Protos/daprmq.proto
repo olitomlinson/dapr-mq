@@ -63,6 +63,13 @@ service DaprMQ {
   // One stream = one session (see plan §2.4.1) - a client wanting N concurrent sessions opens N
   // of these streams, which multiplex cheaply over one gRPC channel/HTTP2 connection.
   rpc ConsumeSession(stream ConsumeSessionRequest) returns (stream ConsumeSessionResponse);
+
+  // Managed consume loop for a plain (non-session) queue: streams up to prefetch_count locked items
+  // at a time, accepts Ack/Nack/DeadLetter frames, and refills the window as they settle. The
+  // server renews the locks of every item it has delivered and the client hasn't settled, for as
+  // long as the stream stays open - the client never calls ExtendLock. When the stream ends, every
+  // still-outstanding item is nacked back to its position straight away.
+  rpc Consume(stream ConsumeRequest) returns (stream ConsumeResponse);
 }
 
 // Individual item in an enqueue request
@@ -567,4 +574,90 @@ message SessionLost {
 // and was released back for another consumer to claim.
 message SessionDrained {
   string session_id = 1;
+}
+
+// Client -> server frame on the Consume stream.
+message ConsumeRequest {
+  oneof payload {
+    // Must be the first message sent on the stream.
+    ConsumeStart start = 1;
+
+    // Acknowledge and permanently remove a delivered item.
+    ConsumeAck ack = 2;
+
+    // Return a delivered item to its original position for redelivery (+1 delivery count; past the
+    // server's max delivery count it is dead-lettered instead).
+    ConsumeNack nack = 3;
+
+    // Move a delivered item to the dead letter queue.
+    ConsumeDeadLetter dead_letter = 4;
+  }
+}
+
+// Configures the Consume loop. Must be the first message sent on a Consume stream.
+message ConsumeStart {
+  // Queue identifier.
+  string queue_id = 1;
+
+  // How many delivered-but-unsettled items to keep in flight at once (1-1000, default: 1). Above 1,
+  // a Nack can reorder delivery: items already in flight are delivered before the nacked one
+  // comes back.
+  int32 prefetch_count = 2;
+
+  // Lock time-to-live in seconds (1-300, default: 30). The server renews each outstanding lock at
+  // roughly lock_ttl_seconds/2 for as long as the stream stays open.
+  int32 lock_ttl_seconds = 3;
+
+  // Let this stream hold locks while other consumers hold theirs, as on DequeueLocked. When false,
+  // the queue serves one lock holder at a time.
+  bool allow_competing_consumers = 4;
+}
+
+message ConsumeAck {
+  string lock_id = 1;
+}
+
+message ConsumeNack {
+  string lock_id = 1;
+}
+
+message ConsumeDeadLetter {
+  string lock_id = 1;
+}
+
+// Server -> client frame on the Consume stream.
+message ConsumeResponse {
+  oneof payload {
+    // One per delivered item.
+    ConsumeDelivered delivered = 1;
+
+    // Not terminal: the server could not settle one item (for example LOCK_NOT_FOUND after its lock
+    // was lost). The stream carries on.
+    ConsumeSettleFailed settle_failed = 2;
+
+    // Terminal - no further messages follow (for example, the first message wasn't Start).
+    ConsumeError error = 3;
+  }
+}
+
+// One delivered, locked item.
+message ConsumeDelivered {
+  string lock_id = 1;
+  string item_json = 2;
+  int32 priority = 3;
+  double lock_expires_at = 4;
+
+  // How many times this item has been delivered, counting this delivery (1 = first delivery).
+  int32 delivery_count = 5;
+}
+
+message ConsumeSettleFailed {
+  string lock_id = 1;
+  string error_code = 2;
+  string message = 3;
+}
+
+message ConsumeError {
+  string error_code = 1;
+  string message = 2;
 }

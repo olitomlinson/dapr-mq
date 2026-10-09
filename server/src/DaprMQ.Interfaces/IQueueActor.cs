@@ -62,6 +62,12 @@ public interface IQueueActor : IActor
     Task<ExtendLockResponse> ExtendLock(ExtendLockRequest request);
 
     /// <summary>
+    /// Renews up to 1000 locks to expire TtlSeconds from now (never earlier than they already do),
+    /// in one actor turn and one state save, reporting an outcome per lock.
+    /// </summary>
+    Task<ExtendLockBatchResponse> ExtendLockBatch(ExtendLockBatchRequest request);
+
+    /// <summary>
     /// Move a locked item to the dead letter queue and void the lock.
     /// </summary>
     /// <param name="request">DeadLetter request containing lock_id</param>
