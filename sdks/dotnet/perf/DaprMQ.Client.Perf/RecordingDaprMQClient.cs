@@ -88,6 +88,9 @@ public sealed class RecordingDaprMQClient(IDaprMQClient inner, Func<double> cloc
     public Task ReleaseSessionAsync(string queueId, string sessionId, string leaseId, CancellationToken ct = default) =>
         inner.ReleaseSessionAsync(queueId, sessionId, leaseId, ct);
 
+    public IAsyncEnumerable<QueueDelivery> ConsumeAsync(string queueId, ConsumeOptions? options = null, CancellationToken ct = default) =>
+        inner.ConsumeAsync(queueId, options, ct);
+
     public Task WaitForReadyAsync(string service = DaprMQClient.OperationsHealthService, CancellationToken ct = default) =>
         inner.WaitForReadyAsync(service, ct);
 }

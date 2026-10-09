@@ -403,3 +403,87 @@ class SessionDrained(_message.Message):
     SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     session_id: str
     def __init__(self, session_id: _Optional[str] = ...) -> None: ...
+
+class ConsumeRequest(_message.Message):
+    __slots__ = ("start", "ack", "nack", "dead_letter")
+    START_FIELD_NUMBER: _ClassVar[int]
+    ACK_FIELD_NUMBER: _ClassVar[int]
+    NACK_FIELD_NUMBER: _ClassVar[int]
+    DEAD_LETTER_FIELD_NUMBER: _ClassVar[int]
+    start: ConsumeStart
+    ack: ConsumeAck
+    nack: ConsumeNack
+    dead_letter: ConsumeDeadLetter
+    def __init__(self, start: _Optional[_Union[ConsumeStart, _Mapping]] = ..., ack: _Optional[_Union[ConsumeAck, _Mapping]] = ..., nack: _Optional[_Union[ConsumeNack, _Mapping]] = ..., dead_letter: _Optional[_Union[ConsumeDeadLetter, _Mapping]] = ...) -> None: ...
+
+class ConsumeStart(_message.Message):
+    __slots__ = ("queue_id", "prefetch_count", "lock_ttl_seconds", "allow_competing_consumers")
+    QUEUE_ID_FIELD_NUMBER: _ClassVar[int]
+    PREFETCH_COUNT_FIELD_NUMBER: _ClassVar[int]
+    LOCK_TTL_SECONDS_FIELD_NUMBER: _ClassVar[int]
+    ALLOW_COMPETING_CONSUMERS_FIELD_NUMBER: _ClassVar[int]
+    queue_id: str
+    prefetch_count: int
+    lock_ttl_seconds: int
+    allow_competing_consumers: bool
+    def __init__(self, queue_id: _Optional[str] = ..., prefetch_count: _Optional[int] = ..., lock_ttl_seconds: _Optional[int] = ..., allow_competing_consumers: _Optional[bool] = ...) -> None: ...
+
+class ConsumeAck(_message.Message):
+    __slots__ = ("lock_id",)
+    LOCK_ID_FIELD_NUMBER: _ClassVar[int]
+    lock_id: str
+    def __init__(self, lock_id: _Optional[str] = ...) -> None: ...
+
+class ConsumeNack(_message.Message):
+    __slots__ = ("lock_id",)
+    LOCK_ID_FIELD_NUMBER: _ClassVar[int]
+    lock_id: str
+    def __init__(self, lock_id: _Optional[str] = ...) -> None: ...
+
+class ConsumeDeadLetter(_message.Message):
+    __slots__ = ("lock_id",)
+    LOCK_ID_FIELD_NUMBER: _ClassVar[int]
+    lock_id: str
+    def __init__(self, lock_id: _Optional[str] = ...) -> None: ...
+
+class ConsumeResponse(_message.Message):
+    __slots__ = ("delivered", "settle_failed", "error")
+    DELIVERED_FIELD_NUMBER: _ClassVar[int]
+    SETTLE_FAILED_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    delivered: ConsumeDelivered
+    settle_failed: ConsumeSettleFailed
+    error: ConsumeError
+    def __init__(self, delivered: _Optional[_Union[ConsumeDelivered, _Mapping]] = ..., settle_failed: _Optional[_Union[ConsumeSettleFailed, _Mapping]] = ..., error: _Optional[_Union[ConsumeError, _Mapping]] = ...) -> None: ...
+
+class ConsumeDelivered(_message.Message):
+    __slots__ = ("lock_id", "item_json", "priority", "lock_expires_at", "delivery_count")
+    LOCK_ID_FIELD_NUMBER: _ClassVar[int]
+    ITEM_JSON_FIELD_NUMBER: _ClassVar[int]
+    PRIORITY_FIELD_NUMBER: _ClassVar[int]
+    LOCK_EXPIRES_AT_FIELD_NUMBER: _ClassVar[int]
+    DELIVERY_COUNT_FIELD_NUMBER: _ClassVar[int]
+    lock_id: str
+    item_json: str
+    priority: int
+    lock_expires_at: float
+    delivery_count: int
+    def __init__(self, lock_id: _Optional[str] = ..., item_json: _Optional[str] = ..., priority: _Optional[int] = ..., lock_expires_at: _Optional[float] = ..., delivery_count: _Optional[int] = ...) -> None: ...
+
+class ConsumeSettleFailed(_message.Message):
+    __slots__ = ("lock_id", "error_code", "message")
+    LOCK_ID_FIELD_NUMBER: _ClassVar[int]
+    ERROR_CODE_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    lock_id: str
+    error_code: str
+    message: str
+    def __init__(self, lock_id: _Optional[str] = ..., error_code: _Optional[str] = ..., message: _Optional[str] = ...) -> None: ...
+
+class ConsumeError(_message.Message):
+    __slots__ = ("error_code", "message")
+    ERROR_CODE_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    error_code: str
+    message: str
+    def __init__(self, error_code: _Optional[str] = ..., message: _Optional[str] = ...) -> None: ...

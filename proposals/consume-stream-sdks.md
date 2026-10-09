@@ -1,5 +1,8 @@
 # Consume stream in every SDK, and a managed QueueConsumer
 
+Status: implemented (server idle backoff, `consume` in .NET, Python, TypeScript and Java, `QueueConsumer` in all five
+SDKs, QS and QC rows ticked for every SDK, docs, the .NET autoscale worker). See [Results](#results).
+
 ## Context
 
 The `Consume` gRPC stream for plain queues landed with
@@ -161,3 +164,83 @@ Before committing, run `./build-and-test.sh` per CLAUDE.md.
   `QueueConsumer`, because replicas usually share a queue. Keep that split, or make both true?
 - Should `QueueConsumer` pass the delivery count to handlers in a context object, as the session
   consumers pass `SessionMessageContext`? Recommended: yes, with `lockId` and `deliveryCount`.
+
+## Results
+
+Measured 2026-10-09 on a laptop against the docker-compose stack (one gateway, three workers, Postgres).
+
+### Step 0: idle stream cost
+
+N idle `Consume` streams (`prefetchCount` 10, competing consumers), on N queues or all on one. CPU is the mean of five
+`docker stats` samples (100% = one core), taken while a probe enqueued, `DequeueLocked`-ed and acked one item at a time
+on another queue.
+
+| Idle streams | Queues | Gateway + sidecar CPU | Workers + sidecars CPU | Postgres CPU | Probe `DequeueLocked` p50 / p99 |
+| --- | --- | --- | --- | --- | --- |
+| 0 | - | 8.5% | 17.6% | 3.7% | 5.3 / 14.6 ms |
+| 10 | separate | 11.4% | 25.7% | 5.7% | 5.1 / 12.5 ms |
+| 50 | separate | 18.9% | 42.5% | 6.5% | 5.0 / 11.6 ms |
+| 200 | separate | 45.3% | 97.5% | 13.3% | 5.0 / 13.5 ms |
+| 10 | one | 12.1% | 22.8% | 4.3% | 4.8 / 11.6 ms |
+| 50 | one | 25.5% | 44.7% | 5.5% | 4.8 / 13.1 ms |
+| 200 | one | 78.1% | 125.2% | 12.6% | 4.9 / 13.5 ms |
+
+Cost grew linearly: about 0.2% of a core in the gateway and 0.4-0.5% in the workers per idle stream, so 200 idle
+consumers cost over a core. Other callers' latency didn't change. That is material, so the empty-queue wait now backs
+off: 200 ms doubling to 2 s (`DaprMQGrpcService.MaxIdlePollInterval`), reset by a delivery, and never past the next
+renewal of locks the stream already holds.
+
+| With backoff | Gateway + sidecar CPU | Workers + sidecars CPU | Postgres CPU | Probe p50 / p99 |
+| --- | --- | --- | --- | --- |
+| 0 streams | 16.3% | 17.3% | 3.7% | 5.1 / 21.2 ms |
+| 200 streams, separate queues | 14.4% | 29.9% | 7.2% | 5.4 / 13.6 ms |
+| 200 streams, one queue | 16.4% | 31.5% | 4.6% | 5.0 / 11.8 ms |
+
+200 idle streams now cost about an eighth of a core. The price is idle-to-first-message latency: on a stream idle for
+8 s, an enqueued message arrived after 59 ms at p50 (274 ms max) before the backoff and about 1.05 s after it. A
+stream that has backed off fully polls every 2 s, so a message waits up to 2 s, 1 s on average. A stream under load
+never backs off. Notify-on-enqueue from the queue actor would remove both the polling and this latency.
+
+### Step 0: gateway restart with streams open
+
+50 streams each held 10 unsettled messages (`prefetchCount` 10, 30 s lock TTL), then `docker restart gateway-1`. The
+gateway was ready again 3.3 s later and the streams reopened. Every one of the 500 messages was redelivered exactly
+once (`DeliveryCount` 2, no duplicates), all within 112 ms of each other, but only 29.6 s after the restart began:
+when their locks lapsed. The gateway's graceful shutdown didn't nack them. Its log shows no nack attempts, so the
+Consume handlers didn't reach their cleanup before the process exited. A broken connection does return messages
+straight away (QC-06 relies on that), so this affects only gateway shutdown, for example a rolling deploy.
+
+### Also found
+
+- **One HTTP/2 connection carries at most 100 concurrent streams.** That is Kestrel's default
+  `MaxStreamsPerConnection`, and the server doesn't change it. A client that opens a 101st stream on one connection
+  waits until another closes: grpc-go blocks in `Consume`. This applies to `SessionQueueConsumer` slots as well, and
+  the SDK docs' advice to share one client for "tens or hundreds" of streams needs a caveat. The benchmark used one
+  connection per 50 streams.
+
+### Decisions
+
+- `allowCompetingConsumers` stays split: false on `consume`, matching `DequeueLocked`; true on `QueueConsumer`, because
+  replicas usually share a queue. `strictOrder` turns it off.
+- `QueueConsumer` handlers get a context object with `lockId`, `item`, `priority` and `deliveryCount`.
+- `QueueConsumer` options follow each SDK's `SessionQueueConsumer`: backoff in whole seconds in .NET, Python,
+  TypeScript and Java, and as `time.Duration` in Go. In Go, zero means the default, so `MaxRetriableErrorsPerSec` 0 is
+  10 and a negative value means unpaced, and `AllowCompetingConsumers` is a `*bool` (nil is true). Elsewhere, 0 means
+  unpaced.
+- Settling on a closed stream raises a new `StreamClosed` error in .NET, Python, TypeScript and Java, matching Go's
+  `ErrStreamClosed`.
+- QC-06 breaks the stream through a local TCP proxy rather than by restarting a container: Testcontainers re-maps a
+  restarted container's host ports.
+- The examples' scenario consumers all exist to demonstrate the REST calls, so they stay. The only long-running
+  example consumer, the .NET KEDA autoscale worker, now runs a `QueueConsumer` with `MaxActiveMessages` set to
+  `WORKER_BATCH_SIZE` and one handler, which keeps each replica's pace and the backlog KEDA sees as they were. It was
+  smoke-tested against docker-compose (a stop mid-run acked the running message and returned the other 29 at once),
+  and `k8s-deploy-and-test.sh --keda` passed on Docker Desktop: the worker scaled out from 0 to 2 replicas 54 s after
+  the load, both replicas consumed, and it was back at 0 93 s after the load. The ScaledJob checks also passed.
+
+### Follow-ons
+
+- End open Consume streams when the gateway begins shutting down (link their token to `ApplicationStopping`), so a
+  rolling deploy returns their messages straight away instead of after the lock TTL.
+- Raise or document the 100-streams-per-connection limit.
+- Notify-on-enqueue from the queue actor, to drop the idle poll and its up-to-2 s latency.

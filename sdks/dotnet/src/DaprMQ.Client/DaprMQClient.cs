@@ -436,6 +436,135 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
         }
     }
 
+    public async IAsyncEnumerable<QueueDelivery> ConsumeAsync(
+        string queueId, ConsumeOptions? options = null, [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        options ??= new ConsumeOptions();
+
+        // Same stopping rule as ConsumeSessionAsync: the caller's token half-closes rather than
+        // cancels, so the server applies every settlement already sent and returns the rest.
+        using var call = _grpcClient.Consume();
+        using var drainCts = new CancellationTokenSource();
+        // Not disposed: a delivery can still be settled after the stream ends, and must get
+        // StreamClosedException rather than ObjectDisposedException.
+        var writeLock = new SemaphoreSlim(1, 1);
+        var halfClosed = false;
+
+        async Task WriteAsync(global::DaprMQ.ApiServer.Grpc.ConsumeRequest request)
+        {
+            await writeLock.WaitAsync();
+            try
+            {
+                if (halfClosed)
+                {
+                    throw new StreamClosedException("The Consume stream is closed; this item can no longer be settled on it.");
+                }
+                await call.RequestStream.WriteAsync(request);
+            }
+            finally
+            {
+                writeLock.Release();
+            }
+        }
+
+        async Task HalfCloseAsync()
+        {
+            await writeLock.WaitAsync();
+            try
+            {
+                if (!halfClosed)
+                {
+                    halfClosed = true;
+                    await call.RequestStream.CompleteAsync();
+                }
+            }
+            catch
+            {
+                // best-effort - the stream may already be broken
+            }
+            finally
+            {
+                writeLock.Release();
+                drainCts.CancelAfter(SessionDrainTimeout);
+            }
+        }
+
+        using var stopping = ct.Register(() => _ = HalfCloseAsync());
+        try
+        {
+            await WriteAsync(new global::DaprMQ.ApiServer.Grpc.ConsumeRequest
+            {
+                Start = new global::DaprMQ.ApiServer.Grpc.ConsumeStart
+                {
+                    QueueId = queueId,
+                    PrefetchCount = Math.Max(options.PrefetchCount, 1),
+                    LockTtlSeconds = options.LockTtl > TimeSpan.Zero ? (int)Math.Ceiling(options.LockTtl.TotalSeconds) : 30,
+                    AllowCompetingConsumers = options.AllowCompetingConsumers
+                }
+            });
+
+            while (await call.ResponseStream.MoveNext(drainCts.Token))
+            {
+                if (ct.IsCancellationRequested)
+                {
+                    continue; // stopping: let the server finish, but hand out nothing more
+                }
+
+                var response = call.ResponseStream.Current;
+                switch (response.PayloadCase)
+                {
+                    case global::DaprMQ.ApiServer.Grpc.ConsumeResponse.PayloadOneofCase.Delivered:
+                        var delivered = response.Delivered;
+                        yield return new QueueDelivery
+                        {
+                            LockId = delivered.LockId,
+                            Item = JsonDocument.Parse(delivered.ItemJson).RootElement.Clone(),
+                            Priority = delivered.Priority,
+                            LockExpiresAt = delivered.LockExpiresAt,
+                            DeliveryCount = delivered.DeliveryCount,
+                            AckAsync = _ => WriteAsync(new global::DaprMQ.ApiServer.Grpc.ConsumeRequest
+                            {
+                                Ack = new global::DaprMQ.ApiServer.Grpc.ConsumeAck { LockId = delivered.LockId }
+                            }),
+                            NackAsync = _ => WriteAsync(new global::DaprMQ.ApiServer.Grpc.ConsumeRequest
+                            {
+                                Nack = new global::DaprMQ.ApiServer.Grpc.ConsumeNack { LockId = delivered.LockId }
+                            }),
+                            DeadLetterAsync = _ => WriteAsync(new global::DaprMQ.ApiServer.Grpc.ConsumeRequest
+                            {
+                                DeadLetter = new global::DaprMQ.ApiServer.Grpc.ConsumeDeadLetter { LockId = delivered.LockId }
+                            })
+                        };
+                        break;
+
+                    case global::DaprMQ.ApiServer.Grpc.ConsumeResponse.PayloadOneofCase.SettleFailed:
+                        var failed = response.SettleFailed;
+                        options.OnSettleFailed?.Invoke(failed.LockId, MapLockError(failed.ErrorCode, failed.Message));
+                        break;
+
+                    case global::DaprMQ.ApiServer.Grpc.ConsumeResponse.PayloadOneofCase.Error:
+                        throw MapLockError(response.Error.ErrorCode, response.Error.Message);
+                }
+            }
+
+            ct.ThrowIfCancellationRequested();
+        }
+        finally
+        {
+            await HalfCloseAsync();
+            try
+            {
+                while (await call.ResponseStream.MoveNext(drainCts.Token))
+                {
+                }
+            }
+            catch
+            {
+                // drain timed out, or the stream had already failed
+            }
+        }
+    }
+
     /// <summary>
     /// Waits until the server reports SERVING for <paramref name="service"/> over the standard gRPC
     /// health protocol (grpc.health.v1.Health/Watch). The default,
@@ -629,7 +758,7 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
         "LOCK_EXPIRED" => new LockExpiredException(message),
         "SESSION_LEASE_EXPIRED" => new SessionLeaseExpiredException(message),
         "INVALID_LEASE_ID" => new InvalidLeaseIdException(message),
-        "INVALID_LOCK_ID" or "INVALID_TTL" or "VALIDATION_ERROR" => new ValidationException(message),
+        "INVALID_LOCK_ID" or "INVALID_TTL" or "VALIDATION_ERROR" or "INVALID_ARGUMENT" => new ValidationException(message),
         _ => new DaprMQException(message, errorCode)
     };
 

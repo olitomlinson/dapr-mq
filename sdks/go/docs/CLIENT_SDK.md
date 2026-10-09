@@ -137,6 +137,38 @@ for {
 
 `Receive` is for one goroutine; settle from any. A rejected settle doesn't end the stream: it is reported to `OnSettleFailed` (for example `CodeLockNotFound` after a lost lock). `Close()` half-closes: the server applies the settles already sent, returns every unsettled item to its position straight away, then ends the stream. Settling after `Close` returns `ErrStreamClosed`. With `PrefetchCount` 1 and `AllowCompetingConsumers` false, items arrive strictly in queue order.
 
+## Queues: managed consume loop (`QueueConsumer`)
+
+`QueueConsumer` is the recommended way to run a long-lived consumer of a plain queue. It runs your handler over a `Consume` stream and reopens the stream with backoff if it breaks. For a job that takes a batch and exits (a KEDA ScaledJob, a cron job), use `DequeueLocked` instead: a stream's prefetch would lock messages the job never handles.
+
+```go
+handler := func(ctx context.Context, msg daprmq.QueueMessage) error {
+    // msg.LockID, msg.Item (json.RawMessage), msg.Priority, msg.DeliveryCount
+    return process(ctx, msg.Item) // nil acks; an error applies OnHandlerError
+}
+
+consumer := daprmq.NewQueueConsumer(client, "my-queue", handler, &daprmq.QueueConsumerOptions{
+    MaxConcurrentHandlers: 10,
+})
+consumer.Start(ctx)
+// ... run your application ...
+err := consumer.Stop(context.Background())
+```
+
+| Option | Default | Notes |
+| --- | --- | --- |
+| `MaxActiveMessages` | 100 | The stream's `PrefetchCount`: messages locked to this consumer, handled or waiting |
+| `MaxConcurrentHandlers` | 0 (unlimited) | Bounded by `MaxActiveMessages` |
+| `LockTTL` | 30 s | The server renews each lock until its message is settled |
+| `AllowCompetingConsumers` | `true` | Replicas share the queue; `Ptr(false)` makes this the only lock holder |
+| `StrictOrder` | `false` | Queue order even after a nack: a window of 1, one handler, no competing consumers |
+| `OnHandlerError` | `NackQueueMessage` | Or `DeadLetterQueueMessage` |
+| `MaxRetriableErrorsPerSec` | 10 | Paces nacks after handler errors; negative for unpaced |
+| `MinBackoff` / `MaxBackoff` | 1 s / 60 s | Before reopening a broken stream; doubles per break, resets after a delivery |
+| `DrainTimeout` | 30 s | How long `Stop` waits for running handlers |
+
+`Stop(ctx)` stops handing out messages, lets running handlers finish and settle, then closes the stream, so the server returns every message this consumer held but hadn't started straight away. If handlers are still running after `DrainTimeout`, their context is cancelled and `Stop` returns `context.DeadlineExceeded`. Cancelling the context passed to `Start` stops the consumer the same way, and `Done()` is closed once it has fully stopped.
+
 ## Topics
 
 A topic fans each published item out to every subscriber's own queue, which is consumed with the queue calls above.

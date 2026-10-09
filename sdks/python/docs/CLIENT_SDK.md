@@ -95,6 +95,50 @@ if result is not None:
 
 **Competing consumers.** By default a queue serves one lock at a time - while any item is locked, further locked dequeues come back `locked` (HTTP 423). When several consumers share a queue (e.g. replicas scaled out by KEDA), pass `allow_competing_consumers=True` so each can hold its own locks concurrently.
 
+## Consuming a queue over a stream (`consume`, `QueueConsumer`)
+
+`consume` opens a gRPC stream on a plain queue. The server keeps up to `prefetch_count` locked items delivered, refills as they are settled, and renews their locks until they are settled, so there's no polling and no `extend_lock`:
+
+```python
+import contextlib
+
+async with contextlib.aclosing(client.consume(
+    "my-queue", prefetch_count=50, allow_competing_consumers=True,
+    on_settle_failed=lambda lock_id, err: log.warning("settle %s: %s", lock_id, err),
+)) as stream:
+    async for delivery in stream:
+        # ... process delivery.item; delivery.delivery_count is 1 on a first delivery ...
+        await delivery.ack()  # or nack() / dead_letter()
+```
+
+A rejected settle doesn't end the stream: it goes to `on_settle_failed`. Leaving the loop, or setting the `cancel` event, half-closes the stream: the server applies the settles already sent and returns every unsettled item straight away (`aclosing` waits for that). Settling afterwards raises `StreamClosedError`.
+
+`QueueConsumer` is the recommended way to run a long-lived consumer. It runs your handler over the stream and reopens it with backoff if it breaks:
+
+```python
+from daprmq_client import QueueConsumer, QueueConsumerOptions, QueueMessageContext
+
+async def handler(ctx: QueueMessageContext) -> None:
+    # ctx.lock_id, ctx.item, ctx.priority, ctx.delivery_count
+    await process(ctx.item)  # returning acks; raising applies on_handler_error
+
+async with QueueConsumer(client, "my-queue", QueueConsumerOptions(max_concurrent_handlers=10), handler):
+    ...  # run your application
+```
+
+Stopping - `await consumer.stop()`, or leaving the `async with` - stops handing out messages, lets running handlers finish and settle for up to `drain_timeout_seconds`, then closes the stream, so the server returns every message the consumer held but hadn't started straight away. For a job that takes a batch and exits (a KEDA ScaledJob, a cron job), use `dequeue_locked` instead: a stream's prefetch would lock messages the job never handles.
+
+| Option | Default | Notes |
+| --- | --- | --- |
+| `max_active_messages` | 100 | The stream's prefetch count: messages locked to this consumer, handled or waiting |
+| `max_concurrent_handlers` | 0 (unlimited) | Bounded by `max_active_messages` |
+| `lock_ttl_seconds` | 30 s | The server renews each lock until its message is settled |
+| `allow_competing_consumers` | `true` | Replicas share the queue |
+| `strict_order` | `false` | Queue order even after a nack: a window of 1, one handler, no competing consumers |
+| `on_handler_error` | `QueueHandlerFailureAction.NACK` | Or `DEAD_LETTER` |
+| `max_retriable_errors_per_sec` | 10 | Paces nacks after handler errors; 0 for unpaced |
+| `min_backoff_seconds` / `max_backoff_seconds` | 1 / 60 | Seconds before reopening a broken stream; doubles per break, resets after a delivery |
+| `drain_timeout_seconds` | 30 s | |
 ## Sessions - manual API
 
 For sticky routing, admin tooling, or callers who don't want a managed consume loop:

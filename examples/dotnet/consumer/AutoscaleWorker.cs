@@ -1,57 +1,43 @@
 using DaprMQ.Client;
 
 /// <summary>
-/// Continuous consumer for the KEDA autoscale demo: dequeue a batch with competing consumers (so every
-/// replica KEDA adds gets its own locks instead of a 423), simulate per-item work, acknowledge, repeat.
-/// See examples/shared/SCENARIOS.md (`autoscale`).
+/// Continuous consumer for the KEDA autoscale demo: a <see cref="QueueConsumer"/> with competing consumers
+/// (so every replica KEDA adds holds its own locks), simulating per-item work. See
+/// examples/shared/SCENARIOS.md (`autoscale`).
 /// </summary>
 public sealed class AutoscaleWorker(
     AppState state, string queueSuffix, int batchSize, TimeSpan itemDelay, Action<string, string> log) : BackgroundService
 {
-    private static readonly TimeSpan IdleDelay = TimeSpan.FromSeconds(1);
-    private static readonly TimeSpan ErrorDelay = TimeSpan.FromSeconds(2);
-
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var processed = 0;
-        log("INFO", $"worker started: draining {{queuePrefix}}-{queueSuffix} in batches of {batchSize}, {itemDelay.TotalMilliseconds}ms per item");
+        var (client, queuePrefix) = state.Snapshot();
+        var queueId = $"{queuePrefix}-{queueSuffix}";
+        log("INFO", $"worker started: draining {queueId}, {batchSize} in flight, {itemDelay.TotalMilliseconds}ms per item");
 
-        while (!stoppingToken.IsCancellationRequested)
+        // One handler at a time over a window of batchSize keeps each replica's pace, and the backlog
+        // KEDA sees, the same as dequeuing batchSize at once. The server renews the locks it holds.
+        var options = new QueueConsumerOptions { MaxActiveMessages = batchSize, MaxConcurrentHandlers = 1 };
+        await using var consumer = new QueueConsumer(client, queueId, options, async (_, _) =>
         {
-            var (client, queuePrefix) = state.Snapshot();
-            var queueId = $"{queuePrefix}-{queueSuffix}";
-
-            try
+            await Task.Delay(itemDelay, CancellationToken.None);
+            if (Interlocked.Increment(ref processed) % batchSize == 0)
             {
-                var batch = await client.DequeueLockedAsync(queueId, count: batchSize, allowCompetingConsumers: true, ct: stoppingToken);
-                if (batch is null || batch.Items.Count == 0)
-                {
-                    await Task.Delay(IdleDelay, stoppingToken);
-                    continue;
-                }
+                log("INFO", $"processed {batchSize} items from {queueId} (total {processed})");
+            }
+        });
+        await consumer.StartAsync();
 
-                // Finish a batch we already hold even if shutdown starts (KEDA scaling in), rather than
-                // leaving its locks to expire and be redelivered.
-                foreach (var item in batch.Items)
-                {
-                    await Task.Delay(itemDelay, CancellationToken.None);
-                    await client.AcknowledgeAsync(queueId, item.LockId, ct: CancellationToken.None);
-                }
-
-                processed += batch.Items.Count;
-                log("INFO", $"processed {batch.Items.Count} items from {queueId} (total {processed})");
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                log("WARN", $"worker error on {queueId}: {ex.Message}");
-                await Task.Delay(ErrorDelay, stoppingToken).ContinueWith(_ => { });
-            }
+        try
+        {
+            await Task.Delay(Timeout.Infinite, stoppingToken);
+        }
+        catch (OperationCanceledException)
+        {
         }
 
+        // Disposing stops the consumer: a message already being handled finishes and is acked (KEDA scaling
+        // in), and the rest held by this replica go straight back to the queue.
         log("INFO", $"worker stopping after {processed} items");
     }
 }

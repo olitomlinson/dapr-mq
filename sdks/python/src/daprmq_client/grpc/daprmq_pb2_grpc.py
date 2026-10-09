@@ -96,6 +96,11 @@ class DaprMQStub:
                 request_serializer=daprmq__pb2.ConsumeSessionRequest.SerializeToString,
                 response_deserializer=daprmq__pb2.ConsumeSessionResponse.FromString,
                 _registered_method=True)
+        self.Consume = channel.stream_stream(
+                '/daprmq.DaprMQ/Consume',
+                request_serializer=daprmq__pb2.ConsumeRequest.SerializeToString,
+                response_deserializer=daprmq__pb2.ConsumeResponse.FromString,
+                _registered_method=True)
 
 
 class DaprMQServicer:
@@ -206,6 +211,17 @@ class DaprMQServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Consume(self, request_iterator, context):
+        """Managed consume loop for a plain (non-session) queue: streams up to prefetch_count locked items
+        at a time, accepts Ack/Nack/DeadLetter frames, and refills the window as they settle. The
+        server renews the locks of every item it has delivered and the client hasn't settled, for as
+        long as the stream stays open - the client never calls ExtendLock. When the stream ends, every
+        still-outstanding item is nacked back to its position straight away.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_DaprMQServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -268,6 +284,11 @@ def add_DaprMQServicer_to_server(servicer, server):
                     servicer.ConsumeSession,
                     request_deserializer=daprmq__pb2.ConsumeSessionRequest.FromString,
                     response_serializer=daprmq__pb2.ConsumeSessionResponse.SerializeToString,
+            ),
+            'Consume': grpc.stream_stream_rpc_method_handler(
+                    servicer.Consume,
+                    request_deserializer=daprmq__pb2.ConsumeRequest.FromString,
+                    response_serializer=daprmq__pb2.ConsumeResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -596,6 +617,33 @@ class DaprMQ:
             '/daprmq.DaprMQ/ConsumeSession',
             daprmq__pb2.ConsumeSessionRequest.SerializeToString,
             daprmq__pb2.ConsumeSessionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Consume(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_stream(
+            request_iterator,
+            target,
+            '/daprmq.DaprMQ/Consume',
+            daprmq__pb2.ConsumeRequest.SerializeToString,
+            daprmq__pb2.ConsumeResponse.FromString,
             options,
             channel_credentials,
             insecure,

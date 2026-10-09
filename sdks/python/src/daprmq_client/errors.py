@@ -64,6 +64,14 @@ class SessionLostError(DaprMQError):
         super().__init__(message, "SESSION_LOST")
 
 
+class StreamClosedError(DaprMQError):
+    """A :class:`QueueDelivery` was settled after its ``consume`` stream closed. The server has
+    already returned the item to the queue (or will once its lock lapses), so it will be redelivered."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, "STREAM_CLOSED")
+
+
 class DaprMQUnavailableError(DaprMQError):
     """The operation was certainly not performed - DaprMQ couldn't serve it - and retrying ran out
     of ``RetryOptions.timeout``. Always safe to repeat later."""

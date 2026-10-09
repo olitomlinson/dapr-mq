@@ -71,6 +71,16 @@ public class SessionLostException : DaprMQException
 }
 
 /// <summary>
+/// A <see cref="QueueDelivery"/> was settled after its <see cref="IDaprMQClient.ConsumeAsync"/>
+/// stream closed. The server has already returned the item to the queue (or will once its lock
+/// lapses), so it will be redelivered.
+/// </summary>
+public class StreamClosedException : DaprMQException
+{
+    public StreamClosedException(string message) : base(message, "STREAM_CLOSED") { }
+}
+
+/// <summary>
 /// The operation was certainly not performed - DaprMQ couldn't serve it - and retrying ran out of
 /// <see cref="DaprMQRetryOptions.Timeout"/>. Always safe to repeat later.
 /// </summary>

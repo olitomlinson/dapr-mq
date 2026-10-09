@@ -91,6 +91,17 @@ export class SessionLostError extends DaprMQError {
 }
 
 /**
+ * A QueueDelivery was settled after its consume stream closed. The server has already returned the
+ * item to the queue (or will once its lock lapses), so it will be redelivered.
+ */
+export class StreamClosedError extends DaprMQError {
+  constructor(message: string) {
+    super(message, "STREAM_CLOSED");
+    this.name = "StreamClosedError";
+  }
+}
+
+/**
  * The operation was certainly not performed - DaprMQ couldn't serve it - and retrying ran out of
  * `RetryOptions.timeoutMs`. Always safe to repeat later.
  */

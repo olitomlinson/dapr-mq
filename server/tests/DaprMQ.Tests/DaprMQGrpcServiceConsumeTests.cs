@@ -86,6 +86,7 @@ public class DaprMQGrpcServiceConsumeTests
     private readonly Mock<ILogger<DaprMQGrpcService>> _mockLogger = new();
     private readonly Mock<ServerCallContext> _mockContext = new();
     private readonly Mock<IQueueActorInvoker> _queue = new();
+    private readonly ConcurrentQueue<DateTime> _dequeueTimes = new();
 
     private DaprMQGrpcService CreateService() =>
         new(_mockLogger.Object, _queue.Object, new Mock<ISessionCoordinatorActorInvoker>().Object)
@@ -108,7 +109,11 @@ public class DaprMQGrpcServiceConsumeTests
         var call = 0;
         _queue.Setup(i => i.InvokeMethodAsync<ActorModels.DequeueLockedRequest, ActorModels.DequeueLockedResponse>(
                 It.IsAny<ActorId>(), "DequeueLocked", It.IsAny<ActorModels.DequeueLockedRequest>(), It.IsAny<CancellationToken>()))
-            .Callback<ActorId, string, ActorModels.DequeueLockedRequest, CancellationToken>((_, _, req, _) => requests.Enqueue(req))
+            .Callback<ActorId, string, ActorModels.DequeueLockedRequest, CancellationToken>((_, _, req, _) =>
+            {
+                requests.Enqueue(req);
+                _dequeueTimes.Enqueue(DateTime.UtcNow);
+            })
             .ReturnsAsync(() =>
             {
                 var n = Interlocked.Increment(ref call) - 1;
@@ -312,6 +317,49 @@ public class DaprMQGrpcServiceConsumeTests
         await task;
 
         Assert.Equal(new[] { "lock-1", "lock-3" }, nacked.OrderBy(id => id));
+    }
+
+    [Fact]
+    public async Task Consume_EmptyQueue_BacksOffThePollUpToTheIdleCap()
+    {
+        var requests = SetupDequeue();
+        SetupNack();
+        var reader = new FakeAsyncStreamReader<ConsumeRequest>();
+        var writer = new FakeServerStreamWriter<ConsumeResponse>();
+        reader.Add(Start());
+        var service = CreateService();
+        service.MaxIdlePollInterval = TimeSpan.FromMilliseconds(160);
+
+        var task = service.Consume(reader, writer, _mockContext.Object);
+        await Task.Delay(1000);
+        reader.Complete();
+        await task;
+
+        // 20, 40, 80, then 160 ms between polls: about 9 in a second, against about 50 unbacked-off.
+        Assert.InRange(requests.Count, 5, 15);
+    }
+
+    [Fact]
+    public async Task Consume_ADeliveryResetsTheIdleBackoff()
+    {
+        SetupDequeue([], [], [], [], [], [], [Item("lock-1")]);
+        SetupNack();
+        var reader = new FakeAsyncStreamReader<ConsumeRequest>();
+        var writer = new FakeServerStreamWriter<ConsumeResponse>();
+        reader.Add(Start());
+        var service = CreateService();
+        service.MaxIdlePollInterval = TimeSpan.FromMilliseconds(160);
+
+        var task = service.Consume(reader, writer, _mockContext.Object);
+        await WaitUntilAsync(() => _dequeueTimes.Count >= 9);
+        reader.Complete();
+        await task;
+
+        var t = _dequeueTimes.ToArray();
+        // Calls 0-5 come back empty, backing off to the cap; call 6 delivers; call 7 asks straight
+        // away for the free slots and is empty, so call 8 waits the initial interval again.
+        Assert.True(t[6] - t[5] >= TimeSpan.FromMilliseconds(120), $"backed off before the delivery: {(t[6] - t[5]).TotalMilliseconds} ms");
+        Assert.True(t[8] - t[7] < TimeSpan.FromMilliseconds(100), $"reset after the delivery: {(t[8] - t[7]).TotalMilliseconds} ms");
     }
 
     [Fact]

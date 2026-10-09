@@ -59,8 +59,38 @@ export interface ConsumeSessionResponseMessage {
   sessionDrained?: SessionDrainedMessage;
 }
 
+export interface ConsumeStartMessage {
+  queueId: string;
+  prefetchCount: number;
+  lockTtlSeconds: number;
+  allowCompetingConsumers: boolean;
+}
+
+export interface ConsumeRequestMessage {
+  start?: ConsumeStartMessage;
+  ack?: { lockId: string };
+  nack?: { lockId: string };
+  deadLetter?: { lockId: string };
+}
+
+export interface ConsumeDeliveredMessage {
+  lockId: string;
+  itemJson: string;
+  priority: number;
+  lockExpiresAt: number;
+  deliveryCount: number;
+}
+
+export interface ConsumeResponseMessage {
+  payload: "delivered" | "settleFailed" | "error";
+  delivered?: ConsumeDeliveredMessage;
+  settleFailed?: { lockId: string; errorCode: string; message: string };
+  error?: { errorCode: string; message: string };
+}
+
 export interface DaprMQGrpcClient extends grpc.Client {
   consumeSession(): grpc.ClientDuplexStream<ConsumeSessionRequestMessage, ConsumeSessionResponseMessage>;
+  consume(): grpc.ClientDuplexStream<ConsumeRequestMessage, ConsumeResponseMessage>;
 }
 
 interface DaprMQGrpcPackage {

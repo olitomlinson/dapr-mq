@@ -37,5 +37,13 @@ public interface IDaprMQClient
         string queueId, string? sessionId, int leaseSeconds, int prefetchCount, CancellationToken ct = default,
         int sessionIdleTimeoutSeconds = 0);
 
+    /// <summary>
+    /// Opens a Consume stream on a plain queue: the server keeps up to
+    /// <see cref="ConsumeOptions.PrefetchCount"/> locked items delivered, refills as they are settled,
+    /// and renews their locks. Stopping - by token, break or error - half-closes the stream, so the
+    /// server applies every settlement already sent and returns the unsettled items straight away.
+    /// </summary>
+    IAsyncEnumerable<QueueDelivery> ConsumeAsync(string queueId, ConsumeOptions? options = null, CancellationToken ct = default);
+
     Task WaitForReadyAsync(string service = DaprMQClient.OperationsHealthService, CancellationToken ct = default);
 }

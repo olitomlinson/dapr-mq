@@ -81,6 +81,53 @@ if (result is not null)
 
 **Competing consumers.** By default a queue serves one lock at a time - while any item is locked, further locked dequeues come back `locked` (HTTP 423). When several consumers share a queue (e.g. replicas scaled out by KEDA), pass `allowCompetingConsumers: true` so each can hold its own locks concurrently.
 
+## Consuming a queue over a stream (`ConsumeAsync`, `QueueConsumer`)
+
+`ConsumeAsync` opens a gRPC stream on a plain queue. The server keeps up to `PrefetchCount` locked items delivered, refills as they are settled, and renews their locks until they are settled, so there's no polling and no `ExtendLockAsync`:
+
+```csharp
+var options = new ConsumeOptions
+{
+    PrefetchCount = 50,
+    AllowCompetingConsumers = true,
+    OnSettleFailed = (lockId, error) => logger.LogWarning("settle {LockId}: {Error}", lockId, error.Message)
+};
+await foreach (var delivery in client.ConsumeAsync("my-queue", options, ct))
+{
+    // ... process delivery.Item; delivery.DeliveryCount is 1 on a first delivery ...
+    await delivery.AckAsync(ct); // or NackAsync / DeadLetterAsync
+}
+```
+
+A rejected settle doesn't end the stream: it goes to `OnSettleFailed`. Leaving the loop, or cancelling `ct`, half-closes the stream: the server applies the settles already sent and returns every unsettled item straight away. Settling afterwards throws `StreamClosedException`.
+
+`QueueConsumer` is the recommended way to run a long-lived consumer. It runs your handler over the stream and reopens it with backoff if it breaks:
+
+```csharp
+await using var consumer = new QueueConsumer(client, "my-queue", new QueueConsumerOptions { MaxConcurrentHandlers = 10 },
+    async (ctx, ct) =>
+    {
+        // ctx.LockId, ctx.Item, ctx.Priority, ctx.DeliveryCount
+        await ProcessAsync(ctx.Item, ct); // returning acks; throwing applies OnHandlerError
+    });
+await consumer.StartAsync();
+// ... run your application ...
+await consumer.StopAsync();
+```
+
+Stopping - `StopAsync()` - stops handing out messages, lets running handlers finish and settle for up to `DrainTimeout`, then closes the stream, so the server returns every message the consumer held but hadn't started straight away. For a job that takes a batch and exits (a KEDA ScaledJob, a cron job), use `DequeueLockedAsync` instead: a stream's prefetch would lock messages the job never handles.
+
+| Option | Default | Notes |
+| --- | --- | --- |
+| `MaxActiveMessages` | 100 | The stream's prefetch count: messages locked to this consumer, handled or waiting |
+| `MaxConcurrentHandlers` | 0 (unlimited) | Bounded by `MaxActiveMessages` |
+| `LockTtl` | 30 s | The server renews each lock until its message is settled |
+| `AllowCompetingConsumers` | `true` | Replicas share the queue |
+| `StrictOrder` | `false` | Queue order even after a nack: a window of 1, one handler, no competing consumers |
+| `OnHandlerError` | `Nack` | Or `DeadLetter` |
+| `MaxRetriableErrorsPerSec` | 10 | Paces nacks after handler errors; 0 for unpaced |
+| `MinBackoffSeconds` / `MaxBackoffSeconds` | 1 / 60 | Seconds before reopening a broken stream; doubles per break, resets after a delivery |
+| `DrainTimeout` | 30 s | |
 ## Sessions - manual (unary) API
 
 For sticky routing, admin tooling, or callers who don't want a managed consume loop:

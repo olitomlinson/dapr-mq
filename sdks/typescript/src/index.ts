@@ -6,6 +6,13 @@ export {
   type SessionMessageContext,
   type SessionCapableClient,
 } from "./sessionQueueConsumer.js";
+export {
+  QueueConsumer,
+  type QueueConsumerOptions,
+  type QueueHandlerFailureAction,
+  type QueueMessageContext,
+  type QueueCapableClient,
+} from "./queueConsumer.js";
 export type {
   EnqueueItem,
   EnqueueResult,
@@ -13,6 +20,8 @@ export type {
   DequeueLockedResult,
   SessionLease,
   SessionDelivery,
+  QueueDelivery,
+  ConsumeOptions,
   NackResult,
   AcknowledgeBatchResult,
   LockAcknowledgeResult,
@@ -33,4 +42,5 @@ export {
   SessionActorUnavailableError,
   NoSessionsAvailableError,
   SessionLostError,
+  StreamClosedError,
 } from "./errors.js";

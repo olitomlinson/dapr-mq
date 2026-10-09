@@ -431,11 +431,13 @@ A managed consume loop for a plain queue, gRPC only: `rpc Consume(stream Consume
 2. The server sends a `Delivered { lock_id, item_json, priority, lock_expires_at, delivery_count }` frame per item. `delivery_count` counts this delivery: 1 is the first, 2 the first redelivery after a nack or a lapsed lock.
 3. The client settles each item with an `Ack`, `Nack` or `DeadLetter` frame carrying its `lock_id`. When settles bring the window down to half, the server dequeues more.
 
-**Locks.** The server renews the lock of every delivered, unsettled item at about `lock_ttl_seconds / 2` for as long as the stream is open, so the client never calls Extend Lock. When the stream ends, the server nacks every item still unsettled, so each goes back to its original position straight away; if the server itself goes away, the locks lapse after `lock_ttl_seconds` as usual.
+**Locks.** The server renews the lock of every delivered, unsettled item every `lock_ttl_seconds / 3` for as long as the stream is open, so the client never calls Extend Lock. When the stream ends, the server nacks every item still unsettled, so each goes back to its original position straight away; if the server itself goes away, the locks lapse after `lock_ttl_seconds` as usual.
 
 **Errors.** A rejected settle (for example `LOCK_NOT_FOUND` after a lock was lost) comes back as a `SettleFailed { lock_id, error_code, message }` frame, and the stream carries on. An `Error { error_code, message }` frame ends the stream, for example `INVALID_ARGUMENT` when the first frame isn't `Start` or `queue_id` is empty.
 
 **Ordering.** With `prefetch_count` 1 and `allow_competing_consumers` false, items are delivered strictly in queue order. Above 1, a nacked item comes back after the items already in flight.
+
+**Idle queues.** While the queue is empty, the server checks it every 200 ms, backing off to every 2 s; a delivery resets the wait. So on a queue that has been idle, a new item reaches the stream within 2 s, 1 s on average.
 
 ---
 

@@ -14,17 +14,30 @@ import {
   SessionLockedError,
   SessionLostError,
   SessionNotFoundError,
+  StreamClosedError,
   ValidationError,
 } from "./errors.js";
 import {
   createDaprMQGrpcClient,
+  type ConsumeRequestMessage,
+  type ConsumeResponseMessage,
   type ConsumeSessionRequestMessage,
   type ConsumeSessionResponseMessage,
   type DaprMQGrpcClient,
 } from "./grpc/daprmqGrpcClient.js";
 import { createHealthGrpcClient, type HealthGrpcClient } from "./grpc/healthGrpcClient.js";
 import { AsyncMessageQueue } from "./asyncMessageQueue.js";
-import type { AcknowledgeBatchResult, DequeueLockedResult, EnqueueItem, EnqueueResult, NackResult, SessionDelivery, SessionLease } from "./types.js";
+import type {
+  AcknowledgeBatchResult,
+  ConsumeOptions,
+  DequeueLockedResult,
+  EnqueueItem,
+  EnqueueResult,
+  NackResult,
+  QueueDelivery,
+  SessionDelivery,
+  SessionLease,
+} from "./types.js";
 import type {
   AcceptSessionResponseWire,
   AcknowledgeBatchResponseWire,
@@ -514,6 +527,111 @@ export class DaprMQClient {
   }
 
   /**
+   * Opens a Consume stream on a plain queue: the server keeps up to `prefetchCount` locked items
+   * delivered, refills as they are settled, and renews their locks. Stopping works as in
+   * consumeSession: abort `signal` or leave the loop, and the stream half-closes, so the server
+   * applies every settlement already sent and returns the unsettled items straight away. Settling
+   * afterwards rejects with StreamClosedError.
+   */
+  async *consume(queueId: string, options: ConsumeOptions = {}): AsyncGenerator<QueueDelivery, void, void> {
+    const { prefetchCount = 1, lockTtlMs = 30_000, allowCompetingConsumers = false, onSettleFailed, signal } = options;
+    const call = this.grpcClient.consume();
+
+    const queue = new AsyncMessageQueue<ConsumeResponseMessage>();
+    let serverEnded!: () => void;
+    const finished = new Promise<void>((resolve) => (serverEnded = resolve));
+    call.on("data", (msg) => queue.push(msg));
+    call.on("end", () => {
+      queue.end();
+      serverEnded();
+    });
+    call.on("error", (err: Error) => {
+      queue.fail(err);
+      serverEnded();
+    });
+
+    let halfClosed = false;
+    let drainExpired = false;
+    let drainTimer: ReturnType<typeof setTimeout> | undefined;
+    const halfClose = () => {
+      if (halfClosed) {
+        return;
+      }
+      halfClosed = true;
+      try {
+        call.end();
+      } catch {
+        // best-effort - the stream may already be broken
+      }
+      drainTimer = setTimeout(() => {
+        drainExpired = true;
+        call.cancel();
+      }, DaprMQClient.sessionDrainTimeoutMs);
+    };
+    const settle = async (request: ConsumeRequestMessage) => {
+      if (halfClosed) {
+        throw new StreamClosedError("The Consume stream is closed; this item can no longer be settled on it.");
+      }
+      call.write(request);
+    };
+
+    try {
+      call.write({
+        start: {
+          queueId,
+          prefetchCount: Math.max(prefetchCount, 1),
+          lockTtlSeconds: lockTtlMs > 0 ? Math.ceil(lockTtlMs / 1000) : 30,
+          allowCompetingConsumers,
+        },
+      });
+      signal?.addEventListener("abort", halfClose);
+      if (signal?.aborted) {
+        halfClose();
+      }
+
+      for await (const response of queue) {
+        if (halfClosed) {
+          continue; // stopping: let the server finish, but hand out nothing more
+        }
+        switch (response.payload) {
+          case "delivered": {
+            const delivered = response.delivered!;
+            yield {
+              lockId: delivered.lockId,
+              item: JSON.parse(delivered.itemJson),
+              priority: delivered.priority,
+              lockExpiresAt: delivered.lockExpiresAt,
+              deliveryCount: delivered.deliveryCount,
+              ack: () => settle({ ack: { lockId: delivered.lockId } }),
+              nack: () => settle({ nack: { lockId: delivered.lockId } }),
+              deadLetter: () => settle({ deadLetter: { lockId: delivered.lockId } }),
+            };
+            break;
+          }
+
+          case "settleFailed": {
+            const failed = response.settleFailed!;
+            onSettleFailed?.(failed.lockId, this.mapLockError(failed.errorCode, failed.message));
+            break;
+          }
+
+          case "error":
+            throw this.mapLockError(response.error!.errorCode, response.error!.message);
+        }
+      }
+    } catch (err) {
+      if (!drainExpired) {
+        throw err; // a drain that ran out cancels the call, which fails the read
+      }
+    } finally {
+      signal?.removeEventListener("abort", halfClose);
+      halfClose();
+      await finished;
+      clearTimeout(drainTimer);
+    }
+  }
+
+  /**
    * Waits until the server reports SERVING for `service` over the standard gRPC health protocol
    * (grpc.health.v1.Health/Watch). The default means queue operations can be served end to end;
    * "daprmq.DaprMQ" means just this server instance is ready. Reconnects while the server isn't
@@ -723,6 +841,7 @@ export class DaprMQClient {
       case "INVALID_LOCK_ID":
       case "INVALID_TTL":
       case "VALIDATION_ERROR":
+      case "INVALID_ARGUMENT":
         return new ValidationError(message);
       default:
         return new DaprMQError(message, errorCode);

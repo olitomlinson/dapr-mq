@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import random
 import time
 import uuid
@@ -30,10 +31,11 @@ from .errors import (
     SessionLockedError,
     SessionLostError,
     SessionNotFoundError,
+    StreamClosedError,
     ValidationError,
 )
 from .grpc import daprmq_pb2, daprmq_pb2_grpc
-from .types import AcknowledgeBatchResult, DequeueLockedItem, LockAcknowledgeResult, DequeueLockedResult, EnqueueItem, EnqueueResult, NackResult, RetryOptions, SessionDelivery, SessionLease
+from .types import AcknowledgeBatchResult, DequeueLockedItem, LockAcknowledgeResult, DequeueLockedResult, EnqueueItem, EnqueueResult, NackResult, QueueDelivery, RetryOptions, SessionDelivery, SessionLease
 
 #: How long a stopping :meth:`DaprMQClient.consume_session` stream waits, after half-closing, for the server
 #: to apply what it was sent and end the stream, before it cancels the call.
@@ -430,6 +432,139 @@ class DaprMQClient:
                 if drain_timer is not None:
                     drain_timer.cancel()
 
+    async def consume(
+        self,
+        queue_id: str,
+        *,
+        prefetch_count: int = 1,
+        lock_ttl_seconds: float = 30,
+        allow_competing_consumers: bool = False,
+        on_settle_failed: Callable[[str, DaprMQError], None] | None = None,
+        cancel: asyncio.Event | None = None,
+    ) -> AsyncIterator[QueueDelivery]:
+        """Opens a ``Consume`` stream on a plain queue: the server keeps up to ``prefetch_count``
+        locked items delivered (1-1000), refills as they are settled, and renews their locks, so
+        ``lock_ttl_seconds`` (sent in whole seconds, rounded up) only bounds how long an item stays
+        locked after this client disappears. Above 1, a nack can reorder the queue.
+
+        ``on_settle_failed(lock_id, error)`` is called when the server rejects an ack, nack or
+        dead-letter; the stream carries on. Stopping works as in :meth:`consume_session`: set
+        ``cancel`` or leave the loop, and the stream half-closes, so the server applies every
+        settlement already sent and returns the unsettled items straight away. Settling afterwards
+        raises :class:`StreamClosedError`.
+        """
+        call = self._grpc_stub.Consume()
+        loop = asyncio.get_running_loop()
+        write_lock = asyncio.Lock()
+        half_closed = False
+        drain_expired = False
+        drain_timer: asyncio.TimerHandle | None = None
+        ended = False
+
+        def expire_drain() -> None:
+            nonlocal drain_expired
+            drain_expired = True
+            call.cancel()
+
+        async def write(request: daprmq_pb2.ConsumeRequest) -> None:
+            async with write_lock:
+                if half_closed or ended:
+                    raise StreamClosedError("The Consume stream is closed; this item can no longer be settled on it.")
+                await call.write(request)
+
+        async def half_close() -> None:
+            nonlocal half_closed, drain_timer
+            async with write_lock:
+                if half_closed:
+                    return
+                half_closed = True
+                drain_timer = loop.call_later(SESSION_DRAIN_TIMEOUT_SECONDS, expire_drain)
+                try:
+                    await call.done_writing()
+                except Exception:
+                    pass  # best-effort - the stream may already be broken
+
+        watcher: asyncio.Task[None] | None = None
+        if cancel is not None:
+
+            async def _watch() -> None:
+                await cancel.wait()
+                await half_close()
+
+            watcher = asyncio.ensure_future(_watch())
+
+        try:
+            start = daprmq_pb2.ConsumeStart(
+                queue_id=queue_id,
+                prefetch_count=max(prefetch_count, 1),
+                lock_ttl_seconds=math.ceil(lock_ttl_seconds) if lock_ttl_seconds > 0 else 30,
+                allow_competing_consumers=allow_competing_consumers,
+            )
+            await write(daprmq_pb2.ConsumeRequest(start=start))
+
+            async for response in call:
+                if half_closed:
+                    continue  # stopping: let the server finish, but hand out nothing more
+
+                payload = response.WhichOneof("payload")
+
+                if payload == "delivered":
+                    delivered = response.delivered
+                    lock_id = delivered.lock_id
+
+                    async def ack(lock_id: str = lock_id) -> None:
+                        await write(daprmq_pb2.ConsumeRequest(ack=daprmq_pb2.ConsumeAck(lock_id=lock_id)))
+
+                    async def nack(lock_id: str = lock_id) -> None:
+                        await write(daprmq_pb2.ConsumeRequest(nack=daprmq_pb2.ConsumeNack(lock_id=lock_id)))
+
+                    async def dead_letter(lock_id: str = lock_id) -> None:
+                        await write(daprmq_pb2.ConsumeRequest(dead_letter=daprmq_pb2.ConsumeDeadLetter(lock_id=lock_id)))
+
+                    yield QueueDelivery(
+                        lock_id=lock_id,
+                        item=json.loads(delivered.item_json),
+                        priority=delivered.priority,
+                        lock_expires_at=delivered.lock_expires_at,
+                        delivery_count=delivered.delivery_count,
+                        ack=ack,
+                        nack=nack,
+                        dead_letter=dead_letter,
+                    )
+
+                elif payload == "settle_failed":
+                    if on_settle_failed is not None:
+                        failed = response.settle_failed
+                        on_settle_failed(failed.lock_id, self._map_lock_error(failed.error_code, failed.message))
+
+                elif payload == "error":
+                    raise self._map_lock_error(response.error.error_code, response.error.message)
+            ended = True
+        except (asyncio.CancelledError, grpc.aio.AioRpcError):
+            ended = True
+            if not drain_expired:
+                raise  # cancelling the call ends its read this way; anything else is real
+        finally:
+            if watcher is not None:
+                watcher.cancel()
+            try:
+                if not ended:
+                    # However the stream stopped, let the server apply what it was sent first.
+                    await half_close()
+                    try:
+                        async for _ in call:
+                            pass
+                    except asyncio.CancelledError:
+                        if not drain_expired:
+                            call.cancel()
+                            raise
+                    except Exception:
+                        pass  # the stream had already failed
+            finally:
+                ended = True
+                if drain_timer is not None:
+                    drain_timer.cancel()
+
     async def wait_for_ready(self, service: str = OPERATIONS_HEALTH_SERVICE) -> None:
         """Wait until the server reports SERVING for ``service`` over the standard gRPC health
         protocol (grpc.health.v1.Health/Watch). The default means queue operations can be served
@@ -580,7 +715,7 @@ class DaprMQClient:
             return SessionLeaseExpiredError(message)
         if error_code == "INVALID_LEASE_ID":
             return InvalidLeaseIdError(message)
-        if error_code in ("INVALID_LOCK_ID", "INVALID_TTL", "VALIDATION_ERROR"):
+        if error_code in ("INVALID_LOCK_ID", "INVALID_TTL", "VALIDATION_ERROR", "INVALID_ARGUMENT"):
             return ValidationError(message)
         return DaprMQError(message, error_code)
 

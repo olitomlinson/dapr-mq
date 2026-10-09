@@ -604,8 +604,8 @@ message ConsumeStart {
   // comes back.
   int32 prefetch_count = 2;
 
-  // Lock time-to-live in seconds (1-300, default: 30). The server renews each outstanding lock at
-  // roughly lock_ttl_seconds/2 for as long as the stream stays open.
+  // Lock time-to-live in seconds (1-300, default: 30). The server renews each outstanding lock
+  // every lock_ttl_seconds/3 for as long as the stream stays open.
   int32 lock_ttl_seconds = 3;
 
   // Let this stream hold locks while other consumers hold theirs, as on DequeueLocked. When false,

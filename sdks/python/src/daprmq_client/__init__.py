@@ -13,7 +13,15 @@ from .errors import (
     SessionLockedError,
     SessionLostError,
     SessionNotFoundError,
+    StreamClosedError,
     ValidationError,
+)
+from .queue_consumer import (
+    QueueCapableClient,
+    QueueConsumer,
+    QueueConsumerOptions,
+    QueueHandlerFailureAction,
+    QueueMessageContext,
 )
 from .session_queue_consumer import (
     SessionCapableClient,
@@ -31,6 +39,7 @@ from .types import (
     EnqueueResult,
     LockAcknowledgeResult,
     NackResult,
+    QueueDelivery,
     RetryOptions,
     SessionDelivery,
     SessionLease,
@@ -54,6 +63,7 @@ __all__ = [
     "SessionActorUnavailableError",
     "NoSessionsAvailableError",
     "SessionLostError",
+    "StreamClosedError",
     "EnqueueItem",
     "EnqueueResult",
     "DequeueLockedItem",
@@ -64,9 +74,15 @@ __all__ = [
     "AcknowledgeOutcome",
     "LockAcknowledgeResult",
     "SessionDelivery",
+    "QueueDelivery",
     "SessionQueueConsumer",
     "SessionQueueConsumerOptions",
     "SessionHandlerFailureAction",
     "SessionMessageContext",
     "SessionCapableClient",
+    "QueueConsumer",
+    "QueueConsumerOptions",
+    "QueueHandlerFailureAction",
+    "QueueMessageContext",
+    "QueueCapableClient",
 ]

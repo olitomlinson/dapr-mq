@@ -62,6 +62,63 @@ public sealed class SessionDelivery
     public required Func<CancellationToken, Task> NackAsync { get; init; }
 }
 
+/// <summary>Options for <see cref="IDaprMQClient.ConsumeAsync"/>.</summary>
+public record ConsumeOptions
+{
+    /// <summary>
+    /// How many delivered but unsettled items to keep in flight (1-1000). Above 1, a Nack can
+    /// reorder the queue: items already in flight are delivered before it comes back.
+    /// </summary>
+    public int PrefetchCount { get; init; } = 1;
+
+    /// <summary>
+    /// Lock TTL, sent in whole seconds rounded up (1-300). The server renews each delivered item's
+    /// lock until it is settled, so this only bounds how long an item stays locked after this
+    /// client disappears without closing the stream.
+    /// </summary>
+    public TimeSpan LockTtl { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Lets this stream hold locks while other consumers hold theirs. By default the queue serves
+    /// one lock holder at a time.
+    /// </summary>
+    public bool AllowCompetingConsumers { get; init; }
+
+    /// <summary>
+    /// Called from the stream's reader when the server rejects an Ack, Nack or DeadLetter (for
+    /// example <see cref="Exceptions.LockNotFoundException"/> once the lock was lost). The stream carries on.
+    /// </summary>
+    public Action<string, Exceptions.DaprMQException>? OnSettleFailed { get; init; }
+}
+
+/// <summary>
+/// One delivered, locked item from a <see cref="IDaprMQClient.ConsumeAsync"/> stream. The server
+/// renews its lock until it is settled. A rejected settlement arrives later through
+/// <see cref="ConsumeOptions.OnSettleFailed"/>; the task here only covers sending the frame.
+/// </summary>
+public sealed class QueueDelivery
+{
+    public required string LockId { get; init; }
+    public required JsonElement Item { get; init; }
+    public required int Priority { get; init; }
+    public required double LockExpiresAt { get; init; }
+
+    /// <summary>1 on a first delivery, 2 on the first redelivery after a Nack or a lapsed lock, and so on.</summary>
+    public required int DeliveryCount { get; init; }
+
+    /// <summary>Permanently removes the item.</summary>
+    public required Func<CancellationToken, Task> AckAsync { get; init; }
+
+    /// <summary>
+    /// Returns the item to its original position for redelivery. Counts toward the server's max
+    /// delivery count, past which the item is dead-lettered.
+    /// </summary>
+    public required Func<CancellationToken, Task> NackAsync { get; init; }
+
+    /// <summary>Moves the item to "{queueId}-deadletter".</summary>
+    public required Func<CancellationToken, Task> DeadLetterAsync { get; init; }
+}
+
 public record DaprMQClientOptions
 {
     public required Uri HttpBaseAddress { get; init; }

@@ -1,15 +1,14 @@
 package com.daprmq.client;
 
-import com.daprmq.grpc.ConsumeSessionRequest;
 import io.grpc.stub.ClientCallStreamObserver;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
-/** Records what {@link SessionStream} writes onto the (fake) request stream. */
-final class FakeRequestObserver extends ClientCallStreamObserver<ConsumeSessionRequest> {
+/** Records what {@link SessionStream} or {@link QueueStream} writes onto the (fake) request stream. */
+final class FakeRequestObserver<T> extends ClientCallStreamObserver<T> {
     /** Written by the consumer's slot thread, read by the test thread. */
-    final List<ConsumeSessionRequest> sent = new CopyOnWriteArrayList<>();
+    final List<T> sent = new CopyOnWriteArrayList<>();
     volatile boolean cancelled;
     volatile boolean completed;
     /** Runs when the client half-closes - e.g. a fake server ending the response stream. */
@@ -21,7 +20,7 @@ final class FakeRequestObserver extends ClientCallStreamObserver<ConsumeSessionR
     }
 
     @Override
-    public void onNext(ConsumeSessionRequest value) {
+    public void onNext(T value) {
         sent.add(value);
     }
 

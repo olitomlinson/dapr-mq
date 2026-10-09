@@ -40,9 +40,11 @@ kubectl get svc -n <namespace> | grep operator
 
 ## 4. Make your consumer scale-safe
 
-- **Messages mode: enable competing consumers.** By default a queue serves one lock at a time, so a second replica's
-  locked dequeue gets `423 Locked` and does nothing. Set `AllowCompetingConsumers` (every SDK exposes it, see each
-  SDK's `docs/CLIENT_SDK.md`) so each replica holds its own locks.
+- **Messages mode: use `QueueConsumer`, or enable competing consumers.** Each SDK's `QueueConsumer` (see its
+  `docs/CLIENT_SDK.md`) is built for this: it enables competing consumers by default, and on stop it lets the running
+  handlers ack, then returns the messages it held but hadn't started straight away. If you dequeue yourself instead,
+  note that by default a queue serves one lock at a time, so a second replica's locked dequeue gets `423 Locked` and
+  does nothing. Set `AllowCompetingConsumers` so each replica holds its own locks.
 - **Sessions mode:** each replica accepts sessions as usual; scaling out just means more sessions processed at once.
 - **Finish in-flight work on SIGTERM.** KEDA scales in by terminating pods. Acknowledge (or nack) whatever has
   already been dequeued before exiting, and keep `terminationGracePeriodSeconds` longer than one batch takes. Locks a
@@ -94,8 +96,10 @@ For items that take minutes to process (say 10 minutes before you can ack or dea
 **Plain queues.** Lock TTL is capped at 300 s: a larger `ttlSeconds` is silently clamped to 300, so the lock would
 expire mid-job, the item would be redelivered to another consumer with `DeliveryCount` +1, and after
 `MaxDeliveryCount` it would be dead-lettered. Heartbeat instead: dequeue with a modest TTL (e.g. 60 s) and call
-`ExtendLock` every TTL/2 until the work finishes. `ExtendLock` adds to the current expiry and has no upper bound. No
-SDK renews locks automatically, so run the heartbeat alongside the work and stop it when you ack.
+`ExtendLock` every TTL/2 until the work finishes. `ExtendLock` adds to the current expiry and has no upper bound. A
+`QueueConsumer` (or a `Consume` stream) needs none of this: the server renews the lock of every message it has
+delivered until the message is settled. With `DequeueLocked`, run the heartbeat alongside the work and stop it when
+you ack.
 
 **Session queues via `SessionQueueConsumer` / `ConsumeSession`.** Nothing to do. The server renews the lease every
 `LeaseSeconds/2` while the stream is open, session locks last as long as the lease, and a session with a message in
@@ -107,7 +111,7 @@ A ScaledObject scales in by having the HPA delete pods, and it can pick a busy o
 
 **Option A (recommended): ScaledJob.** KEDA starts a Kubernetes Job per unit of work, and a Job runs to completion;
 scale-in never terminates it. Each Job dequeues one item (with `AllowCompetingConsumers`), heartbeats, settles it, and
-exits.
+exits. Use `DequeueLocked` here, not a `QueueConsumer`: a stream's prefetch would lock messages the Job never handles.
 
 ```yaml
 apiVersion: keda.sh/v1alpha1

@@ -71,3 +71,6 @@ class FakeStub:
 
     def ConsumeSession(self) -> FakeStreamStreamCall:  # noqa: N802 - matches generated stub casing
         return self._call
+
+    def Consume(self) -> FakeStreamStreamCall:  # noqa: N802 - matches generated stub casing
+        return self._call

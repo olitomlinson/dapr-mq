@@ -24,7 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SessionStreamTest {
 
-    private FakeRequestObserver requestObserver;
+    private FakeRequestObserver<ConsumeSessionRequest> requestObserver;
     private StreamObserver<ConsumeSessionResponse> responseObserver;
 
     private final long originalDrainTimeout = SessionStream.drainTimeoutMillis;
@@ -41,7 +41,7 @@ class SessionStreamTest {
     }
 
     private SessionStream newStream(ConsumeSessionOptions options) {
-        requestObserver = new FakeRequestObserver();
+        requestObserver = new FakeRequestObserver<>();
         SessionStream.StreamFactory factory = observer -> {
             responseObserver = observer;
             return requestObserver;
