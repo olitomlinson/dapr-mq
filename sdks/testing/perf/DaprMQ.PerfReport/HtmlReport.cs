@@ -113,6 +113,7 @@ details summary { cursor: pointer; color: var(--text-secondary); margin: 4px 0 8
     <div class="grid">
       <div class="card"><h2>Load throughput, relative to the fastest SDK</h2><p>Messages/s for each load profile as a share of the best SDK on that profile (100% = fastest). Hover for absolute numbers.</p><div class="chart"><canvas id="ov-load"></canvas></div></div>
       <div class="card"><h2>Session drain efficiency</h2><p>Ideal ÷ wall clock for each session-drain profile. Higher is better.</p><div class="chart"><canvas id="ov-drain"></canvas></div></div>
+      <div class="card"><h2>Queue drain throughput, relative to the fastest SDK</h2><p>Messages/s for each queue-drain profile (<code>QueueConsumer</code>) as a share of the best SDK (100% = fastest). Hover for absolute numbers.</p><div class="chart"><canvas id="ov-queue"></canvas></div></div>
       <div class="card wide"><details><summary>Overview table</summary><div class="table-wrap"><table id="ov-table"></table></div></details></div>
     </div>
 
@@ -132,6 +133,7 @@ const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).
 const color = sdk => css(`--series-${SDKS.indexOf(sdk) + 1}`) || css('--reference');
 const replicas = r => r.topology?.apiReplicas ?? 1;
 const isDrain = r => r.scenario.name === 'session-drain';
+const isQueueDrain = r => r.scenario.name === 'queue-drain';
 const isRamp = r => (r.steps?.length ?? 0) > 1;
 const fmt = (v, d = 1) => v == null || Number.isNaN(v) ? '–' : Number(v).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
 const when = r => new Date(r.timestampUtc).toISOString().slice(0, 16).replace('T', ' ');
@@ -185,10 +187,10 @@ function latestBy(runs) {
 }
 
 function profileKeys(runs) {
-  // Load profiles first, then session drain; pr before extreme; keep first-seen order otherwise.
+  // Load profiles first, then session drain, then queue drain; pr before extreme; keep first-seen order otherwise.
   const seen = new Map();
   runs.forEach(r => seen.set(r.scenario.key, r));
-  const rank = r => (isDrain(r) ? 2 : 0) + (isRamp(r) ? 1 : 0);
+  const rank = r => (isDrain(r) ? 2 : 0) + (isQueueDrain(r) ? 4 : 0) + (isRamp(r) ? 1 : 0);
   return [...seen.values()].sort((a, b) => rank(a) - rank(b)).map(r => r.scenario.key);
 }
 
@@ -314,8 +316,9 @@ function render() {
 
 function renderOverview(runs, latest, keys, present) {
   const get = (k, s) => latest.get(`${k}|${s}`);
-  const loadKeys = keys.filter(k => runs.some(r => r.scenario.key === k && !isDrain(r) && !isRamp(r)));
+  const loadKeys = keys.filter(k => runs.some(r => r.scenario.key === k && !isDrain(r) && !isQueueDrain(r) && !isRamp(r)));
   const drainKeys = keys.filter(k => runs.some(r => r.scenario.key === k && isDrain(r)));
+  const queueKeys = keys.filter(k => runs.some(r => r.scenario.key === k && isQueueDrain(r)));
 
   const loadOpts = baseOptions('% of fastest SDK', { endLabelsOn: false });
   loadOpts.plugins.legend.labels = { ...loadOpts.plugins.legend.labels, boxWidth: 10, boxHeight: 10 };
@@ -344,6 +347,20 @@ function renderOverview(runs, latest, keys, present) {
     return v == null ? null : +(v * 100).toFixed(1);
   }), color(s))) }, options: drainOpts });
 
+  const queueOpts = baseOptions('% of fastest SDK', { endLabelsOn: false });
+  queueOpts.plugins.legend.labels = { ...queueOpts.plugins.legend.labels, boxWidth: 10, boxHeight: 10 };
+  queueOpts.plugins.tooltip.callbacks = {
+    label: ctx => {
+      const r = get(queueKeys[ctx.dataIndex], present[ctx.datasetIndex]);
+      return r ? `${ctx.dataset.label}: ${fmt(ctx.raw, 0)}% (${fmt(r.metrics.messagesPerSecond, 0)} msg/s, delivery p95 ${fmt(r.metrics.deliveryLatencyMs.p95, 0)} ms)` : `${ctx.dataset.label}: no run`;
+    },
+  };
+  draw('ov-queue', { type: 'bar', data: { labels: queueKeys.map(profileName), datasets: present.map(s => bar(SDK_LABEL[s], queueKeys.map(k => {
+    const best = Math.max(...present.map(x => get(k, x)?.metrics.messagesPerSecond ?? 0));
+    const v = get(k, s)?.metrics.messagesPerSecond;
+    return v == null || best === 0 ? null : +(v / best * 100).toFixed(1);
+  }), color(s))) }, options: queueOpts });
+
   const t = document.getElementById('ov-table');
   t.replaceChildren();
   const head = t.createTHead().insertRow();
@@ -353,12 +370,14 @@ function renderOverview(runs, latest, keys, present) {
     const sample = runs.find(r => r.scenario.key === k);
     const row = body.insertRow();
     row.insertCell().textContent = profileName(k);
-    row.insertCell().textContent = isDrain(sample) ? 'wall clock s / efficiency' : 'msg/s / p95 ms';
+    row.insertCell().textContent = isDrain(sample) ? 'wall clock s / efficiency' : isQueueDrain(sample) ? 'msg/s / delivery p95 ms' : 'msg/s / p95 ms';
     present.forEach(s => {
       const r = get(k, s);
       const td = row.insertCell();
       if (!r) { td.textContent = '–'; return; }
-      td.textContent = isDrain(r) ? `${fmt(r.metrics.wallClockSeconds)} / ${fmt(r.metrics.efficiency * 100)}%` : `${fmt(r.metrics.messagesPerSecond, 0)} / ${fmt(r.metrics.latencyMs.p95)}`;
+      td.textContent = isDrain(r) ? `${fmt(r.metrics.wallClockSeconds)} / ${fmt(r.metrics.efficiency * 100)}%`
+        : isQueueDrain(r) ? `${fmt(r.metrics.messagesPerSecond, 0)} / ${fmt(r.metrics.deliveryLatencyMs.p95, 0)}`
+        : `${fmt(r.metrics.messagesPerSecond, 0)} / ${fmt(r.metrics.latencyMs.p95)}`;
       if (r.checks?.passed === false) td.className = 'fail';
     });
   });
@@ -419,6 +438,15 @@ function renderDetail(allRuns, key, present) {
     trendChart(container, 'Efficiency', 'Ideal ÷ wall clock, every run.', '%', runs, sdksHere, r => r.metrics.efficiency * 100);
     trendChart(container, 'Claim latency p95', 'Stream opened to first delivery.', 'ms', runs, sdksHere, r => r.metrics.claimLatencyMs.p95);
     trendChart(container, 'Delivery latency p95', 'Enqueue to handler start.', 'ms', runs, sdksHere, r => r.metrics.deliveryLatencyMs?.p95);
+  } else if (isQueueDrain(sample)) {
+    timelineChart(container, 'Throughput over the drain', 'Messages handled per second, latest run per SDK.', 'messages/s', latestRuns, 'messagesPerSecond');
+    timelineChart(container, 'Busy handlers over time', 'Average handlers running per second, latest run per SDK.', 'handlers', latestRuns, 'busyHandlers');
+    trendChart(container, 'Throughput trend', 'Messages/s of every run.', 'messages/s', runs, sdksHere, r => r.metrics.messagesPerSecond);
+    trendChart(container, 'Wall clock', 'Consume start to last message handled, every run.', 'seconds', runs, sdksHere, r => r.metrics.wallClockSeconds);
+    trendChart(container, 'Delivery latency p95', 'Publish to handler start.', 'ms', runs, sdksHere, r => r.metrics.deliveryLatencyMs.p95);
+    if (runs.some(r => r.metrics.efficiency != null)) {
+      trendChart(container, 'Efficiency', 'Ideal ÷ wall clock, every run.', '%', runs, sdksHere, r => r.metrics.efficiency == null ? null : r.metrics.efficiency * 100);
+    }
   } else if (isRamp(sample)) {
     const conc = [...new Set(runs.flatMap(r => r.steps.map(s => s.concurrency)))].sort((a, b) => a - b);
     const stepChart = (title, desc, yTitle, f) => {
@@ -454,6 +482,12 @@ function detailColumns(sample) {
     ['Efficiency', r => fmt(r.metrics.efficiency * 100) + '%'], ['Peak util', r => fmt(r.metrics.peak.utilization * 100) + '%'],
     ['Claim p95 (ms)', r => fmt(r.metrics.claimLatencyMs.p95, 0)], ['Msg gap p95 (ms)', r => fmt(r.metrics.interMessageGapMs.p95, 0)],
     ['Delivery p95 (ms)', r => fmt(r.metrics.deliveryLatencyMs?.p95, 0)], ['Checks', status],
+  ]);
+  if (isQueueDrain(sample)) return common.concat([
+    ['Msg/s', r => fmt(r.metrics.messagesPerSecond, 0)], ['Wall (s)', r => fmt(r.metrics.wallClockSeconds)],
+    ['Ideal (s)', r => fmt(r.metrics.idealSeconds)], ['Efficiency', r => r.metrics.efficiency == null ? '–' : fmt(r.metrics.efficiency * 100) + '%'],
+    ['Peak handlers', r => r.metrics.peakConcurrentHandlers], ['Delivery p95 (ms)', r => fmt(r.metrics.deliveryLatencyMs.p95, 0)],
+    ['First msg (s)', r => fmt(r.metrics.timeToFirstMessageSeconds, 2)], ['Checks', status],
   ]);
   if (isRamp(sample)) return common.concat([
     ['Peak msg/s', r => fmt(Math.max(...r.steps.map(s => s.messagesPerSecond)), 0)],

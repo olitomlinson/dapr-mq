@@ -8,7 +8,7 @@ can put the SDKs side by side.
 - Every scenario has a stable ID (`P-01`…) and named **profiles** (fixed parameter sets). A profile
   means the same thing in every SDK. If you change a profile's parameters, rename the profile so old
   history isn't compared with new.
-- Scenarios drive the **public SDK surface** (the client and `SessionQueueConsumer`), never raw
+- Scenarios drive the **public SDK surface** (the client, `SessionQueueConsumer` and `QueueConsumer`), never raw
   HTTP/gRPC. Users only see the protocol through an SDK.
 - Each run uses fresh queue IDs (`perf-<scenario>-<guid>`). Never include `-session-` in a base
   queue ID, because the server treats that marker as a per-session actor.
@@ -109,6 +109,44 @@ or a session's messages are handled out of order.
 
 The consumer uses prefetch 10, lease 30 s and idle timeout = lease unless the profile says otherwise.
 
+### `P-05` queue drain (`QueueConsumer`)
+
+Publish `messages` to a plain queue, then drain them with one `QueueConsumer` at its defaults
+(`maxActiveMessages` 100, unlimited handlers, competing consumers) unless the profile says otherwise.
+Its handler sleeps `settleMs` per message, or `tailMs` for every `tailEvery`-th one. Payload
+`{"seq": n, "publishedAt": <unix ms>}`. The backlog is seeded first in `enqueue` batches of 100
+(16 in parallel, or one at a time for `strictOrder`, so queue order is seq order). A profile with a
+publish interval instead publishes one message at a time from one publisher, starting with the
+consumer, so the wall clock includes publishing.
+
+This is the plain-queue counterpart of `P-04`, and the stream-based counterpart of `P-03`'s
+`dequeueLocked` loop: the profiles mirror the handler times measured when the `Consume` stream was
+introduced ([proposals/continuous-receive.md](../../proposals/continuous-receive.md#results)).
+
+| Profile | Scale | Messages | Settle | Consumer | Other |
+|---|---|---|---|---|---|
+| `queue-drain-instant` | pr | 4000 | 0 ms | defaults | – |
+| `queue-drain` | pr | 4000 | 10 ms | defaults | – |
+| `queue-drain-slow` | pr | 3000 | 100 ms | defaults | – |
+| `queue-strict-order` | pr | 300 | 0 ms | `strictOrder` | – |
+| `queue-live-publish` | pr | 50 | 10 ms | defaults | publish one every 200 ms ± 100 ms |
+| `queue-drain-large` | extreme | 50000 | 10 ms | `maxActiveMessages` 500 | – |
+| `queue-drain-tail` | extreme | 2000 | 100 ms | defaults | every 20th message takes 5 s |
+
+**Measured:**
+- **Throughput:** messages handled ÷ wall clock (consume start to the last message's handler finishing).
+- **Ideal and efficiency:** ideal is the handler work spread over the handlers that can run at once
+  (1 under `strictOrder`, else `maxConcurrentHandlers` capped by `maxActiveMessages`), but no less
+  than the slowest single handler, nor than the last live-published message plus its handler.
+  Efficiency is ideal ÷ wall clock. Both are null with an instant handler, where the run measures
+  overhead alone.
+- **Delivery latency:** publish to handler start. On `queue-live-publish` this is how fast a new
+  message reaches a consumer that has been idle, so it shows the server's idle backoff.
+- **Peak concurrent handlers**, time to the first message, and per-second throughput and busy-handler
+  timelines.
+- **Checks:** the run fails if a message is never handled, or, under `strictOrder`, if a message
+  starts before an earlier one.
+
 ## Result format
 
 Defined by [perf/result.schema.json](perf/result.schema.json) (schema version 2). An SDK writes:
@@ -144,6 +182,11 @@ Legend: ✅ implemented and passing · ⬜ not yet
 | `deep-session` | ✅ | ⬜ | ⬜ | ⬜ |
 | `live-publish` | ✅ | ⬜ | ⬜ | ⬜ |
 | `sdk-defaults` | ✅ | ⬜ | ⬜ | ⬜ |
+| `queue-drain-instant` | ⬜ | ⬜ | ⬜ | ⬜ |
+| `queue-drain` | ⬜ | ⬜ | ⬜ | ⬜ |
+| `queue-drain-slow` | ⬜ | ⬜ | ⬜ | ⬜ |
+| `queue-strict-order` | ⬜ | ⬜ | ⬜ | ⬜ |
+| `queue-live-publish` | ⬜ | ⬜ | ⬜ | ⬜ |
 | **extreme** | | | | |
 | `enqueue-ramp` | ⬜ | ⬜ | ⬜ | ⬜ |
 | `enqueue-hot-ramp` | ⬜ | ⬜ | ⬜ | ⬜ |
@@ -151,6 +194,8 @@ Legend: ✅ implemented and passing · ⬜ not yet
 | `dequeue-ack-ramp` | ⬜ | ⬜ | ⬜ | ⬜ |
 | `full` | ✅ | ⬜ | ⬜ | ⬜ |
 | `wide-drain` | ⬜ | ⬜ | ⬜ | ⬜ |
+| `queue-drain-large` | ⬜ | ⬜ | ⬜ | ⬜ |
+| `queue-drain-tail` | ⬜ | ⬜ | ⬜ | ⬜ |
 
 ## Remaining work
 
@@ -200,13 +245,16 @@ For each SDK:
    `sdks/java/perf` (a Maven profile or a separate module). It should:
    - take the same flags as .NET where they apply: `--suite pr|extreme`, `--profile`,
      `--api-replicas`, `--env-label`, `--out` (default `<repo>/perf-results`), `--http/--grpc`
-   - run the closed-loop load profiles (P-01..P-03, including ramps) and the P-04 session drain, using
+   - run the closed-loop load profiles (P-01..P-03, including ramps), the P-04 session drain and the
+     P-05 queue drain, using
      the parameters in the tables above. The .NET code is the reference implementation:
      [LoadScenario.cs](../dotnet/perf/DaprMQ.Client.Perf/LoadScenario.cs),
      [LoadMetrics.cs](../dotnet/perf/DaprMQ.Client.Perf/LoadMetrics.cs) (window, buckets,
      nearest-rank percentiles), [SessionDrainScenario.cs](../dotnet/perf/DaprMQ.Client.Perf/SessionDrainScenario.cs),
      [SessionDrainMetrics.cs](../dotnet/perf/DaprMQ.Client.Perf/SessionDrainMetrics.cs),
-     [RecordingDaprMQClient.cs](../dotnet/perf/DaprMQ.Client.Perf/RecordingDaprMQClient.cs)
+     [RecordingDaprMQClient.cs](../dotnet/perf/DaprMQ.Client.Perf/RecordingDaprMQClient.cs),
+     [QueueDrainScenario.cs](../dotnet/perf/DaprMQ.Client.Perf/QueueDrainScenario.cs),
+     [QueueDrainMetrics.cs](../dotnet/perf/DaprMQ.Client.Perf/QueueDrainMetrics.cs)
    - write schema-2 records to `<out>/sdk-<sdk>/` exactly as
      [RunRecords.cs](../dotnet/perf/DaprMQ.Client.Perf/RunRecords.cs) does: same `runId` format, same
      `scenario.key` strings (the report groups SDKs by key, so a different key won't line up), and

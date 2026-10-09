@@ -38,6 +38,15 @@ public static class RegressionCheck
         new("Delivery p95 (ms)", ["deliveryLatencyMs", "p95"], HigherIsWorse: true, 0.5, 100),
     ];
 
+    /// <summary>P-05: queue drain with QueueConsumer.</summary>
+    private static readonly Rule[] QueueDrainRules =
+    [
+        new("Messages/s", ["messagesPerSecond"], HigherIsWorse: false, 0.2, 20),
+        new("Wall clock (s)", ["wallClockSeconds"], HigherIsWorse: true, 0.25, 1),
+        new("Delivery p95 (ms)", ["deliveryLatencyMs", "p95"], HigherIsWorse: true, 0.5, 100),
+        new("Efficiency", ["efficiency"], HigherIsWorse: false, 0.15, 0.03),
+    ];
+
     /// <summary>P-01..P-03: closed-loop load.</summary>
     private static readonly Rule[] LoadRules =
     [
@@ -60,7 +69,12 @@ public static class RegressionCheck
             .TakeLast(Window)
             .ToList();
 
-        var rules = Str(current, "scenario", "name") == "session-drain" ? SessionDrainRules : LoadRules;
+        var rules = Str(current, "scenario", "name") switch
+        {
+            "session-drain" => SessionDrainRules,
+            "queue-drain" => QueueDrainRules,
+            _ => LoadRules,
+        };
         var metrics = new List<MetricComparison>();
         foreach (var rule in rules)
         {

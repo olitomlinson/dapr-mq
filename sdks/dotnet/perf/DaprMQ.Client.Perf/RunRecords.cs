@@ -90,6 +90,43 @@ public static class RunRecords
         return run;
     }
 
+    public static JsonObject QueueDrain(RunContext context, string profile, QueueDrainParams scenario, QueueDrainResult result)
+    {
+        var metrics = JsonSerializer.SerializeToNode(result, Json)!.AsObject();
+        metrics.Remove("messagesPerSecondTimeline");
+        metrics.Remove("busyHandlersTimeline");
+
+        var parameters = JsonSerializer.SerializeToNode(scenario, Json)!.AsObject();
+        foreach (var derived in new[] { "key", "livePublish", "concurrency", "tailMessages", "idealSeconds" })
+        {
+            parameters.Remove(derived);
+        }
+
+        var failures = new List<string>();
+        if (result.Missing > 0)
+        {
+            failures.Add($"{result.Missing} messages missing");
+        }
+
+        // Above a window of 1, handlers legitimately start messages out of queue order.
+        if (scenario.StrictOrder && result.OrderViolations > 0)
+        {
+            failures.Add($"{result.OrderViolations} order violations");
+        }
+
+        var run = Envelope(context, profile, "P-05", "queue-drain", scenario.Key, parameters, metrics, failures);
+        run["timeline"] = new JsonObject
+        {
+            ["bucketMs"] = QueueDrainMetrics.BucketMs,
+            ["series"] = new JsonObject
+            {
+                ["messagesPerSecond"] = JsonSerializer.SerializeToNode(result.MessagesPerSecondTimeline, Json),
+                ["busyHandlers"] = JsonSerializer.SerializeToNode(result.BusyHandlersTimeline, Json),
+            },
+        };
+        return run;
+    }
+
     private static JsonObject Envelope(RunContext context, string profile, string id, string name, string key,
         JsonObject parameters, JsonObject metrics, List<string> failures)
     {

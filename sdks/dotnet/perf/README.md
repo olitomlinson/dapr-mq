@@ -1,8 +1,8 @@
 # .NET SDK performance harness
 
 The .NET implementation of [sdks/testing/PERFORMANCE_TESTS.md](../../testing/PERFORMANCE_TESTS.md):
-closed-loop load (`enqueue`, `enqueue-batch`, `dequeue-ack`, and their `extreme` ramps) and the
-`SessionQueueConsumer` session drain, against a real server it starts with Testcontainers. Results use the
+closed-loop load (`enqueue`, `enqueue-batch`, `dequeue-ack`, and their `extreme` ramps), the
+`SessionQueueConsumer` session drain and the `QueueConsumer` queue drain, against a real server it starts with Testcontainers. Results use the
 shared schema, so [perf-results/report.html](../../testing/PERFORMANCE_TESTS.md#result-format) puts
 them next to every other SDK's.
 
@@ -20,6 +20,20 @@ The stack is the perf topology of the spec: a 3-node scheduler HA cluster, and w
 ([DaprTopology.cs](../../../server/tests/DaprMQ.IntegrationTests/Infrastructure/DaprTopology.cs)).
 
 Load profiles are fixed by the spec. The rest of this page covers the session drain (`P-04`) in detail.
+
+## Queue drain
+
+`P-05` publishes N messages to a plain queue and drains them with one `QueueConsumer`
+([QueueDrainScenario.cs](DaprMQ.Client.Perf/QueueDrainScenario.cs)). Its profiles and metrics are in
+[the spec](../../testing/PERFORMANCE_TESTS.md#p-05-queue-drain-queueconsumer). What each one watches:
+
+| Profile | Catches regressions in | Watch |
+|---|---|---|
+| `queue-drain-instant` | The stream's own ceiling: deliver, ack batching, refill | msg/s |
+| `queue-drain` | The same with a little handler time | msg/s, wall clock |
+| `queue-drain-slow` | Keeping the window full when handlers are the bottleneck | efficiency, peak handlers |
+| `queue-strict-order` | The per-message round trip with one message in flight | msg/s |
+| `queue-live-publish` | How fast a new message reaches an idle consumer (the server's idle backoff) | delivery p95 |
 
 ## Session drain
 

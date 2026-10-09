@@ -156,4 +156,31 @@ public class RegressionCheckTests
         Assert.Equal(ComparisonStatus.Regressed, Metric(comparison, "Latency p95 (ms)").Status);
         Assert.Equal(ComparisonStatus.Ok, Metric(comparison, "Latency p99 (ms)").Status); // p99 is noisier: 100% tolerance
     }
+
+    private static JsonObject QueueDrainRun(string runId, string branch, double messagesPerSecond, double wall = 5, double deliveryP95 = 200, string efficiency = "null") =>
+        JsonNode.Parse($$"""
+        {
+          "schemaVersion": 2, "runId": "{{runId}}",
+          "sdk": { "name": "dotnet" },
+          "environment": { "label": "ci", "gitBranch": "{{branch}}" },
+          "topology": { "apiReplicas": 1 },
+          "scenario": { "id": "P-05", "name": "queue-drain", "profile": "queue-drain", "key": "queue:4000@10ms/active100" },
+          "metrics": { "messagesPerSecond": {{messagesPerSecond}}, "wallClockSeconds": {{wall}}, "efficiency": {{efficiency}}, "deliveryLatencyMs": { "p95": {{deliveryP95}} } },
+          "checks": { "passed": true }
+        }
+        """)!.AsObject();
+
+    [Fact]
+    public void QueueDrain_IsJudgedOnThroughputWallClockAndDeliveryLatency_AndEfficiencyWhenItHasOne()
+    {
+        var history = Enumerable.Range(0, 3).Select(i => QueueDrainRun($"base{i}", "main", 800, efficiency: "0.9")).ToList();
+
+        var slower = RegressionCheck.Compare(QueueDrainRun("now", "feature", 500, wall: 8, deliveryP95: 1000, efficiency: "0.5"), history, "main");
+        Assert.Equal(["Messages/s", "Wall clock (s)", "Delivery p95 (ms)", "Efficiency"], slower.Metrics.Select(m => m.Metric));
+        Assert.All(slower.Metrics, m => Assert.Equal(ComparisonStatus.Regressed, m.Status));
+
+        // An instant handler has no ideal, so no efficiency to judge.
+        var instant = RegressionCheck.Compare(QueueDrainRun("now", "feature", 800), history, "main");
+        Assert.DoesNotContain(instant.Metrics, m => m.Metric == "Efficiency");
+    }
 }
