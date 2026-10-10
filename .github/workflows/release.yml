@@ -1,7 +1,7 @@
 name: Release
 
 # Pushing a tag vX.Y.Z[-alpha.N|-rc.N] publishes every asset at that version (docs/RELEASING.md).
-# Only the npm package is wired up so far; the other registries follow.
+# npm and the Go module are wired up so far; the other registries follow.
 on:
   push:
     tags: ['v*']
@@ -93,3 +93,38 @@ jobs:
         run: npm publish --provenance --tag ${{ steps.tag.outputs.tag }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  go:
+    name: Go module (sdks/go)
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # pushes the sdks/go/vX.Y.Z tag
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: sdks/go/go.mod
+          cache-dependency-path: sdks/go/go.sum
+
+      - name: Unit tests
+        working-directory: sdks/go
+        run: go test ./...
+
+      # A Go module in a subdirectory is versioned by a <dir>/vX.Y.Z tag on the same commit. Tags pushed with
+      # GITHUB_TOKEN don't trigger workflows, so this doesn't re-run the release.
+      - name: Tag
+        run: |
+          tag="sdks/go/v${{ needs.version.outputs.version }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "::notice::$tag already exists"; exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "$tag" -m "Go SDK v${{ needs.version.outputs.version }}" "$GITHUB_SHA"
+          git push origin "$tag"
+
+      # Fetching the version makes the module proxy cache it, so `go get` sees it straight away.
+      - name: Warm the module proxy
+        run: curl -sSf "https://proxy.golang.org/github.com/olitomlinson/dapr-mq/sdks/go/@v/v${{ needs.version.outputs.version }}.info"
