@@ -1,6 +1,6 @@
 // The published tarball must work on its own: no path may reach outside the package (e.g. into server/).
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,8 +31,19 @@ describe("npm package", () => {
     client.close();
   });
 
-  it("ships the licence", async () => {
-    const { existsSync } = await import("node:fs");
+  // Scoped packages default to private, and npm rejects provenance without a matching repository.
+  it("publishes publicly with provenance metadata", () => {
+    const pkg = JSON.parse(readFileSync(path.join(packageDir, "package.json"), "utf8"));
+    expect(pkg.publishConfig?.access).toBe("public");
+    expect(pkg.repository).toEqual({
+      type: "git",
+      url: "git+https://github.com/olitomlinson/dapr-mq.git",
+      directory: "sdks/typescript",
+    });
+  });
+
+  it("ships the readme and licence", () => {
+    expect(existsSync(path.join(packageDir, "README.md"))).toBe(true);
     expect(existsSync(path.join(packageDir, "LICENSE"))).toBe(true);
   });
 });
