@@ -266,6 +266,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines (if available), or just op
 
 daprMQ is distributed under the Elastic License 2.0 (ELv2) with additional limitations.
 
+The client SDKs under [`sdks/`](./sdks) (.NET, Go, Java, Python, TypeScript) are licensed under the
+[Apache License 2.0](./sdks/go/LICENSE), so applications can depend on them without restriction.
+
 ### ✅ What you can do for free
 
 You are free to use daprMQ:

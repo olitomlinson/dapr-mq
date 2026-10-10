@@ -3,9 +3,9 @@
 Client SDKs for DaprMQ's HTTP/gRPC API, one per language, each living alongside the language it's written in rather than under this shared `docs/` folder:
 
 - **[.NET](../sdks/dotnet/docs/CLIENT_SDK.md)** - `DaprMQ.Client` (`sdks/dotnet/`)
-- **[TypeScript](../sdks/typescript/docs/CLIENT_SDK.md)** - `daprmq-client` (`sdks/typescript/`)
+- **[TypeScript](../sdks/typescript/docs/CLIENT_SDK.md)** - `@daprmq/client` (`sdks/typescript/`)
 - **[Python](../sdks/python/docs/CLIENT_SDK.md)** - `daprmq-client` (`sdks/python/`)
-- **[Java](../sdks/java/docs/CLIENT_SDK.md)** - `com.daprmq:daprmq-client` (`sdks/java/`)
+- **[Java](../sdks/java/docs/CLIENT_SDK.md)** - `io.github.olitomlinson:daprmq-client` (`sdks/java/`)
 - **[Go](../sdks/go/docs/CLIENT_SDK.md)** - `github.com/olitomlinson/dapr-mq/sdks/go` (`sdks/go/`)
 
 Every SDK exposes the same shape: direct queue/session operations (`enqueue`, `dequeueLocked`/`dequeue_locked`, `acknowledge`, `acknowledgeBatch`/`acknowledge_batch`, `extendLock`/`extend_lock`, `nack`, `deadLetter`/`dead_letter`, `acceptSession`/`accept_session`, `renewSessionLease`/`renew_session_lease`, `releaseSession`/`release_session`) over REST, plus two gRPC streams and a managed consumer over each:

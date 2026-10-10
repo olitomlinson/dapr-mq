@@ -8,9 +8,9 @@ Not yet published to Maven Central. Reference the module directly:
 
 ```xml
 <dependency>
-  <groupId>com.daprmq</groupId>
+  <groupId>io.github.olitomlinson</groupId>
   <artifactId>daprmq-client</artifactId>
-  <version>0.1.0</version>
+  <version>0.0.0-alpha.0</version>
 </dependency>
 ```
 

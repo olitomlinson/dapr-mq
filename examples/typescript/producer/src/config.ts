@@ -1,4 +1,4 @@
-import { DaprMQClient } from "daprmq-client";
+import { DaprMQClient } from "@daprmq/client";
 import { LANGUAGE, ROLE } from "./constants.js";
 
 export interface DaprMQRuntimeConfig {
