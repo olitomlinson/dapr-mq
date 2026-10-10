@@ -3,7 +3,7 @@
 TypeScript client SDK for [DaprMQ](https://github.com/olitomlinson/dapr-mq), a FIFO queue built on Dapr actors.
 
 ```sh
-npm install @daprmq/client@next
+npm install @daprmq/client
 ```
 
 ```ts
@@ -13,7 +13,7 @@ const client = new DaprMQClient({ httpBaseUrl: "http://localhost:8002", grpcAddr
 await client.enqueue("orders", [{ item: { id: 1 } }]);
 ```
 
-DaprMQ is pre-release: versions are `0.0.0-alpha.N` and publish under the `next` dist-tag.
+DaprMQ is pre-release: versions are `0.0.0-alpha.N`, and `latest` is the newest of them until the first full release.
 
 See the [SDK guide](https://github.com/olitomlinson/dapr-mq/blob/main/sdks/typescript/docs/CLIENT_SDK.md) for
 consumers, sessions, retries and the full API. Licensed under Apache-2.0.

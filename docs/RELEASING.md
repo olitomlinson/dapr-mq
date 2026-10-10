@@ -32,7 +32,10 @@ Ecosystems that don't use SemVer pre-release syntax take the equivalent form:
 | PyPI (PEP 440) | `0.0.0a1` (`rc.N` -> `rcN`) |
 | Go | tag `sdks/go/v0.0.0-alpha.1` |
 
-Pre-releases never move the `latest` image tag. On npm they publish under the `next` dist-tag, not `latest`.
+Pre-releases never move the `latest` image tag. On npm, pre-releases publish to `latest` until the first full
+release exists, so a plain `npm install` gets the newest one. After that they publish to `next`. A publish can
+set only one dist-tag (trusted publishing can't run `npm dist-tag add`), so `next` stays at `0.0.0-alpha.1`
+until then.
 
 The versions checked into the repo stay at the placeholder `0.0.0-alpha.0` (`0.0.0a0` for Python). The release
 pipeline stamps the real version from the tag.
@@ -42,9 +45,9 @@ pipeline stamps the real version from the tag.
 `sdks/go/v0.1.0` was tagged before this scheme existed, and the Go module proxy keeps it forever. To keep
 `go get` from preferring it over the pre-releases, `sdks/go/go.mod` retracts `[v0.1.0, v0.1.1]`.
 
-The retraction only takes effect once it is published in a version higher than v0.1.0. So we tag
-`sdks/go/v0.1.1` once, on a commit that contains the retraction. That tag exists only to carry the retraction.
-After that, `@latest` resolves to the highest `v0.0.0-alpha.N`.
+The retraction only takes effect once it is published in a version higher than v0.1.0, so `sdks/go/v0.1.1`
+was tagged once (2026-10-10), on a commit that contains the retraction. That tag exists only to carry the
+retraction. `@latest` now resolves to the highest `v0.0.0-alpha.N`.
 
 ## Cutting a release
 
@@ -56,7 +59,8 @@ git push origin v0.0.0-alpha.1
 ```
 
 [release.yml](../.github/workflows/release.yml) then checks the tag format and that the commit is on `main`,
-stamps the version, runs the unit tests and publishes. So far only the npm package is wired up.
+stamps the version, runs the unit tests and publishes. So far npm and the Go module are wired up; the Go job
+pushes the `sdks/go/vX.Y.Z` tag on the same commit.
 
 ### npm
 
