@@ -32,10 +32,9 @@ Ecosystems that don't use SemVer pre-release syntax take the equivalent form:
 | PyPI (PEP 440) | `0.0.0a1` (`rc.N` -> `rcN`) |
 | Go | tag `sdks/go/v0.0.0-alpha.1` |
 
-Pre-releases never move the `latest` image tag. On npm, pre-releases publish to `latest` until the first full
-release exists, so a plain `npm install` gets the newest one. After that they publish to `next`. A publish can
-set only one dist-tag (trusted publishing can't run `npm dist-tag add`), so `next` stays at `0.0.0-alpha.1`
-until then.
+Pre-releases never move the `latest` image tag. On npm, pre-releases publish to `next`, and until the first
+full release exists `latest` follows them too, so a plain `npm install` gets the newest one. After that only
+full releases move `latest`. The trusted publisher is allowed to run `npm dist-tag` for this.
 
 The versions checked into the repo stay at the placeholder `0.0.0-alpha.0` (`0.0.0a0` for Python). The release
 pipeline stamps the real version from the tag.
@@ -64,8 +63,7 @@ pushes the `sdks/go/vX.Y.Z` tag on the same commit.
 
 ### npm
 
-The `npm` GitHub environment only accepts `v*` tags. Until trusted publishing is configured, the job uses the
-environment secret `NPM_TOKEN`; npm only allows trusted publishing on a package that already exists. After the
-first publish, configure `@daprmq/client` → Settings → Trusted Publisher (`olitomlinson/dapr-mq`,
-`release.yml`, environment `npm`). Then set publishing access to "Require 2FA and disallow tokens" and delete
-both the token and the secret.
+The `npm` GitHub environment only accepts `v*` tags. Publishing uses npm trusted publishing: `@daprmq/client`
+→ Settings → Trusted Publisher (`olitomlinson/dapr-mq`, `release.yml`, environment `npm`, allowed to publish
+and manage dist-tags). `NPM_TOKEN` was only needed for the first publish, because npm allows trusted publishing
+only on a package that already exists.
