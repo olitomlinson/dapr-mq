@@ -202,20 +202,20 @@ Legend: ✅ implemented and passing · ⬜ not yet
 | Profile | .NET | Python | TypeScript | Java |
 |---|:-:|:-:|:-:|:-:|
 | **pr** | | | | |
-| `enqueue` | ✅ | ⬜ | ⬜ | ⬜ |
-| `enqueue-hot` | ✅ | ⬜ | ⬜ | ⬜ |
-| `enqueue-batch` | ✅ | ⬜ | ⬜ | ⬜ |
-| `dequeue-ack` | ✅ | ⬜ | ⬜ | ⬜ |
-| `steady-drain` | ✅ | ⬜ | ⬜ | ⬜ |
-| `session-churn` | ✅ | ⬜ | ⬜ | ⬜ |
-| `deep-session` | ✅ | ⬜ | ⬜ | ⬜ |
-| `live-publish` | ✅ | ⬜ | ⬜ | ⬜ |
-| `sdk-defaults` | ✅ | ⬜ | ⬜ | ⬜ |
-| `queue-drain-instant` | ✅ | ⬜ | ⬜ | ⬜ |
-| `queue-drain` | ✅ | ⬜ | ⬜ | ⬜ |
-| `queue-drain-slow` | ✅ | ⬜ | ⬜ | ⬜ |
-| `queue-strict-order` | ✅ | ⬜ | ⬜ | ⬜ |
-| `queue-live-publish` | ✅ | ⬜ | ⬜ | ⬜ |
+| `enqueue` | ✅ | ✅ | ✅ | ✅ |
+| `enqueue-hot` | ✅ | ✅ | ✅ | ✅ |
+| `enqueue-batch` | ✅ | ✅ | ✅ | ✅ |
+| `dequeue-ack` | ✅ | ✅ | ✅ | ✅ |
+| `steady-drain` | ✅ | ✅ | ✅ | ✅ |
+| `session-churn` | ✅ | ✅ | ✅ | ✅ |
+| `deep-session` | ✅ | ✅ | ✅ | ✅ |
+| `live-publish` | ✅ | ✅ | ✅ | ✅ |
+| `sdk-defaults` | ✅ | ✅ | ✅ | ✅ |
+| `queue-drain-instant` | ✅ | ✅ | ✅ | ✅ |
+| `queue-drain` | ✅ | ✅ | ✅ | ✅ |
+| `queue-drain-slow` | ✅ | ✅ | ✅ | ✅ |
+| `queue-strict-order` | ✅ | ✅ | ✅ | ✅ |
+| `queue-live-publish` | ✅ | ✅ | ✅ | ✅ |
 | **extreme** | | | | |
 | `enqueue-ramp` | ⬜ | ⬜ | ⬜ | ⬜ |
 | `enqueue-hot-ramp` | ⬜ | ⬜ | ⬜ | ⬜ |
@@ -263,8 +263,6 @@ Built 2026-10-09: all three harnesses, their fixtures' perf topology, the shared
 and Java SDKs gained `session_idle_timeout_seconds`/`sessionIdleTimeoutSeconds` on the session
 consumer and stream along the way, which the P-04 profiles need.
 
-- [ ] **First CI runs** of the python, typescript and java jobs in [perf.yml](../../.github/workflows/perf.yml),
-  then tick their pr columns above.
 - [ ] **Run their extreme profiles** ([perf-extreme.yml](../../.github/workflows/perf-extreme.yml)), then tick them.
 - [ ] **Go.** The Go SDK arrived after this plan. Give it a harness the same way (its fixture is
   [sdks/go/integration](../go/integration/)), add `go` to the schema's `sdk.name` enum, and add a column above.
