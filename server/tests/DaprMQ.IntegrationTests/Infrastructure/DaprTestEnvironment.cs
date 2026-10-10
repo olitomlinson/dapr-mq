@@ -372,6 +372,7 @@ public class DaprTestEnvironment : IAsyncLifetime
         foreach (var app in _apiServerContainers)
         {
             var readyUrl = $"http://localhost:{app.GetMappedPublicPort(5000)}/health/ready";
+            string lastResult = "no response";
             while (true)
             {
                 try
@@ -381,12 +382,18 @@ public class DaprTestEnvironment : IAsyncLifetime
                     {
                         break;
                     }
+                    lastResult = $"HTTP {(int)response.StatusCode} {await response.Content.ReadAsStringAsync()}";
                 }
-                catch (HttpRequestException) { }
+                catch (HttpRequestException ex)
+                {
+                    lastResult = ex.Message;
+                }
 
                 if (DateTime.UtcNow >= deadline)
                 {
-                    throw new TimeoutException($"Replica did not report ready at {readyUrl} within {timeout}.");
+                    throw new TimeoutException(
+                        $"Replica did not report ready at {readyUrl} within {timeout} (last: {lastResult}).\n" +
+                        await DescribeStartupAsync(app));
                 }
 
                 await Task.Delay(250);
@@ -447,6 +454,36 @@ public class DaprTestEnvironment : IAsyncLifetime
     public Task StopPlacementAsync() => _daprPlacementContainer!.StopAsync();
 
     public Task StartPlacementAsync() => _daprPlacementContainer!.StartAsync();
+
+    /// <summary>
+    /// What a replica that never became ready was doing: its own log and every sidecar's (whose
+    /// app it belongs to isn't tracked, and there are only a few), plus each sidecar's actor
+    /// runtime view, which is what readiness is decided on.
+    /// </summary>
+    private async Task<string> DescribeStartupAsync(IContainer stuckApp)
+    {
+        var report = new System.Text.StringBuilder();
+        report.AppendLine($"--- app {stuckApp.Name} (tail) ---");
+        report.AppendLine(await DockerAsync($"logs --tail 60 {stuckApp.Id}"));
+
+        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        foreach (var sidecar in _daprSidecarContainers)
+        {
+            report.AppendLine($"--- sidecar {sidecar.Name} (tail) ---");
+            report.AppendLine(await DockerAsync($"logs --tail 60 {sidecar.Id}"));
+            try
+            {
+                var metadata = await client.GetStringAsync($"http://localhost:{sidecar.GetMappedPublicPort(3500)}/v1.0/metadata");
+                report.AppendLine($"metadata: {metadata}");
+            }
+            catch (Exception ex)
+            {
+                report.AppendLine($"metadata: unavailable ({ex.Message})");
+            }
+        }
+
+        return report.ToString();
+    }
 
     private static async Task<string> DockerAsync(string arguments)
     {
