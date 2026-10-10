@@ -75,8 +75,21 @@ jobs:
       - name: Unit tests
         run: npm test
 
-      # Pre-releases go to the `next` dist-tag so `npm install @daprmq/client` never picks one up by accident.
+      # Until the first full release, pre-releases are all there is, so they go to `latest` and a plain
+      # `npm install @daprmq/client` gets the newest one. After that, pre-releases go to `next`.
+      # One publish sets one dist-tag: trusted publishing can't run `npm dist-tag add`.
+      - name: Choose dist-tag
+        id: tag
+        run: |
+          # A failed lookup fails the job rather than risk moving `latest` to a pre-release.
+          versions=$(npm view @daprmq/client versions --json)
+          if [[ '${{ needs.version.outputs.prerelease }}' == 'false' ]]; then tag=latest
+          elif jq -e 'if type == "array" then . else [.] end | any(contains("-") | not)' <<< "$versions" >/dev/null; then tag=next
+          else tag=latest; fi
+          echo "dist-tag: $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
       - name: Publish
-        run: npm publish --provenance --tag ${{ needs.version.outputs.prerelease == 'true' && 'next' || 'latest' }}
+        run: npm publish --provenance --tag ${{ steps.tag.outputs.tag }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

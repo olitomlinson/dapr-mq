@@ -32,7 +32,10 @@ Ecosystems that don't use SemVer pre-release syntax take the equivalent form:
 | PyPI (PEP 440) | `0.0.0a1` (`rc.N` -> `rcN`) |
 | Go | tag `sdks/go/v0.0.0-alpha.1` |
 
-Pre-releases never move the `latest` image tag. On npm they publish under the `next` dist-tag, not `latest`.
+Pre-releases never move the `latest` image tag. On npm, pre-releases publish to `latest` until the first full
+release exists, so a plain `npm install` gets the newest one. After that they publish to `next`. A publish can
+set only one dist-tag (trusted publishing can't run `npm dist-tag add`), so `next` stays at `0.0.0-alpha.1`
+until then.
 
 The versions checked into the repo stay at the placeholder `0.0.0-alpha.0` (`0.0.0a0` for Python). The release
 pipeline stamps the real version from the tag.
