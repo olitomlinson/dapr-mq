@@ -532,6 +532,48 @@ public class QueueActorLockExpiryTests
         Assert.False(metadata.Queues.ContainsKey(1));
     }
 
+    /// <summary>
+    /// A failed DLQ enqueue leaves the lock for a later sweep - so the lock has to stay findable:
+    /// still in its expiry bucket, the bucket still in metadata, and still counted. Dropping any of
+    /// those orphans the lock key and loses the item.
+    /// </summary>
+    [Fact]
+    public async Task Sweep_DeadLetterFailure_KeepsTheLockIndexedAndCounted_AndALaterSweepRetries()
+    {
+        var (actor, state, invoker) = await CreateActorWithInvokerAsync(
+            lockConfig: new LockConfig { MaxDeliveryCount = 2, SweepBatchSize = 200 });
+
+        double expiresAt = Now() - 10;
+        SeedLock(state, "lockaaaaaaa", expiresAt, "{\"id\":\"A\"}");
+        state["lockaaaaaaa-lock"] = ((LockState)state["lockaaaaaaa-lock"]) with { DeliveryCount = 2 };
+
+        invoker.Setup(i => i.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
+                It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<EnqueueRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new EnqueueResponse { Success = false });
+
+        await actor.Dequeue(new DequeueRequest { Count = 0 });
+
+        Assert.True(state.ContainsKey("lockaaaaaaa-lock"));
+        Assert.Contains("lockaaaaaaa", (List<string>)state[BucketKey(expiresAt)]);
+        var metadata = (ActorMetadata)state["metadata"];
+        Assert.Equal(1, metadata.LockCount);
+        Assert.Contains(BucketFor(expiresAt), metadata.LockExpiryBuckets);
+
+        invoker.Setup(i => i.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
+                It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<EnqueueRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new EnqueueResponse { Success = true });
+
+        await actor.Dequeue(new DequeueRequest { Count = 0 });
+
+        invoker.Verify(i => i.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
+            It.Is<ActorId>(id => id.GetId() == "test-queue-deadletter"),
+            "Enqueue",
+            It.IsAny<EnqueueRequest>(),
+            It.IsAny<CancellationToken>()), Times.Exactly(2));
+        Assert.False(state.ContainsKey("lockaaaaaaa-lock"));
+        Assert.Equal(0, ((ActorMetadata)state["metadata"]).LockCount);
+    }
+
     [Fact]
     public async Task DequeueLocked_IndexesWholeBatchInOneExpiryBucket()
     {
@@ -1070,6 +1112,44 @@ public class QueueActorLockExpiryTests
             AllowCompetingConsumers = true
         });
         Assert.Equal(1, ((LockState)state[$"{locked.Items[0].LockId}-lock"]).DeliveryCount);
+    }
+
+    /// <summary>
+    /// Session form of Sweep_DeadLetterFailure_...: the reclaim must not drop a lock from
+    /// "locks_session" or LockCount until its DLQ enqueue has actually succeeded.
+    /// </summary>
+    [Fact]
+    public async Task LapsedSessionLease_DeadLetterFailure_KeepsTheLockIndexedAndCounted_AndALaterReclaimRetries()
+    {
+        var (actor, state, invoker) = await CreateActorWithInvokerAsync(
+            actorId: SessionActorId,
+            lockConfig: new LockConfig { MaxDeliveryCount = 0, SweepBatchSize = 200 });
+        await EnqueueAsync(actor, "{\"id\":\"A\"}");
+
+        var locked = await LeaseAndLockAsync(actor, "lease-1", Now() + 60, 1);
+        var lockId = locked.Items[0].LockId;
+        LapseLease(state);
+
+        invoker.Setup(i => i.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
+                It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<EnqueueRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new EnqueueResponse { Success = false });
+
+        await actor.SetSessionLease(new SetSessionLeaseRequest { LeaseId = "lease-2", ExpiresAt = Now() + 60 });
+
+        Assert.True(state.ContainsKey($"{lockId}-lock"));
+        Assert.Equal([lockId], Assert.IsType<List<string>>(state["locks_session"]));
+        Assert.Equal(1, ((ActorMetadata)state["metadata"]).LockCount);
+
+        invoker.Setup(i => i.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
+                It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<EnqueueRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new EnqueueResponse { Success = true });
+        LapseLease(state);
+
+        await actor.SetSessionLease(new SetSessionLeaseRequest { LeaseId = "lease-3", ExpiresAt = Now() + 60 });
+
+        Assert.False(state.ContainsKey($"{lockId}-lock"));
+        Assert.False(state.ContainsKey("locks_session"));
+        Assert.Equal(0, ((ActorMetadata)state["metadata"]).LockCount);
     }
 
     [Fact]
