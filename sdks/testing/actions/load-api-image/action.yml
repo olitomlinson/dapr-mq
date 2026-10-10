@@ -1,5 +1,8 @@
-name: Load daprmq-api image
-description: Downloads the daprmq-api image artifact built by the build-image job and loads it into the local Docker daemon.
+name: Load test images
+description: >
+  Downloads the daprmq-api image artifact built by the build-image job and loads it into the local
+  Docker daemon, then pulls the stack's third-party images one at a time (with retries), so the
+  Testcontainers fixtures find them locally instead of all pulling at once when tests start.
 
 runs:
   using: composite
@@ -10,3 +13,25 @@ runs:
     - name: Load image
       shell: bash
       run: docker load -i daprmq-api.tar
+
+    # ECR Public and GHCR throttle bursts of anonymous pulls ("toomanyrequests: Rate exceeded"),
+    # which parallel fixtures starting together trigger. Keep in step with the fixtures' images
+    # (sdks/testing/INTEGRATION_TESTS.md).
+    - name: Pull stack images
+      shell: bash
+      run: |
+        images=(
+          ghcr.io/dapr/dapr:1.18.4
+          ghcr.io/dapr/daprd:1.18.4
+          public.ecr.aws/docker/library/postgres:16.2-alpine
+          public.ecr.aws/docker/library/nginx:1.27-alpine
+          mirror.gcr.io/wiremock/wiremock:3.3.1
+        )
+        for image in "${images[@]}"; do
+          for attempt in 1 2 3 4 5; do
+            docker pull -q "$image" && break
+            [[ $attempt == 5 ]] && exit 1
+            echo "Pull of $image failed (attempt $attempt); retrying"
+            sleep $((attempt * 5))
+          done
+        done

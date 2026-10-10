@@ -62,6 +62,14 @@ class SessionStreamTest {
     }
 
     @Test
+    void sendsTheSessionIdleTimeoutOnTheStartFrame() {
+        newStream(new ConsumeSessionOptions(null, 30, 1, 5));
+
+        assertEquals(5, requestObserver.sent.get(0).getStart().getSessionIdleTimeoutSeconds());
+        assertEquals(0, new ConsumeSessionOptions(null, 30, 1).sessionIdleTimeoutSeconds());
+    }
+
+    @Test
     void deliversItemsAfterSessionAssignedAndAcksWriteToTheStream() {
         SessionStream stream = newStream(ConsumeSessionOptions.defaults());
 

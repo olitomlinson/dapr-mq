@@ -1,0 +1,31 @@
+{
+  "$comment": "Every profile's scenario id, name, scale and key, as sdks/testing/PERFORMANCE_TESTS.md defines them. Each SDK harness's unit tests check their profiles against this file, so keys line up on the cross-SDK report.",
+  "profiles": {
+    "enqueue": { "id": "P-01", "name": "enqueue", "scale": "pr", "key": "enqueue:c8/q8/b1/256B/3+15s" },
+    "enqueue-hot": { "id": "P-01", "name": "enqueue", "scale": "pr", "key": "enqueue:c8/q1/b1/256B/3+15s" },
+    "enqueue-batch": { "id": "P-02", "name": "enqueue-batch", "scale": "pr", "key": "enqueue-batch:c4/q4/b100/256B/3+15s" },
+    "dequeue-ack": { "id": "P-03", "name": "dequeue-ack", "scale": "pr", "key": "dequeue-ack:c8/q8/k1/seed4000/256B/3+15s" },
+    "steady-drain": { "id": "P-04", "name": "session-drain", "scale": "pr", "key": "200x20@100ms/20slots+idle1s" },
+    "session-churn": { "id": "P-04", "name": "session-drain", "scale": "pr", "key": "300x2@50ms/20slots+idle1s" },
+    "deep-session": { "id": "P-04", "name": "session-drain", "scale": "pr", "key": "4x1000@10ms/4slots+idle1s" },
+    "live-publish": { "id": "P-04", "name": "session-drain", "scale": "pr", "key": "20x50@100ms/20slots+concurrent+pub200ms~100ms+idle1s" },
+    "sdk-defaults": { "id": "P-04", "name": "session-drain", "scale": "pr", "key": "40x5@1000ms/20slots" },
+    "queue-drain-instant": { "id": "P-05", "name": "queue-drain", "scale": "pr", "key": "queue:4000@0ms/active100" },
+    "queue-drain": { "id": "P-05", "name": "queue-drain", "scale": "pr", "key": "queue:4000@10ms/active100" },
+    "queue-drain-slow": { "id": "P-05", "name": "queue-drain", "scale": "pr", "key": "queue:3000@100ms/active100" },
+    "queue-strict-order": { "id": "P-05", "name": "queue-drain", "scale": "pr", "key": "queue:300@0ms/active100+strict" },
+    "queue-live-publish": { "id": "P-05", "name": "queue-drain", "scale": "pr", "key": "queue:50@10ms/active100+pub200ms~100ms" },
+    "enqueue-ramp": { "id": "P-01", "name": "enqueue", "scale": "extreme", "key": "enqueue:c1,2,4,8,16,32,64,128,256/q=c/b1/256B/5+30s" },
+    "enqueue-hot-ramp": { "id": "P-01", "name": "enqueue", "scale": "extreme", "key": "enqueue:c1,2,4,8,16,32,64/q1/b1/256B/5+30s" },
+    "enqueue-batch-ramp": { "id": "P-02", "name": "enqueue-batch", "scale": "extreme", "key": "enqueue-batch:c1,2,4,8,16,32,64/q=c/b100/256B/5+30s" },
+    "dequeue-ack-ramp": { "id": "P-03", "name": "dequeue-ack", "scale": "extreme", "key": "dequeue-ack:c1,2,4,8,16,32,64,128,256/q=c/k1/seed12000/256B/5+30s" },
+    "full": { "id": "P-04", "name": "session-drain", "scale": "extreme", "key": "1000x100@1000ms/20slots" },
+    "wide-drain": { "id": "P-04", "name": "session-drain", "scale": "extreme", "key": "2000x10@50ms/200slots+idle1s" },
+    "queue-drain-large": { "id": "P-05", "name": "queue-drain", "scale": "extreme", "key": "queue:50000@10ms/active500" },
+    "queue-drain-tail": { "id": "P-05", "name": "queue-drain", "scale": "extreme", "key": "queue:2000@100ms/active100+tail5000ms/20" }
+  },
+  "suites": {
+    "pr": ["enqueue", "enqueue-hot", "enqueue-batch", "dequeue-ack", "steady-drain", "session-churn", "deep-session", "live-publish", "sdk-defaults", "queue-drain-instant", "queue-drain", "queue-drain-slow", "queue-strict-order", "queue-live-publish"],
+    "extreme": ["enqueue-ramp", "enqueue-hot-ramp", "enqueue-batch-ramp", "dequeue-ack-ramp", "full", "wide-drain", "queue-drain-large", "queue-drain-tail"]
+  }
+}

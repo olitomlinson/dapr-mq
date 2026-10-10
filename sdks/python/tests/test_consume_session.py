@@ -47,6 +47,17 @@ async def test_yields_a_delivered_item_and_ack_writes_an_ack_frame() -> None:
     assert call.written[1].ack.lock_id == "L1"
 
 
+async def test_forwards_session_idle_timeout_seconds_on_the_start_frame() -> None:
+    call = FakeStreamStreamCall()
+    client = make_client(call)
+    call.emit_end()
+
+    async for _ in client.consume_session("q", session_idle_timeout_seconds=5):
+        pass
+
+    assert call.written[0].start.session_idle_timeout_seconds == 5
+
+
 async def test_throws_the_mapped_exception_on_an_error_frame() -> None:
     call = FakeStreamStreamCall()
     client = make_client(call)

@@ -26,7 +26,7 @@ can put the SDKs side by side.
 Each SDK's own Testcontainers fixture builds the perf stack. It's the integration stack
 ([INTEGRATION_TESTS.md](INTEGRATION_TESTS.md)) with these changes:
 
-- **Scheduler HA.** Three `daprio/dapr:1.18.4` containers, aliases `dapr-scheduler-0..2`, each run as
+- **Scheduler HA.** Three `ghcr.io/dapr/dapr:1.18.4` containers, aliases `dapr-scheduler-0..2`, each run as
   `./scheduler --port 50006 --id dapr-scheduler-<i> --etcd-initial-cluster dapr-scheduler-0=http://dapr-scheduler-0:2380,dapr-scheduler-1=http://dapr-scheduler-1:2380,dapr-scheduler-2=http://dapr-scheduler-2:2380 --etcd-client-listen-address 0.0.0.0 --etcd-data-dir /tmp/etcd --override-broadcast-host-port dapr-scheduler-<i>:50006`.
   Every daprd gets `--scheduler-host-address dapr-scheduler-0:50006,dapr-scheduler-1:50006,dapr-scheduler-2:50006`.
   This matches production. Placement stays as one container, since Dapr 1.19 folds it into the scheduler.
@@ -34,7 +34,7 @@ Each SDK's own Testcontainers fixture builds the perf stack. It's the integratio
   (`--app-channel-address api-server-<i>`, same `--app-id daprmq-api`). The API server's
   `DAPR_HTTP_ENDPOINT`/`DAPR_GRPC_ENDPOINT` point at its own sidecar. Dapr spreads queue actors across
   the replicas.
-- **Load balancer** (whenever replicas > 1). `nginx:1.27-alpine`, alias `api-lb`. Port 5000 proxies
+- **Load balancer** (whenever replicas > 1). `public.ecr.aws/docker/library/nginx:1.27-alpine`, alias `api-lb`. Port 5000 proxies
   REST and port 5001 (`listen 5001 http2`) uses `grpc_pass` to every replica. Read/send timeouts are
   1 h so `ConsumeSession` streams survive. The SDK connects to the LB, and waits for the stack by polling a
   probe enqueue through it.
@@ -158,6 +158,10 @@ Defined by [perf/result.schema.json](perf/result.schema.json) (schema version 2)
 regression checks by `(environment.label, topology.apiReplicas, scenario.key)`. The report puts
 different `sdk` values on the same chart.
 
+Every profile's scenario ID, name, scale and `key` are also listed in
+[perf/profiles.json](perf/profiles.json). Each harness's unit tests (the .NET one included) check
+their profiles against it, so a key that drifts in one language fails that SDK's tests.
+
 The report and regression check come from one tool,
 [perf/DaprMQ.PerfReport](perf/DaprMQ.PerfReport/), whatever language produced the results:
 
@@ -166,6 +170,31 @@ dotnet run --project sdks/testing/perf/DaprMQ.PerfReport -- report --results per
 dotnet run --project sdks/testing/perf/DaprMQ.PerfReport -- check  --results perf-results --sdk python --runs <runId>,<runId> [--gate]
 ```
 
+## Running a harness
+
+Every harness starts its own throwaway stack (build the API image first with
+`./build-and-test.sh --skip-tests`), writes to `<repo>/perf-results/sdk-<sdk>/` by default, and
+then calls the .NET report tool for `report.html` and the regression table. They take the same flags:
+`--suite pr|extreme`, `--profile NAME`, `--api-replicas N`, `--env-label NAME`, `--out DIR`,
+`--http URL --grpc URL` (an existing server instead of Testcontainers), `--gate` and `--baseline-branch B`.
+
+| SDK | Run (from the SDK's directory) | Harness | Unit tests |
+|---|---|---|---|
+| .NET | `dotnet run -c Release --project perf/DaprMQ.Client.Perf -- --suite pr` | [perf/DaprMQ.Client.Perf](../dotnet/perf/DaprMQ.Client.Perf/) | `dotnet test tests/DaprMQ.Client.Perf.Tests` |
+| Python | `python -m perf --suite pr` | [perf/](../python/perf/) | `pytest perf/tests` |
+| TypeScript | `npm run perf -- --suite pr` | [perf/](../typescript/perf/) | `npx vitest run perf` (also part of `npm test`) |
+| Java | `mvn -q -Pperf test-compile exec:exec -Dperf.args="--suite pr"` | [src/test/java/.../perf](../java/src/test/java/com/daprmq/client/perf/) | `mvn test` |
+
+Each SDK's integration fixture builds the perf topology behind an option, so integration runs keep
+the single-instance stack: `DaprTopology.perf(n)` in
+[tests/integration/stack.py](../python/tests/integration/stack.py),
+[tests/integration/daprmqServer.ts](../typescript/tests/integration/daprmqServer.ts) and
+[DaprTopology.java](../java/src/test/java/com/daprmq/client/integration/DaprTopology.java).
+
+The Java session drain times streams with `RecordingSessionClient`, which sits in package
+`com.daprmq.client` (test sources) because `SessionStream` is only built through a package-private
+stream factory.
+
 ## Coverage matrix
 
 Legend: ✅ implemented and passing · ⬜ not yet
@@ -173,20 +202,20 @@ Legend: ✅ implemented and passing · ⬜ not yet
 | Profile | .NET | Python | TypeScript | Java |
 |---|:-:|:-:|:-:|:-:|
 | **pr** | | | | |
-| `enqueue` | ✅ | ⬜ | ⬜ | ⬜ |
-| `enqueue-hot` | ✅ | ⬜ | ⬜ | ⬜ |
-| `enqueue-batch` | ✅ | ⬜ | ⬜ | ⬜ |
-| `dequeue-ack` | ✅ | ⬜ | ⬜ | ⬜ |
-| `steady-drain` | ✅ | ⬜ | ⬜ | ⬜ |
-| `session-churn` | ✅ | ⬜ | ⬜ | ⬜ |
-| `deep-session` | ✅ | ⬜ | ⬜ | ⬜ |
-| `live-publish` | ✅ | ⬜ | ⬜ | ⬜ |
-| `sdk-defaults` | ✅ | ⬜ | ⬜ | ⬜ |
-| `queue-drain-instant` | ✅ | ⬜ | ⬜ | ⬜ |
-| `queue-drain` | ✅ | ⬜ | ⬜ | ⬜ |
-| `queue-drain-slow` | ✅ | ⬜ | ⬜ | ⬜ |
-| `queue-strict-order` | ✅ | ⬜ | ⬜ | ⬜ |
-| `queue-live-publish` | ✅ | ⬜ | ⬜ | ⬜ |
+| `enqueue` | ✅ | ✅ | ✅ | ✅ |
+| `enqueue-hot` | ✅ | ✅ | ✅ | ✅ |
+| `enqueue-batch` | ✅ | ✅ | ✅ | ✅ |
+| `dequeue-ack` | ✅ | ✅ | ✅ | ✅ |
+| `steady-drain` | ✅ | ✅ | ✅ | ✅ |
+| `session-churn` | ✅ | ✅ | ✅ | ✅ |
+| `deep-session` | ✅ | ✅ | ✅ | ✅ |
+| `live-publish` | ✅ | ✅ | ✅ | ✅ |
+| `sdk-defaults` | ✅ | ✅ | ✅ | ✅ |
+| `queue-drain-instant` | ✅ | ✅ | ✅ | ✅ |
+| `queue-drain` | ✅ | ✅ | ✅ | ✅ |
+| `queue-drain-slow` | ✅ | ✅ | ✅ | ✅ |
+| `queue-strict-order` | ✅ | ✅ | ✅ | ✅ |
+| `queue-live-publish` | ✅ | ✅ | ✅ | ✅ |
 | **extreme** | | | | |
 | `enqueue-ramp` | ⬜ | ⬜ | ⬜ | ⬜ |
 | `enqueue-hot-ramp` | ⬜ | ⬜ | ⬜ | ⬜ |
@@ -199,9 +228,10 @@ Legend: ✅ implemented and passing · ⬜ not yet
 
 ## Remaining work
 
-Status as of 2026-10-05. Phase 1 is done: this spec, the result schema, the report tool, the .NET perf
+Status as of 2026-10-09. Phase 1 is done: this spec, the result schema, the report tool, the .NET perf
 topology and harness, both workflows, and the old `server/tests/DaprMQ.PerformanceTests` deleted.
-Everything below is still open. Tick or delete items as they land.
+Phase 2's Python, TypeScript and Java harnesses are built. The items below are still open. Tick or
+delete them as they land.
 
 ### Phase 1 follow-ups (.NET)
 
@@ -227,48 +257,15 @@ Everything below is still open. Tick or delete items as they land.
 
 ### Phase 2: Python, TypeScript and Java harnesses
 
-The user chose to give **each SDK's own Testcontainers fixture** the perf topology, rather than
-sharing the .NET launcher. Port [DaprTopology.cs](../../server/tests/DaprMQ.IntegrationTests/Infrastructure/DaprTopology.cs)
-and the replica, load balancer and scheduler parts of
-[DaprTestEnvironment.cs](../../server/tests/DaprMQ.IntegrationTests/Infrastructure/DaprTestEnvironment.cs)
-(`StartReplicaAsync`, the nginx container, per-replica readiness) into each fixture, behind an option, so
-integration runs keep the single-instance stack. The exact container commands are in
-[Scales and topology](#scales-and-topology).
+Built 2026-10-09: all three harnesses, their fixtures' perf topology, the shared
+[perf/profiles.json](perf/profiles.json), and their jobs in both workflows (see
+[Running a harness](#running-a-harness)). Every pr profile passes locally in all three. The Python
+and Java SDKs gained `session_idle_timeout_seconds`/`sessionIdleTimeoutSeconds` on the session
+consumer and stream along the way, which the P-04 profiles need.
 
-For each SDK:
-
-1. **Fixture:** add a perf-topology option (`apiReplicas`, scheduler HA always on for perf). Fixtures:
-   - Python: [tests/integration/conftest.py](../python/tests/integration/conftest.py)
-   - TypeScript: [tests/integration/daprmqServer.ts](../typescript/tests/integration/daprmqServer.ts)
-   - Java: [DaprMQServer.java](../java/src/test/java/com/daprmq/client/integration/DaprMQServer.java)
-2. **Harness:** a runnable entry point, e.g. `sdks/python/perf/`, `sdks/typescript/perf/`,
-   `sdks/java/perf` (a Maven profile or a separate module). It should:
-   - take the same flags as .NET where they apply: `--suite pr|extreme`, `--profile`,
-     `--api-replicas`, `--env-label`, `--out` (default `<repo>/perf-results`), `--http/--grpc`
-   - run the closed-loop load profiles (P-01..P-03, including ramps), the P-04 session drain and the
-     P-05 queue drain, using
-     the parameters in the tables above. The .NET code is the reference implementation:
-     [LoadScenario.cs](../dotnet/perf/DaprMQ.Client.Perf/LoadScenario.cs),
-     [LoadMetrics.cs](../dotnet/perf/DaprMQ.Client.Perf/LoadMetrics.cs) (window, buckets,
-     nearest-rank percentiles), [SessionDrainScenario.cs](../dotnet/perf/DaprMQ.Client.Perf/SessionDrainScenario.cs),
-     [SessionDrainMetrics.cs](../dotnet/perf/DaprMQ.Client.Perf/SessionDrainMetrics.cs),
-     [RecordingDaprMQClient.cs](../dotnet/perf/DaprMQ.Client.Perf/RecordingDaprMQClient.cs),
-     [QueueDrainScenario.cs](../dotnet/perf/DaprMQ.Client.Perf/QueueDrainScenario.cs),
-     [QueueDrainMetrics.cs](../dotnet/perf/DaprMQ.Client.Perf/QueueDrainMetrics.cs)
-   - write schema-2 records to `<out>/sdk-<sdk>/` exactly as
-     [RunRecords.cs](../dotnet/perf/DaprMQ.Client.Perf/RunRecords.cs) does: same `runId` format, same
-     `scenario.key` strings (the report groups SDKs by key, so a different key won't line up), and
-     `checks` for errors, drained queues, and missing or out-of-order messages
-   - exit 1 on failed checks, then call
-     `dotnet run --project sdks/testing/perf/DaprMQ.PerfReport -- check --results <out> --runs <ids>`
-     for the regression table
-   - unit-test the pure parts (metrics and key strings) the way the .NET tests do. Matching key strings
-     across languages is the easiest thing to get wrong.
-3. **CI:** in both workflows, copy the `dotnet` job for each SDK. Add a paths-filter entry to
-   perf.yml's `changes` job, an input toggle to perf-extreme.yml, set up the SDK's toolchain (it still
-   needs .NET for `check`), upload `perf-results/sdk-<sdk>` as `perf-sdk-<sdk>`, and add the job to
-   `publish.needs`. The publish action already merges every `perf-sdk-*` artifact.
-4. Tick the SDK's column in the coverage matrix.
+- [ ] **Run their extreme profiles** ([perf-extreme.yml](../../.github/workflows/perf-extreme.yml)), then tick them.
+- [ ] **Go.** The Go SDK arrived after this plan. Give it a harness the same way (its fixture is
+  [sdks/go/integration](../go/integration/)), add `go` to the schema's `sdk.name` enum, and add a column above.
 
 ### Phase 3: extreme extras
 

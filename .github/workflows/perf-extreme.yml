@@ -16,7 +16,7 @@ on:
         required: false
         default: '3'
       profiles:
-        description: 'Space-separated extreme profiles, or "all" (enqueue-ramp enqueue-hot-ramp enqueue-batch-ramp dequeue-ack-ramp full wide-drain)'
+        description: 'Space-separated extreme profiles, or "all" (enqueue-ramp enqueue-hot-ramp enqueue-batch-ramp dequeue-ack-ramp full wide-drain queue-drain-large queue-drain-tail)'
         required: false
         default: 'all'
       runner:
@@ -25,6 +25,18 @@ on:
         default: 'ubuntu-latest'
       dotnet:
         description: 'Run the .NET SDK'
+        type: boolean
+        default: true
+      python:
+        description: 'Run the Python SDK'
+        type: boolean
+        default: true
+      typescript:
+        description: 'Run the TypeScript SDK'
+        type: boolean
+        default: true
+      java:
+        description: 'Run the Java SDK'
         type: boolean
         default: true
       publish:
@@ -40,6 +52,12 @@ concurrency:
   # with the pr workflow safely.
   group: perf-extreme
   cancel-in-progress: false
+
+# Testcontainers' reaper (ryuk) only lives on Docker Hub, whose anonymous pull limit the runners
+# share; the test images themselves come from other registries (sdks/testing/INTEGRATION_TESTS.md).
+# Runners are discarded after each job, so there's nothing for ryuk to clean up.
+env:
+  TESTCONTAINERS_RYUK_DISABLED: 'true'
 
 jobs:
   build-image:
@@ -104,9 +122,162 @@ jobs:
           path: perf-results/sdk-dotnet
           if-no-files-found: ignore
 
+  python:
+    name: Python SDK
+    needs: build-image
+    if: inputs.python
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./sdks/testing/actions/load-api-image
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install SDK
+        working-directory: sdks/python
+        run: pip install -e '.[dev]'
+
+      - uses: ./sdks/testing/actions/checkout-perf-results
+
+      - name: Run extreme profiles
+        working-directory: sdks/python
+        env:
+          PROFILES: ${{ inputs.profiles }}
+          REPLICAS: ${{ inputs.api_replicas }}
+          ENV_LABEL: ci-${{ inputs.runner }}
+        run: |
+          perf() { python -m perf $1; }
+          common="--env-label $ENV_LABEL --out ../../perf-results --api-replicas $REPLICAS"
+          if [[ "$PROFILES" == "all" ]]; then
+            perf "--suite extreme $common"
+          else
+            status=0
+            for profile in $PROFILES; do
+              perf "--profile $profile $common" || status=$?
+            done
+            exit $status
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: perf-sdk-python
+          path: perf-results/sdk-python
+          if-no-files-found: ignore
+
+  typescript:
+    name: TypeScript SDK
+    needs: build-image
+    if: inputs.typescript
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./sdks/testing/actions/load-api-image
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: sdks/typescript/package-lock.json
+
+      - name: Install SDK
+        working-directory: sdks/typescript
+        run: npm ci
+
+      - uses: ./sdks/testing/actions/checkout-perf-results
+
+      - name: Run extreme profiles
+        working-directory: sdks/typescript
+        env:
+          PROFILES: ${{ inputs.profiles }}
+          REPLICAS: ${{ inputs.api_replicas }}
+          ENV_LABEL: ci-${{ inputs.runner }}
+        run: |
+          perf() { npm run perf -- $1; }
+          common="--env-label $ENV_LABEL --out ../../perf-results --api-replicas $REPLICAS"
+          if [[ "$PROFILES" == "all" ]]; then
+            perf "--suite extreme $common"
+          else
+            status=0
+            for profile in $PROFILES; do
+              perf "--profile $profile $common" || status=$?
+            done
+            exit $status
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: perf-sdk-typescript
+          path: perf-results/sdk-typescript
+          if-no-files-found: ignore
+
+  java:
+    name: Java SDK
+    needs: build-image
+    if: inputs.java
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./sdks/testing/actions/load-api-image
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - uses: ./sdks/testing/actions/checkout-perf-results
+
+      - name: Run extreme profiles
+        working-directory: sdks/java
+        env:
+          PROFILES: ${{ inputs.profiles }}
+          REPLICAS: ${{ inputs.api_replicas }}
+          ENV_LABEL: ci-${{ inputs.runner }}
+        run: |
+          perf() { mvn -B -q -Pperf test-compile exec:exec -Dperf.args="$1"; }
+          common="--env-label $ENV_LABEL --out ../../perf-results --api-replicas $REPLICAS"
+          if [[ "$PROFILES" == "all" ]]; then
+            perf "--suite extreme $common"
+          else
+            status=0
+            for profile in $PROFILES; do
+              perf "--profile $profile $common" || status=$?
+            done
+            exit $status
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: perf-sdk-java
+          path: perf-results/sdk-java
+          if-no-files-found: ignore
+
   publish:
     name: Report and publish
-    needs: [dotnet]
+    needs: [dotnet, python, typescript, java]
     if: ${{ !cancelled() && (contains(needs.*.result, 'success') || contains(needs.*.result, 'failure')) }}
     runs-on: ubuntu-latest
     steps:

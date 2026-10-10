@@ -105,7 +105,7 @@ func startStack(ctx context.Context, apiImage string) (stop func(), err error) {
 	componentsDir := filepath.Join(filepath.Dir(thisFile), "../../../server/tests/DaprMQ.IntegrationTests/dapr-components")
 
 	if _, err := start("postgres-db", testcontainers.ContainerRequest{
-		Image: "postgres:16.2-alpine",
+		Image: "public.ecr.aws/docker/library/postgres:16.2-alpine",
 		Env:   map[string]string{"POSTGRES_DB": "actor_state", "POSTGRES_USER": "postgres", "POSTGRES_PASSWORD": postgresPassword},
 		WaitingFor: wait.ForExec([]string{"pg_isready", "-U", "postgres", "-d", "actor_state"}).
 			WithStartupTimeout(startupTimeout),
@@ -113,13 +113,13 @@ func startStack(ctx context.Context, apiImage string) (stop func(), err error) {
 		return stop, err
 	}
 	if _, err := start("dapr-placement", testcontainers.ContainerRequest{
-		Image: "daprio/dapr:" + daprVersion,
+		Image: "ghcr.io/dapr/dapr:" + daprVersion,
 		Cmd:   []string{"./placement", "-port", "50005"},
 	}); err != nil {
 		return stop, err
 	}
 	if _, err := start("dapr-scheduler", testcontainers.ContainerRequest{
-		Image: "daprio/dapr:" + daprVersion,
+		Image: "ghcr.io/dapr/dapr:" + daprVersion,
 		Cmd:   []string{"./scheduler", "--port", "50006", "--log-level", "info", "--etcd-data-dir", "/data/dapr-scheduler"},
 		HostConfigModifier: func(hc *container.HostConfig) {
 			hc.Binds = append(hc.Binds, schedulerDir+":/data/dapr-scheduler:rw")
@@ -146,7 +146,7 @@ func startStack(ctx context.Context, apiImage string) (stop func(), err error) {
 		return stop, err
 	}
 	if _, err := start("dapr-sidecar", testcontainers.ContainerRequest{
-		Image: "daprio/daprd:" + daprVersion,
+		Image: "ghcr.io/dapr/daprd:" + daprVersion,
 		Cmd: []string{
 			"./daprd", "--app-id", "daprmq-api", "--app-channel-address", "api-server", "--app-port", "5000",
 			"--dapr-http-port", "3500", "--dapr-grpc-port", "50001",

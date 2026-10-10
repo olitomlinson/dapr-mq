@@ -79,6 +79,31 @@ class SessionQueueConsumerTest {
     }
 
     @Test
+    void passesTheSessionIdleTimeoutToEachStream() throws InterruptedException {
+        FakeRequestObserver<ConsumeSessionRequest> requestObserver = new FakeRequestObserver<>();
+        SessionStream stream = streamDeliveringOneItem(requestObserver, "L1");
+        List<ConsumeSessionOptions> requested = new CopyOnWriteArrayList<>();
+        CountDownLatch handled = new CountDownLatch(1);
+        SessionCapableClient fakeClient = (queueId, options) -> {
+            requested.add(options);
+            return stream;
+        };
+
+        SessionQueueConsumerOptions options = new SessionQueueConsumerOptions()
+                .maxConcurrentSessions(1).sessionIdleTimeoutSeconds(2).drainTimeoutMillis(2000);
+        SessionQueueConsumer consumer = new SessionQueueConsumer(fakeClient, "q", options, ctx -> handled.countDown());
+
+        consumer.start();
+        try {
+            assertTrue(handled.await(2, TimeUnit.SECONDS));
+        } finally {
+            consumer.stop();
+        }
+
+        assertEquals(2, requested.get(0).sessionIdleTimeoutSeconds());
+    }
+
+    @Test
     void deadLettersOnHandlerExceptionByDefault() throws InterruptedException {
         FakeRequestObserver<ConsumeSessionRequest> requestObserver = new FakeRequestObserver<>();
         SessionStream stream = streamDeliveringOneItem(requestObserver, "L2");

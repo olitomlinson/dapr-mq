@@ -307,6 +307,7 @@ class DaprMQClient:
         session_id: str | None = None,
         lease_seconds: int = 30,
         prefetch_count: int = 1,
+        session_idle_timeout_seconds: int = 0,
         cancel: asyncio.Event | None = None,
     ) -> AsyncIterator[SessionDelivery]:
         """Managed consume loop for exactly one session: claims a session (any-available or
@@ -320,6 +321,9 @@ class DaprMQClient:
         session. Nothing more is handed out meanwhile, settling afterwards raises, and the call is
         cancelled only if the server hasn't ended it within ``SESSION_DRAIN_TIMEOUT_SECONDS``.
         After ``break``, close the generator (``contextlib.aclosing``) to wait for that.
+
+        ``session_idle_timeout_seconds`` ends the stream (and releases the session) once no message
+        has arrived for that long; 0 = the server default (the lease).
         """
         call = self._grpc_stub.ConsumeSession()
         loop = asyncio.get_running_loop()
@@ -362,7 +366,12 @@ class DaprMQClient:
             watcher = asyncio.ensure_future(_watch())
 
         try:
-            start = daprmq_pb2.ConsumeSessionStart(queue_id=queue_id, lease_seconds=lease_seconds, prefetch_count=prefetch_count)
+            start = daprmq_pb2.ConsumeSessionStart(
+                queue_id=queue_id,
+                lease_seconds=lease_seconds,
+                prefetch_count=prefetch_count,
+                session_idle_timeout_seconds=session_idle_timeout_seconds,
+            )
             if session_id is not None:
                 start.session_id = session_id
             await write(daprmq_pb2.ConsumeSessionRequest(start=start))
