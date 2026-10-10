@@ -1,0 +1,82 @@
+name: Release
+
+# Pushing a tag vX.Y.Z[-alpha.N|-rc.N] publishes every asset at that version (docs/RELEASING.md).
+# Only the npm package is wired up so far; the other registries follow.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check tag format
+        id: v
+        run: |
+          tag='${{ github.ref_name }}'
+          if [[ ! $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|rc)\.[0-9]+)?$ ]]; then
+            echo "::error::$tag is not vX.Y.Z, vX.Y.Z-alpha.N or vX.Y.Z-rc.N"; exit 1
+          fi
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          [[ $tag == *-* ]] && echo "prerelease=true" >> "$GITHUB_OUTPUT" || echo "prerelease=false" >> "$GITHUB_OUTPUT"
+
+      # Releases ship what CI has already run against: the tagged commit must be on main.
+      - name: Check tag is on main
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::${{ github.ref_name }} is not on main"; exit 1; }
+
+  npm:
+    name: npm (@daprmq/client)
+    needs: version
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write # provenance, and trusted publishing once NPM_TOKEN is retired
+    defaults:
+      run:
+        working-directory: sdks/typescript
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: sdks/typescript/package-lock.json
+
+      # Trusted publishing needs npm >= 11.5.1; Node 22 ships npm 10.
+      - name: Upgrade npm
+        run: npm install -g npm@^11.5.1
+
+      - name: Install
+        run: npm ci
+
+      - name: Stamp version
+        run: npm version '${{ needs.version.outputs.version }}' --no-git-tag-version --allow-same-version
+
+      - name: Unit tests
+        run: npm test
+
+      # Pre-releases go to the `next` dist-tag so `npm install @daprmq/client` never picks one up by accident.
+      - name: Publish
+        run: npm publish --provenance --tag ${{ needs.version.outputs.prerelease == 'true' && 'next' || 'latest' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

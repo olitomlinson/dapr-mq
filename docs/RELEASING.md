@@ -45,3 +45,23 @@ pipeline stamps the real version from the tag.
 The retraction only takes effect once it is published in a version higher than v0.1.0. So we tag
 `sdks/go/v0.1.1` once, on a commit that contains the retraction. That tag exists only to carry the retraction.
 After that, `@latest` resolves to the highest `v0.0.0-alpha.N`.
+
+## Cutting a release
+
+Tag a commit that's already on `main` and push the tag:
+
+```sh
+git tag v0.0.0-alpha.1 origin/main
+git push origin v0.0.0-alpha.1
+```
+
+[release.yml](../.github/workflows/release.yml) then checks the tag format and that the commit is on `main`,
+stamps the version, runs the unit tests and publishes. So far only the npm package is wired up.
+
+### npm
+
+The `npm` GitHub environment only accepts `v*` tags. Until trusted publishing is configured, the job uses the
+environment secret `NPM_TOKEN`; npm only allows trusted publishing on a package that already exists. After the
+first publish, configure `@daprmq/client` → Settings → Trusted Publisher (`olitomlinson/dapr-mq`,
+`release.yml`, environment `npm`). Then set publishing access to "Require 2FA and disallow tokens" and delete
+both the token and the secret.
