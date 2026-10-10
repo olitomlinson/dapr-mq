@@ -1,6 +1,7 @@
 # DaprMQ.Operator - control-plane service (v1: KEDA external scaler). Build from server/:
 #   docker build -f Dockerfile.operator -t daprmq-operator:dev .
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+# Built on the build machine's platform: the output is portable IL, so a multi-arch build needs no emulation.
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
 COPY src/DaprMQ.Interfaces/ ./src/DaprMQ.Interfaces/

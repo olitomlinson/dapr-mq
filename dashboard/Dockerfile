@@ -1,5 +1,5 @@
-# Stage 1: Build
-FROM node:20-alpine AS builder
+# Stage 1: Build (on the build machine's platform: the output is static files)
+FROM --platform=$BUILDPLATFORM node:20-alpine AS builder
 
 WORKDIR /app
 

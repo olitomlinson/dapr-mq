@@ -21,7 +21,7 @@ spec:
       {{- end }}
       containers:
       - name: nginx
-        image: "{{ .Values.dashboard.image.repository }}:{{ .Values.dashboard.image.tag | default .Chart.AppVersion }}"
+        image: "{{ include "daprmq.dashboard.image" . }}"
         imagePullPolicy: {{ .Values.dashboard.image.pullPolicy }}
         ports:
         - name: http

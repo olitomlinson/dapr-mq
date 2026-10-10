@@ -1,5 +1,6 @@
 # Build stage
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+# Built on the build machine's platform: the output is portable IL, so a multi-arch build needs no emulation.
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
 # Overridable at build time (--build-arg DaprActorsSdkVersion=...) to build against a

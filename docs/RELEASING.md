@@ -58,8 +58,16 @@ git push origin v0.0.0-alpha.1
 ```
 
 [release.yml](../.github/workflows/release.yml) then checks the tag format and that the commit is on `main`,
-stamps the version, runs the unit tests and publishes. So far npm and the Go module are wired up; the Go job
-pushes the `sdks/go/vX.Y.Z` tag on the same commit.
+stamps the version, runs the unit tests and publishes. So far npm, the Go module, the images and the Helm chart
+are wired up. The Go job pushes the `sdks/go/vX.Y.Z` tag on the same commit.
+
+### Images and Helm chart
+
+The three images are built for linux/amd64 and linux/arm64, with SBOM and provenance attestations, and pushed
+to GHCR with `GITHUB_TOKEN`. The chart is packaged at the release version (its image tags default to that
+version too) and pushed only after all three images exist. GHCR makes a new package private, so the first
+time each one is published (`daprmq`, `daprmq-operator`, `daprmq-dashboard`, `charts/daprmq`), set it to
+public in its package settings.
 
 ### npm
 

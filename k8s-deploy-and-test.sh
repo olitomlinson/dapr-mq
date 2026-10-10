@@ -512,6 +512,7 @@ log_section "Deploying DaprMQ"
 daprmq_helm_args=(upgrade --install "$DAPRMQ_RELEASE" ./helm
     -n "$NAMESPACE"
     --set dapr.stateStoreName="$STATESTORE_NAME"
+    --set image.registry=
     --set image.tag="$IMAGE_TAG"
     --set image.pullPolicy=Never
     --wait --timeout 5m0s)

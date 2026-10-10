@@ -74,11 +74,17 @@ kubectl apply -f statestore.yaml -n daprmq
 
 ### Quick Start
 
+Install a published release (chart and images come from `ghcr.io/olitomlinson`):
+
 ```bash
-helm install daprmq ./helm \
+helm install daprmq oci://ghcr.io/olitomlinson/charts/daprmq \
+  --version 0.0.0-alpha.3 \
   -n daprmq \
   --set dapr.stateStoreName=statestore
 ```
+
+From a checkout, use `./helm` in place of the OCI reference. Add `--set image.registry=` to run images you
+built locally (e.g. on kind or Docker Desktop).
 
 > **Namespace Selection**: You must explicitly specify the target namespace using `-n` or `--namespace`. There is no default namespace - but see [Recommended namespace and release name](#recommended-namespace-and-release-name) above for why you should use `daprmq` unless you have a specific reason not to.
 
@@ -154,7 +160,7 @@ helm install daprmq-app2 ./helm \
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `image.registry` | Container registry | `""` |
+| `image.registry` | Container registry (`""` for local images) | `ghcr.io/olitomlinson` |
 | `image.repository` | Image repository | `daprmq` |
 | `image.tag` | Image tag | `latest` |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
