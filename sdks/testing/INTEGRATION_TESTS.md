@@ -23,7 +23,9 @@ No image comes from Docker Hub: CI runners share its anonymous pull limit, which
 parallel jobs used to exhaust. Dapr is pulled from `ghcr.io/dapr`, Postgres and nginx from
 `public.ecr.aws/docker/library`, and the server's WireMock from `mirror.gcr.io`. CI also sets
 `TESTCONTAINERS_RYUK_DISABLED=true`, since Testcontainers' own reaper image only lives on Docker Hub
-(runners are thrown away after each job, so nothing needs reaping).
+(runners are thrown away after each job, so nothing needs reaping). Those registries throttle bursts
+of anonymous pulls, so CI pulls the images one at a time before the tests start
+([load-api-image](actions/load-api-image/action.yml)); add any new stack image there too.
 
 **Topology.** The table is the *combined* stack: one API server serves the API and hosts the actors. Production (Helm) is *split*: gateways (`REGISTER_ACTORS=false`) in front of workers (`ENABLE_API=false`). The .NET fixture ([DaprTestEnvironment.cs](../../server/tests/DaprMQ.IntegrationTests/Infrastructure/DaprTestEnvironment.cs)) runs either way: `DAPRMQ_TEST_TOPOLOGY=split` puts a gateway (app-id `daprmq-gateway`) in front of a worker (app-id `daprmq-api`), and CI runs the server suite both ways. The other SDK fixtures stay combined: they test the client surface, which doesn't depend on the server layout.
 
