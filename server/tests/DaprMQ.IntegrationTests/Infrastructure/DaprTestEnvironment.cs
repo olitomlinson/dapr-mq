@@ -115,7 +115,7 @@ public class DaprTestEnvironment : IAsyncLifetime
         // enableQueryInstrumentation, not on by default for the shared fixture or high-throughput
         // tests that don't need it.
         var postgresBuilder = new PostgreSqlBuilder()
-            .WithImage("postgres:16.2-alpine")
+            .WithImage("public.ecr.aws/docker/library/postgres:16.2-alpine")
             .WithDatabase("actor_state")
             .WithUsername("postgres")
             .WithPassword("test_password")
@@ -139,7 +139,7 @@ public class DaprTestEnvironment : IAsyncLifetime
         const int wireMockInternalPort = 8080;
 
         _wireMockContainer = new ContainerBuilder()
-            .WithImage("wiremock/wiremock:3.3.1")
+            .WithImage("mirror.gcr.io/wiremock/wiremock:3.3.1")
             .WithNetwork(_network)
             .WithNetworkAliases(wireMockNetworkAlias)
             .WithPortBinding(wireMockInternalPort, true)  // Use dynamic port binding on host
@@ -153,7 +153,7 @@ public class DaprTestEnvironment : IAsyncLifetime
 
         // 3. Start Dapr placement service
         _daprPlacementContainer = new ContainerBuilder()
-            .WithImage("daprio/dapr:1.18.4")
+            .WithImage("ghcr.io/dapr/dapr:1.18.4")
             .WithNetwork(_network)
             .WithNetworkAliases("dapr-placement")
             .WithCommand("./placement", "-port", "50005")
@@ -172,7 +172,7 @@ public class DaprTestEnvironment : IAsyncLifetime
         for (var member = 0; member < topology.SchedulerReplicas; member++)
         {
             var schedulerBuilder = new ContainerBuilder()
-                .WithImage("daprio/dapr:1.18.4")
+                .WithImage("ghcr.io/dapr/dapr:1.18.4")
                 .WithNetwork(_network)
                 .WithNetworkAliases(topology.SchedulerAlias(member))
                 .WithPortBinding(DaprTopology.SchedulerPort, true);
@@ -222,7 +222,7 @@ public class DaprTestEnvironment : IAsyncLifetime
         if (topology.LoadBalanced)
         {
             _loadBalancerContainer = new ContainerBuilder()
-                .WithImage("nginx:1.27-alpine")
+                .WithImage("public.ecr.aws/docker/library/nginx:1.27-alpine")
                 .WithNetwork(_network)
                 .WithNetworkAliases(DaprTopology.LoadBalancerAlias)
                 .WithResourceMapping(System.Text.Encoding.UTF8.GetBytes(topology.NginxConfig()), "/etc/nginx/nginx.conf")
@@ -320,7 +320,7 @@ public class DaprTestEnvironment : IAsyncLifetime
         // Dapr sidecar (connects to its API server via Docker network). Mounts the components
         // directory from the project root (3 levels up from bin/Debug/net10.0).
         var daprSidecarBuilder = new ContainerBuilder()
-            .WithImage("daprio/daprd:1.18.4")
+            .WithImage("ghcr.io/dapr/daprd:1.18.4")
             .WithNetwork(_network)
             .WithNetworkAliases(sidecarAliases)
             .WithCommand("./daprd",
@@ -510,7 +510,7 @@ public class DaprTestEnvironment : IAsyncLifetime
         await _operatorContainer.StartAsync();
 
         _operatorSidecarContainer = new ContainerBuilder()
-            .WithImage("daprio/daprd:1.18.4")
+            .WithImage("ghcr.io/dapr/daprd:1.18.4")
             .WithNetwork(_network)
             .WithNetworkAliases(operatorSidecarAlias)
             .WithCommand("./daprd",

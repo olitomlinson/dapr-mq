@@ -95,7 +95,7 @@ public final class DaprMQServer implements AutoCloseable {
         Network network = Network.newNetwork();
 
         try {
-            GenericContainer<?> postgres = container("postgres:16.2-alpine", network, "postgres-db")
+            GenericContainer<?> postgres = container("public.ecr.aws/docker/library/postgres:16.2-alpine", network, "postgres-db")
                     .withEnv("POSTGRES_DB", "actor_state")
                     .withEnv("POSTGRES_USER", "postgres")
                     .withEnv("POSTGRES_PASSWORD", POSTGRES_PASSWORD);
@@ -108,14 +108,14 @@ public final class DaprMQServer implements AutoCloseable {
                 }
             });
 
-            start(containers, container("daprio/dapr:" + DAPR_VERSION, network, "dapr-placement")
+            start(containers, container("ghcr.io/dapr/dapr:" + DAPR_VERSION, network, "dapr-placement")
                     .withCommand("./placement", "-port", "50005"));
             // HA members keep etcd in the container (ephemeral); the single scheduler keeps the
             // bind-mounted data dir. Members only reach quorum together, so none is waited on alone.
             String[] schedulerAliases = new String[topology.schedulerReplicas()];
             for (int member = 0; member < topology.schedulerReplicas(); member++) {
                 schedulerAliases[member] = topology.schedulerAlias(member);
-                GenericContainer<?> scheduler = container("daprio/dapr:" + DAPR_VERSION, network, schedulerAliases[member]);
+                GenericContainer<?> scheduler = container("ghcr.io/dapr/dapr:" + DAPR_VERSION, network, schedulerAliases[member]);
                 start(containers, topology.schedulerHa()
                         ? scheduler.withCommand(topology.schedulerCommand(member))
                         : scheduler
@@ -139,7 +139,7 @@ public final class DaprMQServer implements AutoCloseable {
                         .withEnv("Logging__LogLevel__Default", "Warning")
                         .withEnv("QUEUE_ACTOR_TYPE_NAME", "QueueActor")
                         .withEnv("HTTP_SINK_ACTOR_TYPE_NAME", "HttpSinkActor");
-                GenericContainer<?> sidecar = container("daprio/daprd:" + DAPR_VERSION, network, sidecarAlias)
+                GenericContainer<?> sidecar = container("ghcr.io/dapr/daprd:" + DAPR_VERSION, network, sidecarAlias)
                         .withFileSystemBind(componentsDir, "/tmp/dapr-components", BindMode.READ_ONLY)
                         .withFileSystemBind(blobstoreDir, "/tmp/blobstore", BindMode.READ_WRITE)
                         .withCommand(
@@ -168,7 +168,7 @@ public final class DaprMQServer implements AutoCloseable {
             GenericContainer<?> front = apis.get(0);
             if (topology.loadBalanced()) {
                 // nginx resolves its upstreams at startup, so it goes last, once every replica's alias exists.
-                front = container("nginx:1.27-alpine", network, DaprTopology.LOAD_BALANCER_ALIAS)
+                front = container("public.ecr.aws/docker/library/nginx:1.27-alpine", network, DaprTopology.LOAD_BALANCER_ALIAS)
                         .withExposedPorts(5000, 5001)
                         .withCopyToContainer(Transferable.of(topology.nginxConfig()), "/etc/nginx/nginx.conf");
                 start(containers, front);

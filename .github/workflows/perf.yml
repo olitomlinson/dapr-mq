@@ -45,6 +45,12 @@ concurrency:
   group: ${{ github.event_name == 'pull_request' && format('perf-{0}', github.ref) || 'perf-results' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Testcontainers' reaper (ryuk) only lives on Docker Hub, whose anonymous pull limit the runners
+# share; the test images themselves come from other registries (sdks/testing/INTEGRATION_TESTS.md).
+# Runners are discarded after each job, so there's nothing for ryuk to clean up.
+env:
+  TESTCONTAINERS_RYUK_DISABLED: 'true'
+
 jobs:
   # Which SDKs to run, from the changed paths (same rules as sdk-integration-tests.yml):
   #   server/** or sdks/testing/** or this file -> every SDK; sdks/<sdk>/** -> that SDK.

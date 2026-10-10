@@ -195,7 +195,7 @@ export async function startDaprMQServer(topology = new DaprTopology(), image = A
   try {
     network = await new Network().start();
 
-    const postgres = await new GenericContainer("postgres:16.2-alpine")
+    const postgres = await new GenericContainer("public.ecr.aws/docker/library/postgres:16.2-alpine")
       .withEnvironment({ POSTGRES_DB: "actor_state", POSTGRES_USER: "postgres", POSTGRES_PASSWORD: POSTGRES_PASSWORD })
       .withNetwork(network)
       .withNetworkAliases("postgres-db")
@@ -204,7 +204,7 @@ export async function startDaprMQServer(topology = new DaprTopology(), image = A
     await waitFor("postgres", async () => (await postgres.exec(["pg_isready", "-U", "postgres", "-d", "actor_state"])).exitCode === 0);
 
     containers.push(
-      await new GenericContainer(`daprio/dapr:${DAPR_VERSION}`)
+      await new GenericContainer(`ghcr.io/dapr/dapr:${DAPR_VERSION}`)
         .withNetwork(network)
         .withNetworkAliases("dapr-placement")
         .withCommand(["./placement", "-port", "50005"])
@@ -214,7 +214,7 @@ export async function startDaprMQServer(topology = new DaprTopology(), image = A
     // data dir. Members only reach quorum together, so they start in parallel.
     const schedulers = await Promise.all(
       Array.from({ length: topology.schedulerReplicas }, (_, member) => {
-        const scheduler = new GenericContainer(`daprio/dapr:${DAPR_VERSION}`)
+        const scheduler = new GenericContainer(`ghcr.io/dapr/dapr:${DAPR_VERSION}`)
           .withNetwork(network!)
           .withNetworkAliases(topology.schedulerAlias(member));
         return (
@@ -253,7 +253,7 @@ export async function startDaprMQServer(topology = new DaprTopology(), image = A
       apis.push(api);
 
       containers.push(
-        await new GenericContainer(`daprio/daprd:${DAPR_VERSION}`)
+        await new GenericContainer(`ghcr.io/dapr/daprd:${DAPR_VERSION}`)
           .withNetwork(network)
           .withNetworkAliases(...(legacy ? [sidecarAlias, "dapr-sidecar"] : [sidecarAlias]))
           .withBindMounts([
@@ -279,7 +279,7 @@ export async function startDaprMQServer(topology = new DaprTopology(), image = A
     let front = apis[0];
     if (topology.loadBalanced) {
       // nginx resolves its upstreams at startup, so it goes last, once every replica's alias exists.
-      front = await new GenericContainer("nginx:1.27-alpine")
+      front = await new GenericContainer("public.ecr.aws/docker/library/nginx:1.27-alpine")
         .withExposedPorts(5000, 5001)
         .withNetwork(network)
         .withNetworkAliases(LOAD_BALANCER_ALIAS)

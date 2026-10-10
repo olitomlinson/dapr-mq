@@ -26,7 +26,7 @@ can put the SDKs side by side.
 Each SDK's own Testcontainers fixture builds the perf stack. It's the integration stack
 ([INTEGRATION_TESTS.md](INTEGRATION_TESTS.md)) with these changes:
 
-- **Scheduler HA.** Three `daprio/dapr:1.18.4` containers, aliases `dapr-scheduler-0..2`, each run as
+- **Scheduler HA.** Three `ghcr.io/dapr/dapr:1.18.4` containers, aliases `dapr-scheduler-0..2`, each run as
   `./scheduler --port 50006 --id dapr-scheduler-<i> --etcd-initial-cluster dapr-scheduler-0=http://dapr-scheduler-0:2380,dapr-scheduler-1=http://dapr-scheduler-1:2380,dapr-scheduler-2=http://dapr-scheduler-2:2380 --etcd-client-listen-address 0.0.0.0 --etcd-data-dir /tmp/etcd --override-broadcast-host-port dapr-scheduler-<i>:50006`.
   Every daprd gets `--scheduler-host-address dapr-scheduler-0:50006,dapr-scheduler-1:50006,dapr-scheduler-2:50006`.
   This matches production. Placement stays as one container, since Dapr 1.19 folds it into the scheduler.
@@ -34,7 +34,7 @@ Each SDK's own Testcontainers fixture builds the perf stack. It's the integratio
   (`--app-channel-address api-server-<i>`, same `--app-id daprmq-api`). The API server's
   `DAPR_HTTP_ENDPOINT`/`DAPR_GRPC_ENDPOINT` point at its own sidecar. Dapr spreads queue actors across
   the replicas.
-- **Load balancer** (whenever replicas > 1). `nginx:1.27-alpine`, alias `api-lb`. Port 5000 proxies
+- **Load balancer** (whenever replicas > 1). `public.ecr.aws/docker/library/nginx:1.27-alpine`, alias `api-lb`. Port 5000 proxies
   REST and port 5001 (`listen 5001 http2`) uses `grpc_pass` to every replica. Read/send timeouts are
   1 h so `ConsumeSession` streams survive. The SDK connects to the LB, and waits for the stack by polling a
   probe enqueue through it.

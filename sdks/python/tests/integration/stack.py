@@ -188,7 +188,7 @@ def start_stack(topology: DaprTopology = DaprTopology(), image: str = API_IMAGE)
     with Network() as network:
         try:
             postgres = start(
-                DockerContainer("postgres:16.2-alpine")
+                DockerContainer("public.ecr.aws/docker/library/postgres:16.2-alpine")
                 .with_env("POSTGRES_DB", "actor_state")
                 .with_env("POSTGRES_USER", "postgres")
                 .with_env("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
@@ -201,7 +201,7 @@ def start_stack(topology: DaprTopology = DaprTopology(), image: str = API_IMAGE)
             )
 
             start(
-                DockerContainer(f"daprio/dapr:{DAPR_VERSION}")
+                DockerContainer(f"ghcr.io/dapr/dapr:{DAPR_VERSION}")
                 .with_network(network)
                 .with_network_aliases("dapr-placement")
                 .with_command("./placement -port 50005")
@@ -210,7 +210,7 @@ def start_stack(topology: DaprTopology = DaprTopology(), image: str = API_IMAGE)
             # bind-mounted data dir. Members only reach quorum together, so none is waited on alone.
             for member in range(topology.scheduler_replicas):
                 scheduler = (
-                    DockerContainer(f"daprio/dapr:{DAPR_VERSION}")
+                    DockerContainer(f"ghcr.io/dapr/dapr:{DAPR_VERSION}")
                     .with_network(network)
                     .with_network_aliases(topology.scheduler_alias(member))
                 )
@@ -244,7 +244,7 @@ def start_stack(topology: DaprTopology = DaprTopology(), image: str = API_IMAGE)
                     )
                 )
                 start(
-                    DockerContainer(f"daprio/daprd:{DAPR_VERSION}")
+                    DockerContainer(f"ghcr.io/dapr/daprd:{DAPR_VERSION}")
                     .with_network(network)
                     .with_network_aliases(*([sidecar_alias, "dapr-sidecar"] if legacy else [sidecar_alias]))
                     .with_volume_mapping(str(COMPONENTS_DIR), "/tmp/dapr-components", "ro")
@@ -270,7 +270,7 @@ def start_stack(topology: DaprTopology = DaprTopology(), image: str = API_IMAGE)
                     f.write(topology.nginx_config())
                 os.chmod(nginx_conf, 0o644)
                 front = start(
-                    DockerContainer("nginx:1.27-alpine")
+                    DockerContainer("public.ecr.aws/docker/library/nginx:1.27-alpine")
                     .with_exposed_ports(5000, 5001)
                     .with_network(network)
                     .with_network_aliases(LOAD_BALANCER_ALIAS)

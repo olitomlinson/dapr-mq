@@ -13,11 +13,17 @@ Source of truth for the integration scenarios every DaprMQ client SDK must imple
 
 | Container | Image | Network alias | Notes |
 |---|---|---|---|
-| Postgres | `postgres:16.2-alpine` | `postgres-db` | db `actor_state`, user `postgres`, password `test_password` |
-| Dapr placement | `daprio/dapr:1.18.4` | `dapr-placement` | `./placement -port 50005` |
-| Dapr scheduler | `daprio/dapr:1.18.4` | `dapr-scheduler` | `./scheduler --port 50006 --etcd-data-dir <mounted dir>` |
+| Postgres | `public.ecr.aws/docker/library/postgres:16.2-alpine` | `postgres-db` | db `actor_state`, user `postgres`, password `test_password` |
+| Dapr placement | `ghcr.io/dapr/dapr:1.18.4` | `dapr-placement` | `./placement -port 50005` |
+| Dapr scheduler | `ghcr.io/dapr/dapr:1.18.4` | `dapr-scheduler` | `./scheduler --port 50006 --etcd-data-dir <mounted dir>` |
 | API server | `daprmq-api:test` (override `DAPRMQ_API_IMAGE`) | `api-server` | expose 5000 (REST) + 5001 (gRPC); `REGISTER_ACTORS=true`, `DAPR_HTTP_ENDPOINT=http://dapr-sidecar:3500`, `DAPR_GRPC_ENDPOINT=http://dapr-sidecar:50001` |
-| daprd sidecar | `daprio/daprd:1.18.4` | `dapr-sidecar` | mounts [dapr-components](../../server/tests/DaprMQ.IntegrationTests/dapr-components) at `/tmp/dapr-components` and a temp dir at `/tmp/blobstore` |
+| daprd sidecar | `ghcr.io/dapr/daprd:1.18.4` | `dapr-sidecar` | mounts [dapr-components](../../server/tests/DaprMQ.IntegrationTests/dapr-components) at `/tmp/dapr-components` and a temp dir at `/tmp/blobstore` |
+
+No image comes from Docker Hub: CI runners share its anonymous pull limit, which a PR's dozen
+parallel jobs used to exhaust. Dapr is pulled from `ghcr.io/dapr`, Postgres and nginx from
+`public.ecr.aws/docker/library`, and the server's WireMock from `mirror.gcr.io`. CI also sets
+`TESTCONTAINERS_RYUK_DISABLED=true`, since Testcontainers' own reaper image only lives on Docker Hub
+(runners are thrown away after each job, so nothing needs reaping).
 
 **Topology.** The table is the *combined* stack: one API server serves the API and hosts the actors. Production (Helm) is *split*: gateways (`REGISTER_ACTORS=false`) in front of workers (`ENABLE_API=false`). The .NET fixture ([DaprTestEnvironment.cs](../../server/tests/DaprMQ.IntegrationTests/Infrastructure/DaprTestEnvironment.cs)) runs either way: `DAPRMQ_TEST_TOPOLOGY=split` puts a gateway (app-id `daprmq-gateway`) in front of a worker (app-id `daprmq-api`), and CI runs the server suite both ways. The other SDK fixtures stay combined: they test the client surface, which doesn't depend on the server layout.
 
