@@ -618,17 +618,19 @@ public class QueueActor : Actor, IQueueActor
                 }
 
                 budget--;
-                expired++;
 
                 int deliveryCount = lockState.Value.DeliveryCount + 1;
                 if (deliveryCount > _lockConfig.MaxDeliveryCount)
                 {
-                    // Left in state for now - dead-lettering reaches another actor, so it runs after
-                    // this sweep's local commit.
+                    // Left in state, indexed and counted - dead-lettering reaches another actor, so it
+                    // runs after this sweep's local commit, and only its success releases the lock. If
+                    // it fails, the index entry is what lets a later sweep find the lock again.
+                    survivors.Add(lockId);
                     deadLettered.Add(lockId);
                     continue;
                 }
 
+                expired++;
                 restored.Add((ReclaimedItem(lockState.Value, deliveryCount), lockState.Value.Priority));
                 await StateManager.RemoveStateAsync($"{lockId}-lock");
             }
@@ -644,29 +646,28 @@ public class QueueActor : Actor, IQueueActor
             }
         }
 
-        if (expired == 0 && emptiedBuckets.Count == 0)
+        // Skipped when nothing local changed - but dead-lettering below still runs.
+        if (expired > 0 || emptiedBuckets.Count > 0)
         {
-            return; // nothing changed - don't write
+            await RestoreInOrderInternal(restored);
+
+            if (restored.Count > 0)
+            {
+                Logger.LogInformation(
+                    "Sweep expired {Expired} lock(s); restored {Restored} item(s) to their original positions",
+                    expired, restored.Count);
+            }
+
+            // Re-read: the restore staged queue/metadata updates of its own.
+            metadata = await GetMetadataAsync();
+            var buckets = metadata.LockExpiryBuckets.Where(b => !emptiedBuckets.Contains(b)).ToList();
+            await SetMetadataAsync(metadata with
+            {
+                LockCount = Math.Max(0, metadata.LockCount - expired),
+                LockExpiryBuckets = buckets
+            });
+            await StateManager.SaveStateAsync();
         }
-
-        await RestoreInOrderInternal(restored);
-
-        if (restored.Count > 0)
-        {
-            Logger.LogInformation(
-                "Sweep expired {Expired} lock(s); restored {Restored} item(s) to their original positions",
-                expired, restored.Count);
-        }
-
-        // Re-read: the restore staged queue/metadata updates of its own.
-        metadata = await GetMetadataAsync();
-        var buckets = metadata.LockExpiryBuckets.Where(b => !emptiedBuckets.Contains(b)).ToList();
-        await SetMetadataAsync(metadata with
-        {
-            LockCount = Math.Max(0, metadata.LockCount - expired),
-            LockExpiryBuckets = buckets
-        });
-        await StateManager.SaveStateAsync();
 
         // Cross-actor, so kept out of the batch above and committed per item - see
         // DeadLetterExpiredLockAsync.
@@ -741,14 +742,23 @@ public class QueueActor : Actor, IQueueActor
 
         await RestoreInOrderInternal(restored);
 
-        await StateManager.RemoveStateAsync(SessionLockIndexKey);
+        // Locks still awaiting dead-lettering stay indexed and counted, so a failed DLQ enqueue
+        // leaves them for the next reclaim rather than orphaning them.
+        if (deadLettered.Count == 0)
+        {
+            await StateManager.RemoveStateAsync(SessionLockIndexKey);
+        }
+        else
+        {
+            await StateManager.SetStateAsync(SessionLockIndexKey, new List<string>(deadLettered));
+        }
 
         // The lapsed lease is deliberately left in place: it is what makes the guard refuse callers
         // with SESSION_LEASE_EXPIRED until SetSessionLease installs the next holder.
         metadata = await GetMetadataAsync();
         await SetMetadataAsync(metadata with
         {
-            LockCount = Math.Max(0, metadata.LockCount - (restored.Count + deadLettered.Count))
+            LockCount = Math.Max(0, metadata.LockCount - restored.Count)
         });
         await StateManager.SaveStateAsync();
 
@@ -901,7 +911,12 @@ public class QueueActor : Actor, IQueueActor
             return;
         }
 
+        // The sweep left the lock indexed and counted until now. The bucketed index entry is left for
+        // the sweep to discard, as on Acknowledge; the session index is pruned, as there.
         await StateManager.RemoveStateAsync($"{lockId}-lock");
+        await DeindexSessionLockAsync(lockId);
+        var metadata = await GetMetadataAsync();
+        await SetMetadataAsync(metadata with { LockCount = Math.Max(0, metadata.LockCount - 1) });
         await StateManager.SaveStateAsync();
 
         Logger.LogWarning(

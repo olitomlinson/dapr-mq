@@ -67,6 +67,14 @@ public class ConsumeTests(DaprTestFixture fixture)
         }
         await call.RequestStream.CompleteAsync();
 
+        // The server applies acks after the client stops writing and ends the call only once they're
+        // all applied - wait for that, or the dequeue below can race the last ack and see 423.
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (await call.ResponseStream.MoveNext(cts.Token))
+        {
+            Assert.NotEqual(ConsumeResponse.PayloadOneofCase.SettleFailed, call.ResponseStream.Current.PayloadCase);
+        }
+
         Assert.Equal(new[] { 1, 2, 3 }, delivered.Select(d => JsonDocument.Parse(d.ItemJson).RootElement.GetProperty("seq").GetInt32()));
         Assert.All(delivered, d => Assert.Equal(1, d.DeliveryCount));
 
