@@ -3,12 +3,9 @@ import * as protoLoader from "@grpc/proto-loader";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-// Single source of truth for the wire contract stays server/src/DaprMQ.ApiServer/Protos/daprmq.proto
-// (mirrors how sdks/dotnet/src/DaprMQ.Client references the same file rather than duplicating it).
-const PROTO_PATH = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "../../../../server/src/DaprMQ.ApiServer/Protos/daprmq.proto",
-);
+// Copied from server/src/DaprMQ.ApiServer/Protos/daprmq.proto (the single source of truth) by
+// scripts/sync-proto.mjs, so the published package carries it.
+const PROTO_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../proto/daprmq.proto");
 
 export interface ConsumeSessionStartMessage {
   queueId: string;

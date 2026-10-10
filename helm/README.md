@@ -95,7 +95,7 @@ Create a custom `values.yaml`:
 image:
   registry: myregistry.azurecr.io
   repository: daprmq
-  tag: "1.0.0"
+  tag: "0.0.0-alpha.1"
 
 # Protocol selection
 dapr:

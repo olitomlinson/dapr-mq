@@ -3,6 +3,8 @@
 FROM node:20-alpine AS build
 WORKDIR /build
 COPY sdks/typescript/ ./sdks/typescript/
+# The SDK build copies daprmq.proto into the package from here.
+COPY server/src/DaprMQ.ApiServer/Protos/ ./server/src/DaprMQ.ApiServer/Protos/
 RUN npm --prefix sdks/typescript ci && npm --prefix sdks/typescript run build
 COPY examples/typescript/producer/ ./examples/typescript/producer/
 RUN npm --prefix examples/typescript/producer install && npm --prefix examples/typescript/producer run build
@@ -11,17 +13,12 @@ RUN npm --prefix examples/typescript/producer install && npm --prefix examples/t
 # build stage's filesystem - it dangles once node_modules is copied into a separate
 # runtime stage that never has /build/sdks/typescript. Replace it with the real,
 # already-built package contents before that copy happens.
-RUN rm -f examples/typescript/producer/node_modules/daprmq-client && \
-    cp -RL sdks/typescript examples/typescript/producer/node_modules/daprmq-client
+RUN rm -f examples/typescript/producer/node_modules/@daprmq/client && \
+    cp -RL sdks/typescript examples/typescript/producer/node_modules/@daprmq/client
 
 FROM node:20-alpine
 WORKDIR /app
 
-# daprmq-client resolves daprmq.proto at RUNTIME via a path 4 levels up from its own
-# compiled location (sdks/typescript/src/grpc/daprmqGrpcClient.ts) - since it now lives
-# at node_modules/daprmq-client/dist/grpc/ (also 4 levels below here), reproduce the
-# proto at that same relative depth from /app so the lookup still resolves.
-COPY server/src/DaprMQ.ApiServer/Protos/ ./server/src/DaprMQ.ApiServer/Protos/
 COPY --from=build /build/examples/typescript/producer/dist ./dist
 COPY --from=build /build/examples/typescript/producer/node_modules ./node_modules
 COPY --from=build /build/examples/typescript/producer/package.json ./package.json

@@ -1,4 +1,4 @@
-# daprmq-client (TypeScript)
+# @daprmq/client (TypeScript)
 
 A TypeScript/Node client for DaprMQ's HTTP/gRPC API - `DaprMQClient` for direct queue and session operations, plus `SessionQueueConsumer`, a managed multi-session consume loop built on the `ConsumeSession` streaming RPC. Lives at `sdks/typescript/`, physically separate from the server codebase under `dotnet/`.
 
@@ -9,7 +9,7 @@ Not yet published to npm. Reference the package directly (workspace or `file:` d
 ```json
 {
   "dependencies": {
-    "daprmq-client": "file:../path/to/sdks/typescript"
+    "@daprmq/client": "file:../path/to/sdks/typescript"
   }
 }
 ```
@@ -21,7 +21,7 @@ cd sdks/typescript && npm install && npm run build
 ## Constructing a client
 
 ```ts
-import { DaprMQClient } from "daprmq-client";
+import { DaprMQClient } from "@daprmq/client";
 
 const client = new DaprMQClient({
   httpBaseUrl: "http://localhost:8002",
@@ -107,7 +107,7 @@ A rejected settle doesn't end the stream: it goes to `onSettleFailed`. Leaving t
 `QueueConsumer` is the recommended way to run a long-lived consumer. It runs your handler over the stream and reopens it with backoff if it breaks:
 
 ```ts
-import { QueueConsumer } from "daprmq-client";
+import { QueueConsumer } from "@daprmq/client";
 
 const consumer = new QueueConsumer(client, "my-queue", { maxConcurrentHandlers: 10 }, async (ctx, signal) => {
   // ctx.lockId, ctx.item, ctx.priority, ctx.deliveryCount
@@ -151,7 +151,7 @@ See [API_REFERENCE.md](../../../docs/API_REFERENCE.md#sessions) and [design/sess
 `SessionQueueConsumer` is the recommended way to consume sessions: it runs `maxConcurrentSessions` independent slots, each looping over its own `consumeSession` stream - claim a session, hand each delivered item to your handler, ack or dead-letter it, repeat until the session drains, then claim another. No manual lease heartbeating is needed; the server renews the lease on its own schedule for as long as the stream stays open.
 
 ```ts
-import { SessionQueueConsumer } from "daprmq-client";
+import { SessionQueueConsumer } from "@daprmq/client";
 
 const consumer = new SessionQueueConsumer(
   client,

@@ -1,7 +1,8 @@
 {
-  "name": "daprmq-client",
-  "version": "0.1.0",
+  "name": "@daprmq/client",
+  "version": "0.0.0-alpha.0",
   "description": "TypeScript client SDK for DaprMQ",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -12,16 +13,23 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "proto"
   ],
   "engines": {
     "node": ">=18"
   },
   "scripts": {
+    "sync-proto": "node scripts/sync-proto.mjs",
+    "prebuild": "npm run sync-proto",
     "build": "tsc",
+    "prepack": "npm run build",
+    "pretest": "npm run sync-proto",
     "test": "vitest run",
     "test:watch": "vitest",
+    "pretest:integration": "npm run sync-proto",
     "test:integration": "vitest run --config vitest.integration.config.ts",
+    "preperf": "npm run sync-proto",
     "perf": "vite-node perf/main.ts",
     "perf:typecheck": "tsc -p perf --noEmit"
   },

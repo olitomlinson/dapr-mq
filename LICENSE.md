@@ -2,6 +2,9 @@
 
 Copyright (c) 2026 Oliver Tomlinson
 
+This license covers everything in this repository except the client SDKs under `sdks/`, which are
+licensed under the Apache License 2.0 (see the `LICENSE` file in each SDK directory).
+
 ---
 
 ## Acceptance
