@@ -110,6 +110,19 @@ Operator image reference (falls back to the global registry/tag)
 {{- end }}
 
 {{/*
+Dashboard image reference (falls back to the global registry; tag defaults to the chart appVersion)
+*/}}
+{{- define "daprmq.dashboard.image" -}}
+{{- $registry := .Values.dashboard.image.registry | default .Values.image.registry }}
+{{- $tag := .Values.dashboard.image.tag | default .Chart.AppVersion }}
+{{- if $registry }}
+{{- printf "%s/%s:%s" $registry .Values.dashboard.image.repository $tag }}
+{{- else }}
+{{- printf "%s:%s" .Values.dashboard.image.repository $tag }}
+{{- end }}
+{{- end }}
+
+{{/*
 Dashboard labels
 */}}
 {{- define "daprmq.dashboard.labels" -}}
