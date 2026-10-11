@@ -36,3 +36,8 @@ def test_ships_grpc_stubs(wheel: zipfile.ZipFile) -> None:
     names = wheel.namelist()
     assert "daprmq_client/grpc/daprmq_pb2.py" in names
     assert "daprmq_client/grpc/daprmq_pb2_grpc.py" in names
+
+
+# httpx 1.0 drops AsyncClient; its dev releases already do, and `pip install --pre` picks them up.
+def test_caps_httpx_below_1(wheel: zipfile.ZipFile) -> None:
+    assert "Requires-Dist: httpx<1,>=0.27" in _metadata(wheel)
