@@ -5,11 +5,12 @@ An async Python client for DaprMQ's HTTP/gRPC API - `DaprMQClient` for direct qu
 ## Install / Reference
 
 ```bash
-pip install daprmq-client --pre
+pip install daprmq-client
 ```
 
-DaprMQ is pre-release (`0.0.0aN`), so `--pre` or an explicit version is needed. To work on the SDK itself,
-install from the local path (editable):
+DaprMQ is pre-release (`0.0.0aN`); pip installs it because no stable version exists. Don't add `--pre`: it
+lets pip pick pre-releases of every dependency too. To work on the SDK itself, install from the local path
+(editable):
 
 ```bash
 uv pip install -e path/to/sdks/python
