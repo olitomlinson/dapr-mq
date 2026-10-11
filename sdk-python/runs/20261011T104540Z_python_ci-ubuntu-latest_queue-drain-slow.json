@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 2,
+  "runId": "20261011T104540Z_python_ci-ubuntu-latest_queue-drain-slow",
+  "timestampUtc": "2026-10-11T10:45:40.375896+00:00",
+  "sdk": {
+    "name": "python",
+    "version": "0.0.0a0",
+    "runtime": "CPython 3.12.15"
+  },
+  "environment": {
+    "label": "ci-ubuntu-latest",
+    "gitSha": "871dd58de363cc9554fa58773ab865dc2009a597",
+    "gitBranch": "main",
+    "gitDirty": false,
+    "os": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+    "cpuCount": 4
+  },
+  "topology": {
+    "apiReplicas": 1,
+    "schedulerReplicas": 3,
+    "loadBalancer": false,
+    "server": "testcontainers daprmq-api:test"
+  },
+  "scale": "pr",
+  "scenario": {
+    "id": "P-05",
+    "name": "queue-drain",
+    "profile": "queue-drain-slow",
+    "key": "queue:3000@100ms/active100",
+    "params": {
+      "messages": 3000,
+      "settleMs": 100,
+      "maxActiveMessages": 100,
+      "maxConcurrentHandlers": 0,
+      "strictOrder": false,
+      "publishIntervalMs": 0,
+      "publishJitterMs": 0,
+      "tailEvery": 0,
+      "tailMs": 0
+    }
+  },
+  "metrics": {
+    "seedSeconds": 0.14532571299997699,
+    "wallClockSeconds": 4.898848391999991,
+    "messagesPerSecond": 612.3888228300995,
+    "idealSeconds": 3.0,
+    "efficiency": 0.6123888228300994,
+    "timeToFirstMessageSeconds": 0.023863774999995258,
+    "peakConcurrentHandlers": 100,
+    "deliveryLatencyMs": {
+      "count": 3000,
+      "mean": 2479.4666666666667,
+      "p50": 2526,
+      "p95": 4671,
+      "p99": 4853,
+      "max": 4857
+    },
+    "messagesHandled": 3000,
+    "duplicates": 0,
+    "missing": 0,
+    "orderViolations": 10
+  },
+  "checks": {
+    "passed": true,
+    "failures": []
+  },
+  "timeline": {
+    "bucketMs": 1000,
+    "series": {
+      "messagesPerSecond": [
+        600,
+        615,
+        637,
+        600,
+        548
+      ],
+      "busyHandlers": [
+        63.788,
+        62.248,
+        59.563,
+        60.129,
+        54.938
+      ]
+    }
+  }
+}
