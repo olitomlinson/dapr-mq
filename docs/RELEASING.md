@@ -58,16 +58,14 @@ git push origin v0.0.0-alpha.1
 ```
 
 [release.yml](../.github/workflows/release.yml) then checks the tag format and that the commit is on `main`,
-stamps the version, runs the unit tests and publishes. So far npm, the Go module, the images and the Helm chart
-are wired up. The Go job pushes the `sdks/go/vX.Y.Z` tag on the same commit.
+stamps the version, runs the unit tests and publishes. So far npm, PyPI, the Go module, the images and the
+Helm chart are wired up. The Go job pushes the `sdks/go/vX.Y.Z` tag on the same commit.
 
 ### Images and Helm chart
 
 The three images are built for linux/amd64 and linux/arm64, with SBOM and provenance attestations, and pushed
 to GHCR with `GITHUB_TOKEN`. The chart is packaged at the release version (its image tags default to that
-version too) and pushed only after all three images exist. GHCR makes a new package private, so the first
-time each one is published (`daprmq`, `daprmq-operator`, `daprmq-dashboard`, `charts/daprmq`), set it to
-public in its package settings.
+version too) and pushed only after all three images exist. The packages are public, like the repository.
 
 ### npm
 
@@ -75,3 +73,8 @@ The `npm` GitHub environment only accepts `v*` tags. Publishing uses npm trusted
 → Settings → Trusted Publisher (`olitomlinson/dapr-mq`, `release.yml`, environment `npm`, allowed to publish
 and manage dist-tags). `NPM_TOKEN` was only needed for the first publish, because npm allows trusted publishing
 only on a package that already exists.
+
+### PyPI
+
+Publishing uses PyPI trusted publishing (`daprmq-client` → Publishing: `olitomlinson/dapr-mq`, `release.yml`,
+environment `pypi`, which only accepts `v*` tags), so there is no token. Uploads carry PEP 740 attestations.

@@ -1,7 +1,7 @@
 name: Release
 
 # Pushing a tag vX.Y.Z[-alpha.N|-rc.N] publishes every asset at that version (docs/RELEASING.md).
-# npm, the Go module, the images and the Helm chart are wired up so far; the other registries follow.
+# npm, PyPI, the Go module, the images and the Helm chart are wired up so far; NuGet and Maven follow.
 on:
   push:
     tags: ['v*']
@@ -100,6 +100,45 @@ jobs:
         run: npm dist-tag add '@daprmq/client@${{ needs.version.outputs.version }}' latest
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  pypi:
+    name: PyPI (daprmq-client)
+    needs: version
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write # trusted publishing and attestations; no stored token
+    defaults:
+      run:
+        working-directory: sdks/python
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install
+        run: pip install -e '.[dev]'
+
+      # PEP 440 spells pre-releases without the dash: 0.0.0-alpha.4 -> 0.0.0a4, 1.0.0-rc.1 -> 1.0.0rc1.
+      - name: Stamp version
+        run: |
+          v='${{ needs.version.outputs.version }}'
+          v=${v/-alpha./a}; v=${v/-rc./rc}
+          sed -i "s/^version = \".*\"$/version = \"$v\"/" pyproject.toml
+          grep -x "version = \"$v\"" pyproject.toml
+
+      - name: Unit tests
+        run: pytest --ignore=tests/integration
+
+      - name: Build
+        run: python -m build
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: sdks/python/dist
 
   go:
     name: Go module (sdks/go)
