@@ -1,6 +1,6 @@
 # Admin console
 
-**Status:** PR 1 (catalog) and PR 2 (worker admin reads) built. Delivered as five PRs (see [Delivery](#delivery)).
+**Status:** PRs 1-3 (catalog, worker admin reads, browsing) built. Delivered as five PRs (see [Delivery](#delivery)).
 
 ## Context
 
@@ -126,8 +126,8 @@ A DLQ is browsed as `queues/{id}-deadletter/messages`, so it needs no route of i
 Payloads are resolved from a named message or lock rather than from a raw blob reference, so the
 endpoint can't be used to read arbitrary keys from the object store binding.
 
-Lock ids are returned in full: they authorise Ack/Nack/ExtendLock, so the operator's console API
-(PR 3) should mask them, as the wireframe does.
+Lock ids are returned in full, by the workers and by the console API. They authorise
+Ack/Nack/ExtendLock, so this is part of the v1 security posture ([CONSOLE.md](../docs/CONSOLE.md#security)).
 
 ## 3. Metrics (OpenTelemetry → Prometheus)
 
@@ -242,7 +242,8 @@ These come from kube-state-metrics, which ships with kube-prometheus-stack. KEDA
 - **The SPA** is served from `wwwroot` (`UseStaticFiles`, falling back to `index.html`) on the
   existing HTTP port.
 - **Gating.** Everything is behind `CONSOLE_ENABLED`. With it off, the operator is unchanged.
-- **Image.** `Dockerfile.operator` gains a node stage that builds `console/` into `wwwroot`.
+- **Image.** `Dockerfile.operator` gains a node stage that builds `console/` into `wwwroot`, so the
+  operator image now builds from the repo root.
 - **Isolation from KEDA.** The console can run as its own Deployment of the same image
   (`console.separateDeployment`, with the scaler disabled there). Then console load can never
   delay KEDA's `GetMetrics`.
@@ -485,7 +486,11 @@ Each PR is usable on its own:
 1. **Catalog:** `CatalogActor`, `CatalogRegistrar`, the registration hooks and
    `/internal/admin/catalog`.
 2. **Worker admin read endpoints.**
-3. **Browsing:** the operator console API, static hosting and the browse UI.
+3. **Browsing:** the operator console API, static hosting and the browse UI. Built with the Helm
+   `console.enabled` switch and Service, and the compose operator. The Overview page shows catalog
+   counts only: total ready/locked, DLQs with messages and top queues need every queue's depth, so
+   they come from Prometheus in PR 4. `console.separateDeployment`, `ingress` and
+   `metrics.serviceMonitor` are left for PR 4.
 4. **Charts:** OTel metrics, the depth gauge, Prometheus and the charts.
 5. **The KEDA scaling overlay.**
 

@@ -37,9 +37,10 @@ public class CatalogReadService : ICatalogReadService
             _reader.ReadStateAsync<Dictionary<string, CatalogEntry>>(
                 _catalogActorType, CatalogShards.ActorIdFor(shard), CatalogActor.EntriesKey, cancellationToken)));
 
-        var matching = shards
-            .Where(entries => entries != null)
-            .SelectMany(entries => entries!.Values)
+        var all = shards.Where(entries => entries != null).SelectMany(entries => entries!.Values).ToList();
+        var totals = Enum.GetValues<CatalogEntryKind>().ToDictionary(k => k, k => all.Count(e => e.Kind == k));
+
+        var matching = all
             .Where(e => kind == null || e.Kind == kind)
             .Where(e => cursor == null || string.CompareOrdinal(e.Id, cursor) > 0)
             .OrderBy(e => e.Id, StringComparer.Ordinal)
@@ -52,6 +53,6 @@ public class CatalogReadService : ICatalogReadService
             matching.RemoveAt(limit);
         }
 
-        return new CatalogPage { Entries = matching, NextCursor = hasMore ? matching[^1].Id : null };
+        return new CatalogPage { Entries = matching, NextCursor = hasMore ? matching[^1].Id : null, Totals = totals };
     }
 }

@@ -1,13 +1,22 @@
-# DaprMQ.Operator - control-plane service (v1: KEDA external scaler). Build from server/:
-#   docker build -f Dockerfile.operator -t daprmq-operator:dev .
-# Built on the build machine's platform: the output is portable IL, so a multi-arch build needs no emulation.
+# DaprMQ.Operator - control-plane service: the KEDA external scaler and, with CONSOLE_ENABLED, the
+# admin console. Build from the repo root (the console app lives in console/):
+#   docker build -f server/Dockerfile.operator -t daprmq-operator:dev .
+# Built on the build machine's platform: the output is portable IL and static files, so a multi-arch
+# build needs no emulation.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS console
+WORKDIR /console
+COPY console/package.json console/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY console/ ./
+RUN npm run build
+
 FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
-COPY src/DaprMQ.Interfaces/ ./src/DaprMQ.Interfaces/
-COPY src/DaprMQ.Operator/ ./src/DaprMQ.Operator/
-COPY NuGet.config .
-COPY nuget-local/ ./nuget-local/
+COPY server/src/DaprMQ.Interfaces/ ./src/DaprMQ.Interfaces/
+COPY server/src/DaprMQ.Operator/ ./src/DaprMQ.Operator/
+COPY server/NuGet.config .
+COPY server/nuget-local/ ./nuget-local/
 
 WORKDIR /src/src/DaprMQ.Operator
 RUN dotnet restore
@@ -16,8 +25,10 @@ RUN dotnet publish -c Release -o /app/publish
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app
 COPY --from=build /app/publish .
+# Served only when CONSOLE_ENABLED is set.
+COPY --from=console /console/dist ./wwwroot
 
-# 8080 = HTTP/1.1 health, 8081 = gRPC (KEDA scalerAddress)
+# 8080 = HTTP/1.1 health and the admin console, 8081 = gRPC (KEDA scalerAddress)
 EXPOSE 8080 8081
 
 ENV ASPNETCORE_URLS=http://+:8080

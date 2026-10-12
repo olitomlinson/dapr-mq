@@ -81,4 +81,17 @@ public class CatalogReadServiceTests
         Assert.Equal(2, page.Entries.Count);
         Assert.Null(page.NextCursor);
     }
+
+    [Fact]
+    public async Task TotalsCountEveryKind_RegardlessOfFilterAndCursor()
+    {
+        Add(Entry("q1"), Entry("q2"), Entry("q1-deadletter", CatalogEntryKind.DeadLetter), Entry("t", CatalogEntryKind.Topic));
+
+        var page = await CreateService().ListAsync(CatalogEntryKind.Topic, "a", 1);
+
+        Assert.Equal(2, page.Totals[CatalogEntryKind.Queue]);
+        Assert.Equal(1, page.Totals[CatalogEntryKind.DeadLetter]);
+        Assert.Equal(1, page.Totals[CatalogEntryKind.Topic]);
+        Assert.Equal(0, page.Totals[CatalogEntryKind.Sink]);
+    }
 }

@@ -37,6 +37,8 @@ public class DaprTestEnvironment : IAsyncLifetime
     private const string GatewayAppId = "daprmq-gateway";
 
     // Exposed endpoints and connection strings
+    /// <summary>The operator's HTTP/1.1 port (health and the admin console), once StartOperatorAsync has run.</summary>
+    public string OperatorHttpUrl { get; private set; } = string.Empty;
     public string PostgresConnectionString { get; private set; } = string.Empty;
     public string WireMockUrl { get; private set; } = string.Empty;
     public string WireMockInternalUrl { get; private set; } = string.Empty;
@@ -505,6 +507,8 @@ public class DaprTestEnvironment : IAsyncLifetime
             .WithEnvironment("DAPR_GRPC_ENDPOINT", $"http://{operatorSidecarAlias}:50001")
             // No caching, so a test sees each enqueue/dequeue immediately
             .WithEnvironment("DEPTH_CACHE_TTL_MS", "0")
+            .WithEnvironment("CONSOLE_ENABLED", "true")
+            .WithEnvironment("CONSOLE_CACHE_TTL_MS", "0")
             .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(r => r.ForPort(5000).ForPath("/health")))
             .Build();
         await _operatorContainer.StartAsync();
@@ -529,6 +533,7 @@ public class DaprTestEnvironment : IAsyncLifetime
             .Build();
         await _operatorSidecarContainer.StartAsync();
 
+        OperatorHttpUrl = $"http://localhost:{_operatorContainer.GetMappedPublicPort(5000)}";
         return $"http://localhost:{_operatorContainer.GetMappedPublicPort(5001)}";
     }
 

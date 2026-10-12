@@ -54,6 +54,14 @@ spec:
           value: {{ .Values.operator.depthCacheTtlMs | quote }}
         - name: STREAM_POLL_INTERVAL_MS
           value: {{ .Values.operator.streamPollIntervalMs | quote }}
+        {{- if .Values.console.enabled }}
+        - name: CONSOLE_ENABLED
+          value: "true"
+        - name: CONSOLE_CACHE_TTL_MS
+          value: {{ .Values.console.cacheTtlMs | quote }}
+        - name: CONSOLE_MAX_WORKER_CALLS
+          value: {{ .Values.console.maxWorkerCalls | quote }}
+        {{- end }}
         livenessProbe:
           {{- toYaml .Values.operator.livenessProbe | nindent 10 }}
         readinessProbe:

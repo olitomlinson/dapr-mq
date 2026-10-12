@@ -394,7 +394,7 @@ The workers serve the console's other reads the same way, from committed state a
 including offloaded segments, which keep their key), locks (through the expiry-bucket or session lock index), sessions,
 topics, and blob payloads resolved from a named message or lock. Browsing loads whole segments, so it is paged (≤ 100)
 and never polled. See [proposals/admin-console.md](../proposals/admin-console.md#2-worker-read-only-admin-endpoints)
-for the routes.
+for the routes. The operator serves them to the browser as the admin console ([CONSOLE.md](CONSOLE.md)).
 
 ## Integration Patterns
 

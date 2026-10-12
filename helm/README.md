@@ -233,6 +233,24 @@ reads depth from the workers via Dapr service invocation; see
 | `operator.depthCacheTtlMs` | Depth-read cache shared by KEDA's calls per poll | `1000` |
 | `operator.streamPollIntervalMs` | `external-push` activation re-check interval | `1000` |
 
+### Admin console
+
+The operator can also serve a read-only admin console: queues, DLQs, topics and sinks, with message, lock and session
+browsing. It has **no authentication**: anyone who can reach the `<fullname>-operator-console` Service can read message
+payloads and lock ids. The Service is ClusterIP only; port-forward to it or put your own authenticating ingress in front.
+See [docs/CONSOLE.md](../docs/CONSOLE.md).
+
+```bash
+helm upgrade --install daprmq ./helm --set operator.enabled=true --set console.enabled=true ...
+kubectl port-forward svc/daprmq-operator-console 9100:8080   # http://localhost:9100
+```
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `console.enabled` | Serve the console and add the `<fullname>-operator-console` Service (requires `operator.enabled`) | `false` |
+| `console.cacheTtlMs` | List and detail reads are cached this long, shared by every user | `10000` |
+| `console.maxWorkerCalls` | Worker calls the console may have in flight at once, per operator pod | `8` |
+
 ## Usage
 
 ### Access the Gateway

@@ -242,6 +242,18 @@ operator:
   tolerations: []
   affinity: {}
 
+# Read-only admin console, served by the operator on its HTTP port (requires operator.enabled).
+# No auth in v1: anyone who can reach the console Service can read message payloads and lock ids,
+# so it is ClusterIP only. Reach it with
+#   kubectl port-forward svc/<fullname>-operator-console 9100:8080
+# or put your own authenticating ingress in front. See docs/CONSOLE.md.
+console:
+  enabled: false
+  # List and detail reads are cached this long, shared by every user.
+  cacheTtlMs: 10000
+  # Worker calls the console may have in flight at once (per operator pod).
+  maxWorkerCalls: 8
+
 # Autoscaling configuration (for worker)
 autoscaling:
   enabled: false

@@ -77,6 +77,9 @@ public record CatalogPage
 {
     public List<CatalogEntry> Entries { get; init; } = [];
     public string? NextCursor { get; init; }
+
+    /// <summary>Entries of each kind in the whole catalog, ignoring the page's kind filter and cursor.</summary>
+    public Dictionary<CatalogEntryKind, int> Totals { get; init; } = [];
 }
 
 /// <summary>

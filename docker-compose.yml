@@ -401,6 +401,61 @@ services:
       - daprmq-network
 
   ############################
+  # Operator (KEDA scaler + read-only admin console at http://localhost:9100)
+  ############################
+  operator:
+    container_name: operator
+    build:
+      context: .
+      dockerfile: server/Dockerfile.operator
+    environment:
+      - ASPNETCORE_URLS=http://+:8080
+      - DAPR_GRPC_ENDPOINT=http://operator-dapr:50001
+      - DAPR_HTTP_ENDPOINT=http://operator-dapr:3500
+      # The workers' app-id: the console reads through their internal admin endpoints
+      - WORKER_APP_ID=daprmq-service
+      - CONSOLE_ENABLED=true
+    ports:
+      - "9100:8080" # Admin console and /api/console
+    depends_on:
+      operator-dapr:
+        condition: service_started
+    networks:
+      - daprmq-network
+
+  operator-dapr:
+    container_name: operator-dapr
+    image: "${DAPR_RUNTIME_VERSION}"
+    command:
+      [
+        "./daprd",
+        "-app-id",
+        "daprmq-operator",
+        "-dapr-http-port",
+        "3500",
+        "-dapr-grpc-port",
+        "50001",
+        "-placement-host-address",
+        "placement:50015",
+        "-scheduler-host-address",
+        "scheduler-0:50016",
+        "-resources-path",
+        "/components",
+        "-config",
+        "/dapr-config/config.yml",
+        "-log-level",
+        "info",
+      ]
+    volumes:
+      - "./server/dapr/components:/components"
+      - "./server/dapr/config:/dapr-config"
+    depends_on:
+      placement:
+        condition: service_started
+    networks:
+      - daprmq-network
+
+  ############################
   # Zookeeper
   ############################
   # zookeeper:

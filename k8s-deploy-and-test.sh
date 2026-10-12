@@ -373,7 +373,7 @@ else
     log_success "Built daprmq:${IMAGE_TAG}"
 
     if [[ "$KEDA" == "true" ]]; then
-        docker build -t "daprmq-operator:${IMAGE_TAG}" -f ./server/Dockerfile.operator ./server
+        docker build -t "daprmq-operator:${IMAGE_TAG}" -f ./server/Dockerfile.operator .
         log_success "Built daprmq-operator:${IMAGE_TAG}"
     fi
 

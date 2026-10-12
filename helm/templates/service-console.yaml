@@ -1,0 +1,22 @@
+{{- if .Values.console.enabled }}
+{{- if not .Values.operator.enabled }}
+{{- fail "console.enabled requires operator.enabled: the operator serves the admin console" }}
+{{- end }}
+# The read-only admin console. ClusterIP only and unauthenticated: port-forward to it, or front it
+# with your own authenticating ingress (docs/CONSOLE.md).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "daprmq.fullname" . }}-operator-console
+  labels:
+    {{- include "daprmq.operator.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+  - port: {{ .Values.operator.httpPort }}
+    targetPort: {{ .Values.operator.httpPort }}
+    protocol: TCP
+    name: http
+  selector:
+    {{- include "daprmq.operator.selectorLabels" . | nindent 4 }}
+{{- end }}
