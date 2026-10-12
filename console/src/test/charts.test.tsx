@@ -86,4 +86,45 @@ describe('Charts', () => {
     expect(within(chart).getByText('71 msg/s')).toBeInTheDocument()
     expect(within(screen.getByText('search').closest('tr')!).getByText('31')).toBeInTheDocument()
   })
+
+  it('overlays desired and actual consumers for each ScaledObject on the queue', async () => {
+    const so = { scaled_object: 'orders-consumer' }
+    metrics({
+      scaling: [
+        series('binding', [[1, 1]], { ...so, scaled_object_namespace: 'shop', mode: 'messages', hpa: 'keda-hpa-orders-consumer', target_value: '10', activation_value: '0' }),
+        series('metric', [[1, 60]], so),
+        series('desired', [[1, 6]], so),
+        series('actual', [[1, 4]], so),
+        series('min', [[1, 0]], so),
+        series('max', [[1, 8]], so),
+      ],
+    })
+    renderAt('/queues/orders?tab=metrics')
+    expect(await screen.findByText(/target 10 messages\/instance · min 0 · max 8/)).toBeInTheDocument()
+    const chart = screen.getByRole('heading', { name: 'Consumers' }).parentElement!
+    expect(within(chart).getByText('Desired (KEDA/HPA)')).toBeInTheDocument()
+    expect(within(chart).getByText('6')).toBeInTheDocument()
+    expect(within(chart).getByText('4')).toBeInTheDocument()
+  })
+
+  it('estimates the target without kube-state-metrics', async () => {
+    const so = { scaled_object: 'orders-consumer' }
+    metrics({
+      scaling: [
+        series('binding', [[1, 1]], { ...so, scaled_object_namespace: 'shop', mode: 'messages', target_value: '10' }),
+        series('metric', [[1, 61]], so),
+      ],
+    })
+    renderAt('/queues/orders?tab=metrics')
+    const chart = (await screen.findByRole('heading', { name: 'Consumers' })).parentElement!
+    expect(within(chart).getByText('7')).toBeInTheDocument()
+    expect(screen.getByText(/Install kube-state-metrics/)).toBeInTheDocument()
+  })
+
+  it('shows no consumer chart when KEDA does not scale on the queue', async () => {
+    metrics({ queue: [series('enqueued', [[1, 5]])] })
+    renderAt('/queues/orders?tab=metrics')
+    await screen.findByRole('heading', { name: 'Produced vs consumed' })
+    expect(screen.queryByRole('heading', { name: 'Consumers' })).not.toBeInTheDocument()
+  })
 })

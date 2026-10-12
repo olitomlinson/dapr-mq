@@ -280,10 +280,10 @@ console:
             pathType: Prefix
     tls: []
 
-# Prometheus metrics (DaprMQ.Queue, DaprMQ.Topic, DaprMQ.Delivery) on /metrics of every worker and
-# gateway pod.
+# Prometheus metrics on /metrics: DaprMQ.Queue, DaprMQ.Topic and DaprMQ.Delivery on every worker and
+# gateway pod, and the KEDA scaler bindings (DaprMQ.Operator) on operator pods.
 metrics:
-  # Annotate worker and gateway pods with prometheus.io/scrape, /port and /path.
+  # Annotate worker, gateway and operator pods with prometheus.io/scrape, /port and /path.
   scrapeAnnotations: true
   # A PodMonitor (Prometheus Operator / kube-prometheus-stack) for worker and gateway pods.
   podMonitor:

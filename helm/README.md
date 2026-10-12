@@ -263,8 +263,8 @@ They are also pushed over OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set on the 
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `metrics.scrapeAnnotations` | `prometheus.io/scrape`, `/port`, `/path` on worker and gateway pods | `true` |
-| `metrics.podMonitor.enabled` | A PodMonitor for the Prometheus Operator (workers have no Service) | `false` |
+| `metrics.scrapeAnnotations` | `prometheus.io/scrape`, `/port`, `/path` on worker, gateway and operator pods | `true` |
+| `metrics.podMonitor.enabled` | A PodMonitor for worker, gateway and operator pods (Prometheus Operator; workers have no Service) | `false` |
 | `metrics.podMonitor.interval` / `.labels` | Scrape interval; extra labels for your Prometheus' selector | `15s` / `{}` |
 | `metrics.queueLabel` | Per-queue series: `all`, `none` (aggregates only) or `allowlist` | `all` |
 | `metrics.queueAllowlist` | Queues that keep their own series under `allowlist`; the rest are `_other` | `[]` |

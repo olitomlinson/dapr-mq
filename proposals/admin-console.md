@@ -1,6 +1,6 @@
 # Admin console
 
-**Status:** PRs 1-4 (catalog, worker admin reads, browsing, charts) built. Delivered as five PRs (see [Delivery](#delivery)).
+**Status:** all five PRs built. Delivered as five PRs (see [Delivery](#delivery)).
 
 ## Context
 
@@ -494,7 +494,11 @@ Each PR is usable on its own:
    `console.prometheusUrl`, `separateDeployment` (with a new `SCALER_ENABLED` switch) and `ingress`.
    Counters are bumped right after each committing `SaveStateAsync` rather than through a hook.
    `metrics.serviceMonitor` became `metrics.podMonitor`, because workers have no Service.
-5. **The KEDA scaling overlay.**
+5. **The KEDA scaling overlay.** The binding's namespace label is `scaled_object_namespace`, since a
+   scrape would rename a `namespace` label (the operator pod has one). Overlay series come from the
+   `scaling` named query (`/api/console/metrics/scaling?id=&range=`) rather than a route of their
+   own. The kind CI asserts the operator exports the ScaledJob's binding; the kube-state-metrics joins
+   were verified by hand on a kind cluster, since CI has no Prometheus.
 
 ## Open questions
 

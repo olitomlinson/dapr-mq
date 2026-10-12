@@ -58,6 +58,7 @@ public static class ConsoleMetricQueries
             new("out", $"sum by (queue) (rate(daprmq_queue_dequeued_total{{{Queues(ids)},kind=\"queue\"}}[{window}]))", Instant: true),
             new("depth", $"sum by (queue) ({FreshDepth($"{Queues(ids)},kind=\"queue\"")})")
         ],
+        "scaling" when id != null => Scaling(id),
         "topic" when id != null =>
         [
             new("published", $"sum(rate(daprmq_topic_published_total{{{Label("topic", id)}}}[{window}]))"),
@@ -65,6 +66,46 @@ public static class ConsoleMetricQueries
         ],
         _ => null
     };
+
+    /// <summary>
+    /// The KEDA overlay for a queue, per ScaledObject (label scaled_object). The operator exports which
+    /// ScaledObjects scale on the queue (daprmq_scaler_binding); the replica counts come from
+    /// kube-state-metrics, joined through the HPA KEDA creates:
+    ///   desired / min / max   kube_horizontalpodautoscaler_* (desired replicas, spec bounds)
+    ///   actual                the scale target's own replica count, via kube_horizontalpodautoscaler_info
+    ///                         (an HPA's current_replicas never shows 0, though KEDA holds the target there)
+    ///   jobs                  active Jobs owned by a ScaledJob of that name (ScaledJobs have no HPA)
+    /// Without kube-state-metrics only binding and metric come back, and the UI estimates the target.
+    /// </summary>
+    private static IReadOnlyList<NamedQuery> Scaling(string queueId)
+    {
+        var binding = $"daprmq_scaler_binding{{{Queue(queueId)}}}";
+        var bound = $"max by (scaled_object_namespace, scaled_object, hpa) ({binding})";
+        var withNamespace = $"label_replace({bound}, \"namespace\", \"$1\", \"scaled_object_namespace\", \"(.*)\")";
+        var hpas = $"label_replace({withNamespace}, \"horizontalpodautoscaler\", \"$1\", \"hpa\", \"(.*)\")";
+        string Hpa(string metric) =>
+            $"max by (scaled_object) ({metric} * on (namespace, horizontalpodautoscaler) group_left (scaled_object) {hpas})";
+        string Target(string kind, string replicas, string label)
+        {
+            var targets = $"kube_horizontalpodautoscaler_info{{scaletargetref_kind=\"{kind}\"}} * on (namespace, horizontalpodautoscaler) group_left (scaled_object) {hpas}";
+            var byName = $"max by (namespace, {label}, scaled_object) (label_replace({targets}, \"{label}\", \"$1\", \"scaletargetref_name\", \"(.*)\"))";
+            return $"max by (scaled_object) ({replicas} * on (namespace, {label}) group_left (scaled_object) {byName})";
+        }
+
+        var jobOwners = $"max by (namespace, owner_name, scaled_object) (label_replace({withNamespace}, \"owner_name\", \"$1\", \"scaled_object\", \"(.*)\"))";
+        var activeJobs = "sum by (namespace, owner_name) (kube_job_status_active * on (namespace, job_name) group_left (owner_name) kube_job_owner{owner_kind=\"ScaledJob\"})";
+
+        return
+        [
+            new("binding", $"max by (scaled_object_namespace, scaled_object, mode, hpa, target_value, activation_value) ({binding})", Instant: true),
+            new("metric", $"max by (scaled_object) (daprmq_scaler_metric_value{{{Queue(queueId)}}})"),
+            new("desired", Hpa("kube_horizontalpodautoscaler_status_desired_replicas")),
+            new("min", Hpa("kube_horizontalpodautoscaler_spec_min_replicas")),
+            new("max", Hpa("kube_horizontalpodautoscaler_spec_max_replicas")),
+            new("actual", $"{Target("Deployment", "kube_deployment_status_replicas", "deployment")} or {Target("StatefulSet", "kube_statefulset_status_replicas", "statefulset")}"),
+            new("jobs", $"max by (scaled_object) ({activeJobs} * on (namespace, owner_name) group_left (scaled_object) {jobOwners})")
+        ];
+    }
 
     /// <summary>
     /// daprmq_queue_depth restricted to the freshest reporter of each queue. After an actor moves

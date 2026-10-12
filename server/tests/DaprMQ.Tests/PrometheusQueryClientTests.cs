@@ -129,4 +129,22 @@ public class PrometheusQueryClientTests
         Assert.True(double.IsNaN(m.Points[1][1]));
         Assert.Equal([5.0, 6.5], v.Points[0]);
     }
+
+    [Fact]
+    public void Scaling_JoinsTheOperatorsBindingsToKubeStateMetrics()
+    {
+        var queries = ConsoleMetricQueries.Build("scaling", "orders", [], "120s")!.ToDictionary(q => q.Series);
+
+        Assert.Equal(["binding", "metric", "desired", "min", "max", "actual", "jobs"], queries.Keys);
+        Assert.True(queries["binding"].Instant);
+        Assert.All(queries.Values, q => Assert.Contains("{queue=\"orders\"}", q.PromQl));
+        Assert.Contains("kube_horizontalpodautoscaler_status_desired_replicas * on (namespace, horizontalpodautoscaler) group_left (scaled_object)", queries["desired"].PromQl);
+        Assert.Contains("\"horizontalpodautoscaler\", \"$1\", \"hpa\"", queries["desired"].PromQl);
+        // Actual replicas come from the scale target, not the HPA (which never reports 0).
+        Assert.Contains("kube_deployment_status_replicas * on (namespace, deployment)", queries["actual"].PromQl);
+        Assert.Contains(" or ", queries["actual"].PromQl);
+        Assert.Contains("kube_statefulset_status_replicas", queries["actual"].PromQl);
+        Assert.DoesNotContain("current_replicas", queries["actual"].PromQl);
+        Assert.Contains("owner_kind=\"ScaledJob\"", queries["jobs"].PromQl);
+    }
 }

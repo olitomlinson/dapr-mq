@@ -62,6 +62,21 @@ console says "metrics not configured" and everything else still works.
 The operator runs only a fixed set of named PromQL queries (`/api/console/metrics/{name}`); it never accepts PromQL
 from the browser. Ranges are 15m, 1h, 6h or 24h at 120 points.
 
+## KEDA scaling overlay
+
+On a queue scaled by KEDA through the DaprMQ scaler, the Metrics tab adds a **Consumers** chart for each ScaledObject:
+desired replicas (KEDA/HPA) against actual replicas, with the HPA's min and max. A ScaledJob shows active Jobs instead.
+
+- **No Kubernetes API access.** KEDA's calls to the scaler carry the ScaledObject's name, namespace and trigger
+  metadata, so the operator learns which ScaledObjects scale on which queue as KEDA polls. It exports them on its own
+  `/metrics` as `daprmq_scaler_binding` and `daprmq_scaler_metric_value`. A link drops out 5 minutes after the last
+  call, so deleted ScaledObjects disappear.
+- **Replica counts come from kube-state-metrics** (part of kube-prometheus-stack), joined through the HPA KEDA creates
+  (`keda-hpa-<name>`, or the trigger's `hpaName` if you renamed it). Actual replicas are read from the Deployment or
+  StatefulSet, because an HPA's `current_replicas` never shows 0 while KEDA holds the workload there.
+- **Without kube-state-metrics** the chart shows only an estimated target, `ceil(metric ÷ targetValue)`.
+- Prometheus must scrape the operator pods too (Helm's scrape annotations and PodMonitor cover them).
+
 ## How it works
 
 ```

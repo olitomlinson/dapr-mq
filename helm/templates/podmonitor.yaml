@@ -1,6 +1,6 @@
 {{- if .Values.metrics.podMonitor.enabled }}
-# Scrapes /metrics on worker and gateway pods (Prometheus Operator). A PodMonitor rather than a
-# ServiceMonitor: workers have no Service.
+# Scrapes /metrics on worker, gateway and operator pods (Prometheus Operator). A PodMonitor rather
+# than a ServiceMonitor: workers have no Service. The operator exports the KEDA scaler bindings.
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:
@@ -18,7 +18,7 @@ spec:
         values: [{{ .Release.Name | quote }}]
       - key: app.kubernetes.io/component
         operator: In
-        values: [worker, gateway]
+        values: [worker, gateway, operator]
   podMetricsEndpoints:
     - port: http
       path: /metrics

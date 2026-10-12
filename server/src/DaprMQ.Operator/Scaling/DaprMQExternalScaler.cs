@@ -23,9 +23,11 @@ public sealed class DaprMQExternalScaler : ExternalScaler.ExternalScalerBase
     private readonly IWorkerDepthClient _depthClient;
     private readonly ScalerOptions _options;
     private readonly ILogger<DaprMQExternalScaler> _logger;
+    private readonly ScalerBindingRegistry _bindings;
 
-    public DaprMQExternalScaler(IWorkerDepthClient depthClient, ScalerOptions options, ILogger<DaprMQExternalScaler> logger)
+    public DaprMQExternalScaler(IWorkerDepthClient depthClient, ScalerOptions options, ILogger<DaprMQExternalScaler> logger, ScalerBindingRegistry bindings)
     {
+        _bindings = bindings ?? throw new ArgumentNullException(nameof(bindings));
         _depthClient = depthClient ?? throw new ArgumentNullException(nameof(depthClient));
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -34,7 +36,9 @@ public sealed class DaprMQExternalScaler : ExternalScaler.ExternalScalerBase
     public override async Task<IsActiveResponse> IsActive(ScaledObjectRef request, ServerCallContext context)
     {
         var metadata = ScalerMetadata.Parse(request.ScalerMetadata);
-        return new IsActiveResponse { Result = await GetMetricValueAsync(metadata, context.CancellationToken) > metadata.ActivationValue };
+        var value = await GetMetricValueAsync(metadata, context.CancellationToken);
+        _bindings.Record(request.Namespace, request.Name, metadata, value);
+        return new IsActiveResponse { Result = value > metadata.ActivationValue };
     }
 
     public override async Task StreamIsActive(ScaledObjectRef request, IServerStreamWriter<IsActiveResponse> responseStream, ServerCallContext context)
@@ -49,7 +53,9 @@ public sealed class DaprMQExternalScaler : ExternalScaler.ExternalScalerBase
             {
                 try
                 {
-                    var active = await GetMetricValueAsync(metadata, cancellationToken) > metadata.ActivationValue;
+                    var value = await GetMetricValueAsync(metadata, cancellationToken);
+                    _bindings.Record(request.Namespace, request.Name, metadata, value);
+                    var active = value > metadata.ActivationValue;
                     if (active != lastReported)
                     {
                         await responseStream.WriteAsync(new IsActiveResponse { Result = active });
@@ -74,6 +80,7 @@ public sealed class DaprMQExternalScaler : ExternalScaler.ExternalScalerBase
     public override Task<GetMetricSpecResponse> GetMetricSpec(ScaledObjectRef request, ServerCallContext context)
     {
         var metadata = ScalerMetadata.Parse(request.ScalerMetadata);
+        _bindings.Record(request.Namespace, request.Name, metadata);
         return Task.FromResult(new GetMetricSpecResponse
         {
             MetricSpecs =
@@ -92,6 +99,7 @@ public sealed class DaprMQExternalScaler : ExternalScaler.ExternalScalerBase
     {
         var metadata = ScalerMetadata.Parse(request.ScaledObjectRef.ScalerMetadata);
         var value = await GetMetricValueAsync(metadata, context.CancellationToken);
+        _bindings.Record(request.ScaledObjectRef.Namespace, request.ScaledObjectRef.Name, metadata, value);
         return new GetMetricsResponse
         {
             MetricValues =

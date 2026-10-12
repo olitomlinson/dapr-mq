@@ -365,6 +365,11 @@ outage. Configure the ScaledObject's `fallback` for what should happen instead.
 
 Trigger fields and a full example: [examples/keda/consumer-scaledobject.yaml](../examples/keda/consumer-scaledobject.yaml).
 
+**Bindings.** Each call from KEDA carries the ScaledObject's name and namespace, so the operator keeps an in-memory map
+of which ScaledObjects scale on which queue (expiring 5 minutes after the last call) and exports it on `/metrics`
+(`daprmq_scaler_binding`, `daprmq_scaler_metric_value`). The admin console joins it to kube-state-metrics to chart
+desired and actual consumers ([CONSOLE.md](CONSOLE.md#keda-scaling-overlay)).
+
 ## Catalog
 
 Queues are virtual actors that exist only by id, and Dapr actor state has no key enumeration, so nothing could list

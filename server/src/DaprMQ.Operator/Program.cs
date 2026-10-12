@@ -1,3 +1,4 @@
+using OpenTelemetry.Metrics;
 using DaprMQ.Operator.Console;
 using DaprMQ.Operator.Scaling;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -63,6 +64,12 @@ if (consoleEnabled)
         sp.GetRequiredService<TimeProvider>()));
 }
 
+// Which ScaledObjects scale on which queue, learned from KEDA's calls; exported on /metrics for the
+// console's scaling overlay.
+builder.Services.AddSingleton<ScalerBindingRegistry>();
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(metrics => metrics.AddMeter(ScalerBindingRegistry.MeterName).AddPrometheusExporter());
+
 builder.Services.AddGrpc();
 builder.Services.AddGrpcHealthChecks();
 builder.Services.AddHealthChecks();
@@ -77,6 +84,7 @@ if (builder.Configuration.GetValue("SCALER_ENABLED", true))
 }
 app.MapGrpcHealthChecksService();
 app.MapGet("/health", () => new { status = "healthy", service = "daprmq-operator" });
+app.MapPrometheusScrapingEndpoint();
 
 if (consoleEnabled)
 {

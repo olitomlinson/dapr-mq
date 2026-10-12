@@ -3,6 +3,7 @@ import { useMetrics } from '../../api/hooks'
 import type { MetricsRange } from '../../api/types'
 import { ui } from '../../components/ui'
 import { MetricsState, RangePicker, TimeSeriesChart, seriesPoints } from '../../components/charts'
+import { ScalingCharts } from './ScalingCharts'
 
 export function MetricsTab({ queueId }: { queueId: string }) {
   const [range, setRange] = useState<MetricsRange>('1h')
@@ -38,6 +39,7 @@ export function MetricsTab({ queueId }: { queueId: string }) {
               { key: 'dlq', label: 'Dead-letter', points: p('dlq') },
             ]} />
           </div>
+          <ScalingCharts queueId={queueId} range={range} />
         </div>
       </MetricsState>
     </>
