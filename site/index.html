@@ -24,7 +24,7 @@
         <a href="#dashboard">Dashboard</a>
         <a href="#license">License</a>
         <a href="https://github.com/olitomlinson/dapr-mq" target="_blank" rel="noopener">GitHub</a>
-        <a href="#demo" class="btn btn-primary">Get Started</a>
+        <a href="#get-started" class="btn btn-primary">Get Started</a>
       </div>
       <button class="nav-toggle" aria-label="Toggle menu">&#9776;</button>
     </div>
@@ -47,7 +47,7 @@
       <div class="hero-ctas">
         <a href="https://github.com/olitomlinson/dapr-mq" target="_blank" rel="noopener" class="btn btn-outline">View on
           GitHub</a>
-        <a href="#demo" class="btn btn-primary">Quick Start</a>
+        <a href="#get-started" class="btn btn-primary">Quick Start</a>
       </div>
     </div>
   </header>
@@ -83,17 +83,18 @@
         <div class="feature-card glass">
           <div class="icon">&#10003;</div>
           <h3>Acknowledgements</h3>
-          <p>Optional at-least-once delivery — unacknowledged messages become available again after a timeout.</p>
+          <p>Optional at-least-once delivery — Ack, Nack, Extend Lock, or Ack up to 1000 at once. An unacknowledged
+            message goes back to the position it was taken from, not the tail.</p>
         </div>
         <div class="feature-card glass">
           <div class="icon">&#128225;</div>
           <h3>Pub Sub</h3>
-          <p>Publish messages to a Topic, automatic fan-out to many independent Subsciber Queues.</p>
+          <p>Publish messages to a Topic, automatic fan-out to many independent Subscriber Queues.</p>
         </div>
         <div class="feature-card glass">
           <div class="icon">&#128202;</div>
           <h3>Session / Message Group</h3>
-          <p>Messages within a Queue can be assigned a Session ID. Consumers can lease one or more Sessions and recieve a FIFO stream of messages</p>
+          <p>Messages within a Queue can be assigned a Session ID. Consumers can lease one or more Sessions and receive a FIFO stream of messages</p>
         </div>
         <div class="feature-card glass">
           <div class="icon">&#128273;</div>
@@ -115,12 +116,19 @@
         <div class="feature-card glass">
           <div class="icon">&#10060;</div>
           <h3>Dead-Lettering</h3>
-          <p>Move poison messages to a dedicated dead-letter queue without blocking the main queue.</p>
+          <p>Poison messages move to a dedicated dead-letter queue without blocking the main queue — on request, or
+            automatically once they exceed the max delivery count.</p>
         </div>
         <div class="feature-card glass">
           <div class="icon">&#127760;</div>
           <h3>Built-in HTTP Sink</h3>
           <p>Forward messages to any webhook automatically — no custom control loop required.</p>
+        </div>
+        <div class="feature-card glass">
+          <div class="icon">&#8635;</div>
+          <h3>Streaming Consumers</h3>
+          <p>Open one gRPC stream and the server pushes messages as your handlers free up, renewing locks for you —
+            several times faster than polling.</p>
         </div>
         <div class="feature-card glass">
           <div class="icon">&#128193;</div>
@@ -142,7 +150,8 @@
         <div class="feature-card glass">
           <div class="icon">&#9017;</div>
           <h3>Helm Deploy</h3>
-          <p>Ship to Kubernetes with the bundled Helm chart — gateway and worker deployments with autoscaling out of the box.</p>
+          <p>Ship to Kubernetes with the published Helm chart — gateway and worker deployments, optional HPA, and a
+            KEDA scaler that autoscales your consumers on queue depth.</p>
         </div>
       </div>
     </div>
@@ -166,10 +175,10 @@
         <li><strong>High availability from the control plane</strong> — Dapr's placement service tracks actor health
           and re-activates queue actors elsewhere on instance failure, so daprMQ doesn't need to build its own failover
           logic.</li>
-        <li><strong>Bounded memory, whatever the queue depth</strong> — every queue is split into 1000 message
+        <li><strong>Bounded memory, whatever the queue depth</strong> — every queue is split into 100-message
           segments. Only the head and tail segments of a queue are ever held in memory; every segment in between is
-          unloaded, via Dapr's keyed state API. So memory and network usage scale with the work done (O(N) per
-          operation), not with how many messages are sitting in the queue.</li>
+          unloaded, via Dapr's keyed state API. So memory and network usage scale with the work done, not with how
+          many messages are sitting in the queue.</li>
         <li><strong>Unlimited queues, created on demand</strong> — every queue is just a Dapr actor, so there's nothing
           to provision upfront; spin up as many as you need and idle ones cost nothing until activated.</li>
         <li><strong>An idle queue costs nothing</strong> — a queue sitting untouched with millions of messages consumes
@@ -287,7 +296,7 @@
           <tr>
             <td>Priority</td>
             <td class="highlight">Native, unbounded priority lanes</td>
-            <td>Plugin-based priority queues</td>
+            <td>Opt-in per queue, up to 255 levels</td>
           </tr>
           <tr>
             <td>Dead-lettering</td>
@@ -316,8 +325,8 @@
           </tr>
           <tr>
             <td>Ordering</td>
-            <td class="highlight">Bound only by your state store</td>
-            <td>FIFO capped per message-group without batching</td>
+            <td class="highlight">FIFO per queue, by default</td>
+            <td>FIFO queues only, per message group</td>
           </tr>
           <tr>
             <td>Priority</td>
@@ -389,8 +398,8 @@
     <div class="container">
       <div class="section-label">SDKs</div>
       <h2 class="section-title">Client SDKs, in your language</h2>
-      <p class="section-sub" style="max-width: none;">Typed clients for five languages, all generated from the same
-        proto contract, so behaviour stays consistent across the board.</p>
+      <p class="section-sub" style="max-width: none;">Typed clients for five languages, all sharing one proto contract,
+        so behaviour stays consistent across the board. Each has a managed consumer for plain queues and for sessions.</p>
       <div class="sdk-grid">
         <div class="sdk-card glass">
           <div class="icon">C#</div>
@@ -429,6 +438,34 @@
         monorepo, and every one but Java is published as a pre-release. <a
           href="https://github.com/olitomlinson/dapr-mq/tree/main/sdks" target="_blank" rel="noopener"
           style="color: var(--color-lock); text-decoration: underline;">Browse the SDKs on GitHub.</a></p>
+    </div>
+  </section>
+
+  <section id="get-started">
+    <div class="container">
+      <div class="section-label">Get Started</div>
+      <h2 class="section-title">Install in two steps</h2>
+      <p class="section-sub" style="max-width: none;">Install the server into a cluster running Dapr 1.18+ with a
+        Dapr state store, then add an SDK. Everything is a pre-release until 1.0.</p>
+      <div class="code-grid">
+        <div class="code-card glass">
+          <div class="code-head"><span>Server (Helm)</span><button class="copy-btn">Copy</button></div>
+          <pre>helm install daprmq oci://ghcr.io/olitomlinson/charts/daprmq \
+  --devel -n daprmq \
+  --set dapr.stateStoreName=statestore</pre>
+        </div>
+        <div class="code-card glass">
+          <div class="code-head"><span>SDK</span><button class="copy-btn">Copy</button></div>
+          <pre>dotnet add package DaprMQ.Client --prerelease
+pip install daprmq-client
+npm install @daprmq/client
+go get github.com/olitomlinson/dapr-mq/sdks/go</pre>
+        </div>
+      </div>
+      <p class="section-sub" style="margin-top: var(--spacing-2xl); margin-bottom: 0;"><a
+          href="https://github.com/olitomlinson/dapr-mq/blob/main/helm/README.md" target="_blank" rel="noopener"
+          style="color: var(--color-lock); text-decoration: underline;">Full install guide, including the state store,
+          on GitHub.</a></p>
     </div>
   </section>
 
@@ -479,9 +516,11 @@
       <h2 class="section-title">What's next</h2>
       <div class="roadmap-chips">
         <span class="chip glass">Multi-tenant API surface</span>
-        <span class="chip glass">Fan-Out Architecture</span>
-        <span class="chip glass">Language SDKs</span>
+        <span class="chip glass">Queue purge</span>
+        <span class="chip glass">Long-polling Dequeue</span>
+        <span class="chip glass">Queue depth metrics</span>
         <span class="chip glass">Rate-limiting</span>
+        <span class="chip glass">Java SDK on Maven Central</span>
       </div>
       <p class="section-sub" style="margin-top: var(--spacing-2xl); margin-bottom: 0;"><a
           href="https://github.com/olitomlinson/dapr-mq#roadmap" target="_blank" rel="noopener"
@@ -497,7 +536,7 @@
         <div class="license-card glass">
           <h3>Free</h3>
           <p>Elastic License 2.0 (ELv2). Use daprMQ in development, testing, and production &mdash; internally, without
-            restriction. Modify it for internal purposes.</p>
+            restriction. Modify it for internal purposes. The client SDKs are Apache-2.0.</p>
         </div>
         <div class="license-card commercial glass">
           <h3>Commercial</h3>
@@ -525,8 +564,8 @@
         <a href="https://github.com/olitomlinson/dapr-mq/blob/main/COMMERCIAL.md" target="_blank"
           rel="noopener">Commercial Licensing</a>
       </div>
-      <div class="copyright">&copy; 2026 Oliver Tomlinson &mdash; daprMQ is distributed under the Elastic License 2.0
-        (ELv2).</div>
+      <div class="copyright">&copy; 2026 Oliver Tomlinson &mdash; the daprMQ server is distributed under the Elastic License
+        2.0 (ELv2); the client SDKs under Apache-2.0.</div>
     </div>
   </footer>
 
