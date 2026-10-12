@@ -470,6 +470,24 @@ services:
       - daprmq-network
 
   ############################
+  # Load generator (opt-in): docker compose --profile load up -d loadgen
+  # Varied traffic for the admin console. Settings: tools/loadgen/README.md
+  ############################
+  loadgen:
+    container_name: loadgen
+    profiles: ["load"]
+    build:
+      context: ./tools/loadgen
+    environment:
+      - GATEWAY_URL=http://gateway-1:8080
+      - QUEUES=${LOADGEN_QUEUES:-orders,emails,payments}
+      - PRODUCE_RATE=${LOADGEN_PRODUCE_RATE:-20}
+    depends_on:
+      - gateway-1
+    networks:
+      - daprmq-network
+
+  ############################
   # Zookeeper
   ############################
   # zookeeper:

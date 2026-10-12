@@ -18,7 +18,8 @@ Don't expose it publicly.
 ## Running it
 
 **docker compose:** `docker compose up` starts the operator with the console at <http://localhost:9100>, and
-Prometheus at <http://localhost:9090>.
+Prometheus at <http://localhost:9090>. For traffic to look at, `docker compose --profile load up -d loadgen` starts the
+[load generator](../tools/loadgen/README.md).
 
 **Helm:** set `operator.enabled=true` and `console.enabled=true`, then
 `kubectl port-forward svc/<fullname>-operator-console 9100:8080`. See [helm/README.md](../helm/README.md#admin-console).
