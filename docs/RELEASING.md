@@ -58,8 +58,7 @@ git push origin v0.0.0-alpha.1
 ```
 
 [release.yml](../.github/workflows/release.yml) then checks the tag format and that the commit is on `main`,
-stamps the version, runs the unit tests and publishes. So far npm, PyPI, the Go module, the images and the
-Helm chart are wired up. The Go job pushes the `sdks/go/vX.Y.Z` tag on the same commit.
+stamps the version, runs the unit tests and publishes. So far everything but Maven Central is wired up. The Go job pushes the `sdks/go/vX.Y.Z` tag on the same commit.
 
 ### Images and Helm chart
 
@@ -78,3 +77,10 @@ only on a package that already exists.
 
 Publishing uses PyPI trusted publishing (`daprmq-client` → Publishing: `olitomlinson/dapr-mq`, `release.yml`,
 environment `pypi`, which only accepts `v*` tags), so there is no token. Uploads carry PEP 740 attestations.
+
+### NuGet
+
+Publishing uses NuGet trusted publishing: a policy on nuget.org (`olitomlinson/dapr-mq`, `release.yml`,
+environment `nuget`, packages `DaprMQ.*`) lets `NuGet/login` exchange the job's GitHub identity for a
+short-lived API key. The `nuget` environment only accepts `v*` tags and holds the variable `NUGET_USER` (the
+nuget.org username). The `.snupkg` symbols package is pushed alongside.
