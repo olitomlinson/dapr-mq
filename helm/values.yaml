@@ -253,6 +253,46 @@ console:
   cacheTtlMs: 10000
   # Worker calls the console may have in flight at once (per operator pod).
   maxWorkerCalls: 8
+  # Prometheus HTTP API for the charts, e.g. http://prometheus-operated.monitoring:9090.
+  # Empty = no charts ("metrics not configured"). Scrape the workers with metrics.* below.
+  prometheusUrl: ""
+  # Run the console as its own Deployment of the operator image (scaler off there), so console
+  # load can never delay KEDA's GetMetrics. Off = the operator pods serve it.
+  separateDeployment: false
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+  # Optional ingress to the console Service. It has no auth of its own: put authentication in
+  # front (e.g. oauth2-proxy annotations for your ingress controller).
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: daprmq-console.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+
+# Prometheus metrics (DaprMQ.Queue, DaprMQ.Topic, DaprMQ.Delivery) on /metrics of every worker and
+# gateway pod.
+metrics:
+  # Annotate worker and gateway pods with prometheus.io/scrape, /port and /path.
+  scrapeAnnotations: true
+  # A PodMonitor (Prometheus Operator / kube-prometheus-stack) for worker and gateway pods.
+  podMonitor:
+    enabled: false
+    interval: 15s
+    labels: {}
+  # Per-queue series: all | none | allowlist (with queueAllowlist).
+  queueLabel: all
+  queueAllowlist: []
 
 # Autoscaling configuration (for worker)
 autoscaling:

@@ -17,7 +17,8 @@ Don't expose it publicly.
 
 ## Running it
 
-**docker compose:** `docker compose up` starts the operator with the console at <http://localhost:9100>.
+**docker compose:** `docker compose up` starts the operator with the console at <http://localhost:9100>, and
+Prometheus at <http://localhost:9090>.
 
 **Helm:** set `operator.enabled=true` and `console.enabled=true`, then
 `kubectl port-forward svc/<fullname>-operator-console 9100:8080`. See [helm/README.md](../helm/README.md#admin-console).
@@ -30,14 +31,15 @@ tests against MSW fixtures.
 
 | Page | Contents | Refresh |
 |---|---|---|
-| Overview | Counts of queues, DLQs, topics and sinks | Every 5 s |
-| Queues | Paged list with ready, locked and DLQ counts; switch to dead-letter queues | Every 5 s |
+| Overview | Counts of queues, topics and sinks; total ready and locked; throughput; top queues by depth; DLQs with messages | Every 5 s |
+| Queues | Paged list with ready, locked and DLQ counts, in/out rates and a 1h depth sparkline | Every 5 s |
 | Queue → Overview | Config, ready by priority, lease, corrupt state, HTTP sink | Every 5 s |
 | Queue → Messages / Dead-letter | Ready messages in queue order, 100 per page, with 1 KB previews | Manual |
 | Queue → Locked | Locks with live countdowns, delivery counts and mode | Manual |
 | Queue → Sessions | Sessions with depth and lease | Manual |
 | Message drawer | The full message (up to 1 MB) as JSON, raw or hex; blob payloads load on request | On open |
-| Topics → topic | Subscribers with lag and circuit-breaker state | Every 5 s |
+| Queue → Metrics | Produced vs consumed, ack/nack/expired/dead-lettered rates, and depth, over 15m-24h | Every 5 s |
+| Topics → topic | Subscribers with lag, dispatch rate and circuit-breaker state; publish vs dispatch chart | Every 5 s |
 | Sinks | URL, max concurrency, lock TTL and polling interval | Every 5 s |
 
 Polling can be paused from the header. Browse views are never polled, because each page loads whole queue segments on
@@ -50,6 +52,15 @@ state: a message can be consumed between listing and opening it, which the drawe
 **Queues appear once they activate.** The list comes from the catalog ([ARCHITECTURE.md](ARCHITECTURE.md#catalog)),
 which a queue joins the first time it activates on a worker. Queues that existed before upgrading appear the next time
 they are used.
+
+## Charts
+
+Charts need Prometheus scraping the workers' `/metrics` ([ARCHITECTURE.md](ARCHITECTURE.md#metrics)) and
+`PROMETHEUS_URL` on the operator (Helm `console.prometheusUrl`; docker compose includes Prometheus). Without it, the
+console says "metrics not configured" and everything else still works.
+
+The operator runs only a fixed set of named PromQL queries (`/api/console/metrics/{name}`); it never accepts PromQL
+from the browser. Ranges are 15m, 1h, 6h or 24h at 120 points.
 
 ## How it works
 
@@ -72,3 +83,5 @@ browser ─► operator  /api/console/*  (also serves the app)
 | `CONSOLE_ENABLED` | `false` | Serve `/api/console/*` and the app. With it off, the operator is unchanged. |
 | `CONSOLE_CACHE_TTL_MS` | `10000` | Shared cache for list and detail reads. `0` disables it. |
 | `CONSOLE_MAX_WORKER_CALLS` | `8` | Concurrent worker calls per operator pod. |
+| `PROMETHEUS_URL` | unset | Prometheus HTTP API for the charts. Unset, `/api/console/metrics/*` returns 501. |
+| `SCALER_ENABLED` | `true` | `false` on a console-only Deployment (Helm `console.separateDeployment`). |

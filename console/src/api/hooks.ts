@@ -2,8 +2,8 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { getJson, seg } from './client'
 import { usePollInterval } from './refresh'
 import type {
-  CatalogEntryKind, CatalogPage, Lock, LockPage, Message, MessagePage, Payload, QueueDetail, QueuePage,
-  SessionPage, TopicDetail,
+  CatalogEntryKind, CatalogPage, Lock, LockPage, Message, MessagePage, MetricsRange, MetricsResponse, Payload,
+  QueueDetail, QueuePage, SessionPage, TopicDetail,
 } from './types'
 
 // Browse queries are snapshots: fetched on open and on an explicit Refresh, never polled or
@@ -109,5 +109,18 @@ export function usePayload(ref: ItemRef, enabled: boolean) {
     enabled,
     retry: false,
     ...snapshot,
+  })
+}
+
+/** A named metrics query (/api/console/metrics/{name}). 501 means Prometheus isn't configured. */
+export function useMetrics(name: string, params: { id?: string; ids?: string[]; range?: MetricsRange }, enabled = true) {
+  const refetchInterval = usePollInterval()
+  const ids = params.ids?.join(',')
+  return useQuery({
+    queryKey: ['metrics', name, params.id, ids, params.range],
+    queryFn: () => getJson<MetricsResponse>(`/metrics/${name}`, { id: params.id, ids, range: params.range }),
+    refetchInterval,
+    enabled,
+    placeholderData: (previous) => previous,
   })
 }

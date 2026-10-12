@@ -6,8 +6,9 @@ import { OverviewTab } from './queue/OverviewTab'
 import { MessagesTab } from './queue/MessagesTab'
 import { LockedTab } from './queue/LockedTab'
 import { SessionsTab } from './queue/SessionsTab'
+import { MetricsTab } from './queue/MetricsTab'
 
-type Tab = 'overview' | 'messages' | 'locked' | 'deadletter' | 'sessions'
+type Tab = 'overview' | 'messages' | 'locked' | 'deadletter' | 'sessions' | 'metrics'
 
 export function QueueDetailPage() {
   const queueId = useParams().queueId!
@@ -22,6 +23,7 @@ export function QueueDetailPage() {
     { id: 'locked', label: `Locked${d ? ` ${formatCount(d.locked)}` : ''}` },
     ...(isDeadLetter ? [] : [{ id: 'deadletter' as Tab, label: `Dead-letter${d ? ` ${formatCount(d.deadLetterReady + d.deadLetterLocked)}` : ''}` }]),
     { id: 'sessions', label: `Sessions${d?.sessionCount ? ` ${formatCount(d.sessionCount)}` : ''}` },
+    { id: 'metrics', label: 'Metrics' },
   ]
   const requested = params.get('tab') as Tab | null
   const tab: Tab = tabs.some((t) => t.id === requested) ? requested! : 'overview'
@@ -44,6 +46,7 @@ export function QueueDetailPage() {
           {tab === 'locked' && <LockedTab queueId={queueId} maxDeliveryCount={d.maxDeliveryCount} />}
           {tab === 'deadletter' && <MessagesTab key={`${queueId}-deadletter`} queueId={`${queueId}-deadletter`} maxDeliveryCount={d.maxDeliveryCount} />}
           {tab === 'sessions' && <SessionsTab queueId={queueId} />}
+          {tab === 'metrics' && <MetricsTab queueId={queueId} />}
         </>
       )}
     </div>

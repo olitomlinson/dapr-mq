@@ -39,6 +39,10 @@ public static class ConsoleEndpoints
         MapProxy(group, "/queues/{queueId}/sessions", ["cursor", "limit"], cacheable: false);
         MapProxy(group, "/topics/{topicId}", [], cacheable: true);
 
+        group.MapGet("/metrics/{name}", (string name, string? id, string? ids, string? range, IServiceProvider services,
+                ConsoleResponseCache cache, TimeProvider time, CancellationToken ct) =>
+            HandleMetricsAsync(name, id, ids, range, services.GetService<IPrometheusClient>(), cache, time, ct));
+
         group.MapGet("/queues", (string? kind, string? cursor, int? limit, IWorkerAdminClient client, ConsoleResponseCache cache, CancellationToken ct) =>
             HandleQueuesAsync(kind, cursor, limit, client, cache, ct));
 
@@ -114,6 +118,64 @@ public static class ConsoleEndpoints
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             return Unavailable(ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Runs one named set of PromQL (<see cref="ConsoleMetricQueries"/>). 501 when PROMETHEUS_URL isn't
+    /// configured, 503 when Prometheus can't be reached. Cached like other polled reads.
+    /// </summary>
+    public static async Task<IResult> HandleMetricsAsync(
+        string name, string? id, string? ids, string? range, IPrometheusClient? prometheus,
+        ConsoleResponseCache cache, TimeProvider time, CancellationToken cancellationToken)
+    {
+        if (prometheus == null)
+        {
+            return Results.Problem(title: "Metrics not configured", detail: "Set PROMETHEUS_URL on the operator.",
+                statusCode: StatusCodes.Status501NotImplemented);
+        }
+
+        range ??= "1h";
+        if (!ConsoleMetricQueries.Ranges.TryGetValue(range, out var span))
+        {
+            return Results.BadRequest($"range must be one of: {string.Join(", ", ConsoleMetricQueries.Ranges.Keys)}");
+        }
+
+        var idList = (ids ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries);
+        if (idList.Length > ConsoleMetricQueries.MaxIds)
+        {
+            return Results.BadRequest($"At most {ConsoleMetricQueries.MaxIds} ids");
+        }
+
+        var step = TimeSpan.FromSeconds(Math.Max(15, span.TotalSeconds / ConsoleMetricQueries.PointsPerRange));
+        var window = $"{(int)Math.Max(120, step.TotalSeconds)}s";
+        var queries = ConsoleMetricQueries.Build(name, string.IsNullOrEmpty(id) ? null : id, idList, window);
+        if (queries == null)
+        {
+            return Results.BadRequest($"Unknown metrics '{name}', or it needs an id");
+        }
+
+        try
+        {
+            var key = CacheKey($"metrics/{name}", [new("id", id ?? string.Empty), new("ids", ids ?? string.Empty), new("range", range)]);
+            var reply = await cache.GetOrAddAsync(key, async () =>
+            {
+                var end = time.GetUtcNow();
+                var results = await Task.WhenAll(queries.Select(async q =>
+                {
+                    var series = q.Instant
+                        ? await prometheus.QueryAsync(q.PromQl, end, CancellationToken.None)
+                        : await prometheus.QueryRangeAsync(q.PromQl, end - span, end, step, CancellationToken.None);
+                    return series.Select(s => new MetricSeries { Name = q.Series, Labels = s.Labels, Points = s.Points });
+                }));
+                var response = new ConsoleMetricsResponse { Series = results.SelectMany(r => r).ToList() };
+                return new WorkerReply(StatusCodes.Status200OK, JsonSerializer.Serialize(response, JsonOptions));
+            }, cancellationToken);
+            return ToResult(reply);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            return Results.Problem(title: "Prometheus unavailable", detail: ex.Message, statusCode: StatusCodes.Status503ServiceUnavailable);
         }
     }
 

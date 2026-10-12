@@ -82,7 +82,8 @@ public class TopicActorTests
         Mock<ActorTimerManager>? mockTimerManager = null,
         string actorId = "test-topic",
         Mock<IHttpSinkActorInvoker>? mockHttpSinkActorInvoker = null,
-        ICatalogRegistrar? catalogRegistrar = null)
+        ICatalogRegistrar? catalogRegistrar = null,
+        TopicTelemetry? telemetry = null)
     {
         bool timerManagerProvided = mockTimerManager != null;
         mockTimerManager ??= new Mock<ActorTimerManager>();
@@ -101,7 +102,7 @@ public class TopicActorTests
         config ??= new TopicActorConfig();
 
         var actorHost = ActorHost.CreateForTest<TopicActor>(testOptions);
-        var actor = new TopicActor(actorHost, mockQueueActorInvoker.Object, mockHttpSinkActorInvoker.Object, config, catalogRegistrar ?? Mock.Of<ICatalogRegistrar>());
+        var actor = new TopicActor(actorHost, mockQueueActorInvoker.Object, mockHttpSinkActorInvoker.Object, config, catalogRegistrar ?? Mock.Of<ICatalogRegistrar>(), telemetry ?? TestTelemetry.Topic);
 
         typeof(Actor).GetProperty("StateManager")?.SetValue(actor, mockStateManager.Object);
 
@@ -596,5 +597,27 @@ public class TopicActorTests
         await CreateActorAsync(CreateMockStateManager(new Dictionary<string, object>()), actorId: "news", catalogRegistrar: registrar.Object);
 
         registrar.Verify(r => r.Register(It.Is<CatalogEntry>(e => e.Id == "news" && e.Kind == CatalogEntryKind.Topic)), Times.Once);
+    }
+
+    [Fact]
+    public async Task Metrics_CountPublishedAndDispatchedOnlyToSubscribersThatTookTheBatch()
+    {
+        using var telemetry = new TopicTelemetry(new MetricLabelPolicy());
+        using var collector = new MetricCollector(telemetry.Meter);
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        mockInvoker.Setup(i => i.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
+                It.IsAny<ActorId>(), ActorMethodNames.Enqueue, It.IsAny<EnqueueRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ActorId id, string _, EnqueueRequest _, CancellationToken _) =>
+                new EnqueueResponse { Success = id.GetId().EndsWith("good") });
+        var actor = await CreateActorAsync(CreateMockStateManager(new Dictionary<string, object>()), mockInvoker, actorId: "news", telemetry: telemetry);
+        await actor.Subscribe(new SubscribeRequest { SubscriberId = "good" });
+        await actor.Subscribe(new SubscribeRequest { SubscriberId = "bad" });
+
+        await actor.Publish(new PublishRequest { Items = [new EnqueueItem { ItemJson = "{}" }, new EnqueueItem { ItemJson = "{}" }] });
+        await actor.ReceiveReminderAsync("relay", Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.FromSeconds(1));
+
+        Assert.Equal(2, collector.Sum("daprmq.topic.published", ("topic", "news")));
+        Assert.Equal(2, collector.Sum("daprmq.topic.dispatched", ("subscriber", "good")));
+        Assert.Equal(0, collector.Sum("daprmq.topic.dispatched", ("subscriber", "bad")));
     }
 }

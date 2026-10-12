@@ -5,7 +5,7 @@ using DaprMQ.Interfaces;
 
 namespace DaprMQ.Tests;
 
-public class QueueActorTests
+public partial class QueueActorTests
 {
     /// <summary>
     /// Drives lock expiry the way it now happens: back-date the lock so it reads as lapsed, move its
@@ -173,7 +173,7 @@ public class QueueActorTests
         return mock;
     }
 
-    private async Task<QueueActor> CreateActorAsync(Mock<IActorStateManager> mockStateManager, Mock<IBlobReaperActorInvoker>? mockBlobReaperActorInvoker = null, IdempotencyConfig? idempotencyConfig = null, LockConfig? lockConfig = null, string? actorId = null, ICatalogRegistrar? catalogRegistrar = null)
+    private async Task<QueueActor> CreateActorAsync(Mock<IActorStateManager> mockStateManager, Mock<IBlobReaperActorInvoker>? mockBlobReaperActorInvoker = null, IdempotencyConfig? idempotencyConfig = null, LockConfig? lockConfig = null, string? actorId = null, ICatalogRegistrar? catalogRegistrar = null, QueueTelemetry? telemetry = null)
     {
         // Create mock timer manager that no-ops timer registration
         var mockTimerManager = new Mock<ActorTimerManager>();
@@ -220,7 +220,7 @@ public class QueueActorTests
         lockConfig ??= new LockConfig { MaxDeliveryCount = 10, SweepBatchSize = 200 };
 
         var actorHost = ActorHost.CreateForTest<QueueActor>(testOptions);
-        var actor = new QueueActor(actorHost, mockInvoker.Object, mockBlobReaperActorInvoker.Object, mockSessionCoordinatorActorInvoker.Object, tokenIssuer, blobReapConfig, idempotencyConfig, lockConfig, catalogRegistrar ?? Mock.Of<ICatalogRegistrar>());
+        var actor = new QueueActor(actorHost, mockInvoker.Object, mockBlobReaperActorInvoker.Object, mockSessionCoordinatorActorInvoker.Object, tokenIssuer, blobReapConfig, idempotencyConfig, lockConfig, catalogRegistrar ?? Mock.Of<ICatalogRegistrar>(), telemetry ?? TestTelemetry.Queue);
 
         // Use reflection to set the StateManager property
         var stateManagerProperty = typeof(Actor).GetProperty("StateManager");

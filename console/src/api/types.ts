@@ -145,3 +145,16 @@ export interface Payload {
   contentBase64: string
   truncated: boolean
 }
+
+export interface MetricSeries {
+  name: string
+  labels: Record<string, string>
+  /** [unixSeconds, value] */
+  points: [number, number][]
+}
+
+export interface MetricsResponse {
+  series: MetricSeries[]
+}
+
+export type MetricsRange = '15m' | '1h' | '6h' | '24h'

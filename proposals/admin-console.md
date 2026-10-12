@@ -1,6 +1,6 @@
 # Admin console
 
-**Status:** PRs 1-3 (catalog, worker admin reads, browsing) built. Delivered as five PRs (see [Delivery](#delivery)).
+**Status:** PRs 1-4 (catalog, worker admin reads, browsing, charts) built. Delivered as five PRs (see [Delivery](#delivery)).
 
 ## Context
 
@@ -489,9 +489,11 @@ Each PR is usable on its own:
 3. **Browsing:** the operator console API, static hosting and the browse UI. Built with the Helm
    `console.enabled` switch and Service, and the compose operator. The Overview page shows catalog
    counts only: total ready/locked, DLQs with messages and top queues need every queue's depth, so
-   they come from Prometheus in PR 4. `console.separateDeployment`, `ingress` and
-   `metrics.serviceMonitor` are left for PR 4.
-4. **Charts:** OTel metrics, the depth gauge, Prometheus and the charts.
+   they come from Prometheus in PR 4.
+4. **Charts:** OTel metrics, the depth gauge, Prometheus and the charts, plus Helm
+   `console.prometheusUrl`, `separateDeployment` (with a new `SCALER_ENABLED` switch) and `ingress`.
+   Counters are bumped right after each committing `SaveStateAsync` rather than through a hook.
+   `metrics.serviceMonitor` became `metrics.podMonitor`, because workers have no Service.
 5. **The KEDA scaling overlay.**
 
 ## Open questions

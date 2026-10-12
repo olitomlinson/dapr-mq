@@ -83,6 +83,7 @@ public class TopicActor : Actor, ITopicActor, IRemindable
     private readonly IHttpSinkActorInvoker _httpSinkActorInvoker;
     private readonly TopicActorConfig _config;
     private readonly ICatalogRegistrar _catalogRegistrar;
+    private readonly TopicTelemetry _telemetry;
 
     internal const string MetadataKey = "metadata";
     private const string RelayReminderName = "relay";
@@ -93,12 +94,14 @@ public class TopicActor : Actor, ITopicActor, IRemindable
         IQueueActorInvoker queueActorInvoker,
         IHttpSinkActorInvoker httpSinkActorInvoker,
         TopicActorConfig config,
-        ICatalogRegistrar catalogRegistrar) : base(host)
+        ICatalogRegistrar catalogRegistrar,
+        TopicTelemetry telemetry) : base(host)
     {
         _queueActorInvoker = queueActorInvoker ?? throw new ArgumentNullException(nameof(queueActorInvoker));
         _httpSinkActorInvoker = httpSinkActorInvoker ?? throw new ArgumentNullException(nameof(httpSinkActorInvoker));
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _catalogRegistrar = catalogRegistrar ?? throw new ArgumentNullException(nameof(catalogRegistrar));
+        _telemetry = telemetry ?? throw new ArgumentNullException(nameof(telemetry));
     }
 
     protected override async Task OnActivateAsync()
@@ -379,6 +382,7 @@ public class TopicActor : Actor, ITopicActor, IRemindable
         };
         await SetMetadataAsync(metadata);
         await StateManager.SaveStateAsync();
+        _telemetry.Published(Id.GetId(), request.Items.Count);
 
         await TryRegisterReminderAsync(RelayReminderName, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
 
@@ -637,6 +641,7 @@ public class TopicActor : Actor, ITopicActor, IRemindable
         }
 
         var updatedCursors = new Dictionary<string, long>(metadata.DispatchCursors);
+        var dispatched = new List<string>();
 
         foreach (var subscriberId in eligibleSubscribers)
         {
@@ -653,6 +658,7 @@ public class TopicActor : Actor, ITopicActor, IRemindable
             if (success)
             {
                 updatedCursors[subscriberId] = advancedCursors[subscriberId];
+                dispatched.Add(subscriberId);
                 await ClearCircuitBreakerAsync(subscriberId);
             }
             else
@@ -669,6 +675,10 @@ public class TopicActor : Actor, ITopicActor, IRemindable
         metadata = metadata with { DispatchCursors = updatedCursors, CurrentRelayIntervalSeconds = nextInterval };
         await SetMetadataAsync(metadata);
         await StateManager.SaveStateAsync();
+        foreach (var subscriberId in dispatched)
+        {
+            _telemetry.Dispatched(Id.GetId(), subscriberId, batches[subscriberId].Count);
+        }
 
         var nextIntervalSpan = TimeSpan.FromSeconds(nextInterval);
         await TryRegisterReminderAsync(RelayReminderName, nextIntervalSpan, nextIntervalSpan);

@@ -5,6 +5,8 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 using DaprMQ.ApiServer.Endpoints;
 using DaprMQ.ApiServer.Services;
 using DaprMQ.Interfaces;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
 using Grpc.Net.Client;
 
 // Enable HTTP/2 without TLS for gRPC (h2c protocol)
@@ -178,6 +180,32 @@ builder.Services.AddSingleton<DaprMQ.IAdminReadService>(sp =>
         },
         sp.GetRequiredService<LockConfig>(),
         sp.GetRequiredService<IObjectStore>()));
+
+// Metrics (DaprMQ.Queue, DaprMQ.Topic, DaprMQ.Delivery), scraped from /metrics on every instance and
+// pushed over OTLP when OTEL_EXPORTER_OTLP_ENDPOINT is set. DAPRMQ_METRICS_QUEUE_LABEL bounds the
+// series count: all (one series per queue), none (aggregates only), or allowlist
+// (DAPRMQ_METRICS_QUEUE_ALLOWLIST, comma-separated; the rest are "_other").
+var queueLabelMode = Enum.Parse<DaprMQ.QueueLabelMode>(builder.Configuration.GetValue("DAPRMQ_METRICS_QUEUE_LABEL", "all")!, ignoreCase: true);
+var queueLabelAllowlist = (builder.Configuration.GetValue<string>("DAPRMQ_METRICS_QUEUE_ALLOWLIST") ?? string.Empty)
+    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+var metricLabels = new DaprMQ.MetricLabelPolicy(queueLabelMode, queueLabelAllowlist);
+builder.Services.AddSingleton(new DaprMQ.QueueTelemetry(metricLabels, TimeProvider.System));
+builder.Services.AddSingleton(new DaprMQ.TopicTelemetry(metricLabels));
+var metricsCardinalityLimit = builder.Configuration.GetValue("DAPRMQ_METRICS_CARDINALITY_LIMIT", 20_000);
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(resource => resource.AddService(builder.Configuration.GetValue("REGISTER_ACTORS", true) ? "daprmq-worker" : "daprmq-gateway"))
+    .WithMetrics(metrics =>
+    {
+        metrics
+            .AddMeter(DaprMQ.QueueTelemetry.MeterName, DaprMQ.TopicTelemetry.MeterName, "DaprMQ.Delivery")
+            // Set explicitly rather than left at the SDK default: series beyond it are dropped.
+            .AddView(_ => new OpenTelemetry.Metrics.MetricStreamConfiguration { CardinalityLimit = metricsCardinalityLimit })
+            .AddPrometheusExporter();
+        if (!string.IsNullOrEmpty(builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]))
+        {
+            metrics.AddOtlpExporter();
+        }
+    });
 
 // Register TopicActor tunables (global defaults - see TopicActorConfig)
 builder.Services.AddSingleton(new TopicActorConfig());
@@ -366,6 +394,9 @@ if (registerActors)
     app.MapQueueDepthEndpoint();
     app.MapAdminReadEndpoints();
 }
+
+// Prometheus scrape endpoint, on every instance
+app.MapPrometheusScrapingEndpoint();
 
 // Readiness is mapped on every instance (workers included), not just API-serving ones
 app.MapGrpcHealthChecksService();

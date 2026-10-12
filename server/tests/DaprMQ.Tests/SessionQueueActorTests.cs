@@ -182,7 +182,8 @@ public class SessionQueueActorTests
             blobReapConfig,
             idempotencyConfig,
             lockConfig,
-            catalogRegistrar ?? Mock.Of<ICatalogRegistrar>());
+            catalogRegistrar ?? Mock.Of<ICatalogRegistrar>(),
+            TestTelemetry.Queue);
 
         var stateManagerProperty = typeof(Actor).GetProperty("StateManager");
         stateManagerProperty?.SetValue(actor, mockStateManager.Object);

@@ -250,6 +250,24 @@ kubectl port-forward svc/daprmq-operator-console 9100:8080   # http://localhost:
 | `console.enabled` | Serve the console and add the `<fullname>-operator-console` Service (requires `operator.enabled`) | `false` |
 | `console.cacheTtlMs` | List and detail reads are cached this long, shared by every user | `10000` |
 | `console.maxWorkerCalls` | Worker calls the console may have in flight at once, per operator pod | `8` |
+| `console.prometheusUrl` | Prometheus HTTP API for the charts; empty = no charts | `""` |
+| `console.separateDeployment` | Run the console as its own Deployment (scaler off there), so it can never delay KEDA | `false` |
+| `console.replicaCount` / `.resources` | For the separate Deployment | `1` |
+| `console.ingress.*` | Optional ingress to the console Service. Add authentication in front of it | disabled |
+
+### Metrics
+
+Workers and gateways serve Prometheus metrics on `/metrics` (meters `DaprMQ.Queue`, `DaprMQ.Topic`, `DaprMQ.Delivery`).
+They are also pushed over OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set on the pods. See
+[docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md#metrics).
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `metrics.scrapeAnnotations` | `prometheus.io/scrape`, `/port`, `/path` on worker and gateway pods | `true` |
+| `metrics.podMonitor.enabled` | A PodMonitor for the Prometheus Operator (workers have no Service) | `false` |
+| `metrics.podMonitor.interval` / `.labels` | Scrape interval; extra labels for your Prometheus' selector | `15s` / `{}` |
+| `metrics.queueLabel` | Per-queue series: `all`, `none` (aggregates only) or `allowlist` | `all` |
+| `metrics.queueAllowlist` | Queues that keep their own series under `allowlist`; the rest are `_other` | `[]` |
 
 ## Usage
 

@@ -18,5 +18,9 @@ spec:
     protocol: TCP
     name: http
   selector:
+    {{- if .Values.console.separateDeployment }}
+    {{- include "daprmq.console.selectorLabels" . | nindent 4 }}
+    {{- else }}
     {{- include "daprmq.operator.selectorLabels" . | nindent 4 }}
+    {{- end }}
 {{- end }}

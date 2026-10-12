@@ -65,6 +65,14 @@ public class ConsoleApiTests(OperatorTestFixture fixture)
     }
 
     [Fact]
+    public async Task Metrics_WithoutPrometheus_Are501()
+    {
+        var response = await fixture.OperatorClient.GetAsync("/api/console/metrics/throughput");
+
+        Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
+    }
+
+    [Fact]
     public async Task ServesTheConsoleApp()
     {
         var root = await fixture.OperatorClient.GetAsync("/");

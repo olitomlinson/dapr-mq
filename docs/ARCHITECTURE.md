@@ -396,6 +396,33 @@ topics, and blob payloads resolved from a named message or lock. Browsing loads 
 and never polled. See [proposals/admin-console.md](../proposals/admin-console.md#2-worker-read-only-admin-endpoints)
 for the routes. The operator serves them to the browser as the admin console ([CONSOLE.md](CONSOLE.md)).
 
+## Metrics
+
+Workers and gateways export OpenTelemetry metrics on `/metrics` (Prometheus format), and over OTLP when
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set. Three meters:
+
+| Meter | Instruments | Labels |
+|---|---|---|
+| `DaprMQ.Queue` | counters `daprmq.queue.enqueued`, `dequeued`, `acknowledged`, `nacked`, `deadlettered`, `lock_expired` | `queue`, `kind` (`queue`/`deadletter`), `session` |
+| | gauges `daprmq.queue.depth` (`state` = `ready`/`locked`) and `daprmq.queue.depth_updated` (unix seconds) | `queue`, `kind` |
+| `DaprMQ.Topic` | counters `daprmq.topic.published`, `daprmq.topic.dispatched` | `topic`, and `subscriber` on dispatched |
+| `DaprMQ.Delivery` | counters `daprmq.delivery.retries`, `daprmq.delivery.failures` | `outcome` |
+
+- **Counted after the commit.** A queue actor bumps a counter only after the `SaveStateAsync` that commits the work, so
+  a failed save counts nothing.
+- **Labels stay bounded.** A session actor is labelled with its parent queue plus `session=true`, and a DLQ with its
+  parent queue plus `kind=deadletter`, so session and DLQ ids never become label values. `DAPRMQ_METRICS_QUEUE_LABEL`
+  is `all` (one series per queue), `none` (aggregates only) or `allowlist` (`DAPRMQ_METRICS_QUEUE_ALLOWLIST`; the rest
+  are `_other`). `DAPRMQ_METRICS_CARDINALITY_LIMIT` (default 20,000 per instrument) is set explicitly; series beyond it
+  are dropped.
+- **Depth costs no I/O.** After every method that completes (`OnPostActorMethodAsync`), and on activation, a queue
+  actor records its depth from the metadata already in its state manager's cache into a worker-local map. Sessions sum
+  under their parent queue. An entry outlives deactivation on purpose: an idle queue's depth can only change inside the
+  actor, so the last value stays true. After a rebalance two workers can report one queue; queries keep the series with
+  the newest `depth_updated` (the console does). A restarted worker forgets idle queues until they next activate.
+- **History only.** The depth gauge is not for scaling decisions: a missing entry would read as 0. KEDA reads depth
+  from state ([above](#autoscaling-consumers-with-keda)).
+
 ## Integration Patterns
 
 ### 1. Direct Actor Invocation

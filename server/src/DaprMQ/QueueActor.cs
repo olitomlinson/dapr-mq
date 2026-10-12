@@ -150,6 +150,8 @@ public class QueueActor : Actor, IQueueActor
     private readonly IdempotencyConfig _idempotencyConfig;
     private readonly LockConfig _lockConfig;
     private readonly ICatalogRegistrar _catalogRegistrar;
+    private readonly QueueTelemetry _telemetry;
+    private readonly KeyValuePair<string, object?>[] _metricTags;
 
     private const int MaxSegmentSize = 100;
     private const int MinLockTtlSeconds = 1;
@@ -329,7 +331,8 @@ public class QueueActor : Actor, IQueueActor
         BlobReapConfig blobReapConfig,
         IdempotencyConfig idempotencyConfig,
         LockConfig lockConfig,
-        ICatalogRegistrar catalogRegistrar) : base(host)
+        ICatalogRegistrar catalogRegistrar,
+        QueueTelemetry telemetry) : base(host)
     {
         _actorInvoker = queueActorInvoker ?? throw new ArgumentNullException(nameof(queueActorInvoker));
         _blobReaperActorInvoker = blobReaperActorInvoker ?? throw new ArgumentNullException(nameof(blobReaperActorInvoker));
@@ -339,7 +342,32 @@ public class QueueActor : Actor, IQueueActor
         _idempotencyConfig = idempotencyConfig ?? throw new ArgumentNullException(nameof(idempotencyConfig));
         _lockConfig = lockConfig ?? throw new ArgumentNullException(nameof(lockConfig));
         _catalogRegistrar = catalogRegistrar ?? throw new ArgumentNullException(nameof(catalogRegistrar));
+        _telemetry = telemetry ?? throw new ArgumentNullException(nameof(telemetry));
+        _metricTags = telemetry.Labels.QueueTags(host.Id.GetId());
     }
+
+    /// <summary>
+    /// Records this queue's depth for the depth gauge after every method that completed (Dapr skips
+    /// this hook when a method throws). Metadata is already in the state manager's cache, so this is
+    /// a dictionary write, not a state read.
+    /// </summary>
+    protected override async Task OnPostActorMethodAsync(ActorMethodContext actorMethodContext)
+    {
+        await RecordDepthAsync();
+    }
+
+    private async Task RecordDepthAsync()
+    {
+        var metadata = await StateManager.TryGetStateAsync<ActorMetadata>("metadata");
+        if (metadata.HasValue)
+        {
+            _telemetry.RecordDepth(Id.GetId(), _metricTags, metadata.Value.Queues.Values.Sum(q => (long)q.Count), metadata.Value.LockCount);
+        }
+    }
+
+    // Counters are bumped only after the SaveStateAsync that commits the work, so a failed save
+    // counts nothing.
+    private void Count(QueueCounter counter, long count = 1) => _telemetry.Add(counter, count, _metricTags);
 
     /// <summary>
     /// If itemJson is a blob-reference envelope, schedules deletion of the underlying blob on
@@ -429,6 +457,8 @@ public class QueueActor : Actor, IQueueActor
         }
 
         await RegisterAsSessionActorIfNeededAsync();
+
+        await RecordDepthAsync();
 
         // Non-blocking hand-off to the worker's CatalogRegistrar; per-session actors are skipped.
         var catalogEntry = CatalogEntry.ForQueueActorId(Id.GetId(), DateTimeOffset.UtcNow);
@@ -681,6 +711,7 @@ public class QueueActor : Actor, IQueueActor
                 LockExpiryBuckets = buckets
             });
             await StateManager.SaveStateAsync();
+            Count(QueueCounter.LockExpired, expired);
         }
 
         // Cross-actor, so kept out of the batch above and committed per item - see
@@ -775,6 +806,7 @@ public class QueueActor : Actor, IQueueActor
             LockCount = Math.Max(0, metadata.LockCount - restored.Count)
         });
         await StateManager.SaveStateAsync();
+        Count(QueueCounter.LockExpired, restored.Count);
 
         Logger.LogInformation(
             "Session lease lapsed on {ActorId}; restored {Restored} locked item(s) to their original positions",
@@ -932,6 +964,8 @@ public class QueueActor : Actor, IQueueActor
         var metadata = await GetMetadataAsync();
         await SetMetadataAsync(metadata with { LockCount = Math.Max(0, metadata.LockCount - 1) });
         await StateManager.SaveStateAsync();
+        Count(QueueCounter.LockExpired);
+        Count(QueueCounter.DeadLettered);
 
         Logger.LogWarning(
             "Lock {LockId} exceeded MaxDeliveryCount {MaxDeliveryCount}; dead-lettered",
@@ -1169,6 +1203,7 @@ public class QueueActor : Actor, IQueueActor
 
             // Commit all staged changes atomically (all items across all priorities)
             await StateManager.SaveStateAsync();
+            Count(QueueCounter.Enqueued, totalEnqueued);
 
             // Bound actor in-memory growth: once committed, idempotency markers are safe to
             // unload from the state manager's tracker (best-effort, controlled by config).
@@ -1280,6 +1315,7 @@ public class QueueActor : Actor, IQueueActor
             if (response.Locked)
             {
                 await StateManager.SaveStateAsync();
+                Count(QueueCounter.Dequeued, items.Count);
                 return new DequeueResponse
                 {
                     Items = items,
@@ -1294,6 +1330,7 @@ public class QueueActor : Actor, IQueueActor
             if (response.IsEmpty)
             {
                 await StateManager.SaveStateAsync();
+                Count(QueueCounter.Dequeued, items.Count);
                 return new DequeueResponse
                 {
                     Items = items,
@@ -1323,6 +1360,7 @@ public class QueueActor : Actor, IQueueActor
 
         // Commit all changes atomically
         await StateManager.SaveStateAsync();
+        Count(QueueCounter.Dequeued, items.Count);
 
         return new DequeueResponse
         {
@@ -1652,6 +1690,7 @@ public class QueueActor : Actor, IQueueActor
             metadata = await IndexLocksAsync(metadata, newLockIds, lockExpiresAt);
             await SetMetadataAsync(metadata);
             await StateManager.SaveStateAsync();
+            Count(QueueCounter.Dequeued, lockedItems.Count);
 
             Logger.LogInformation("Created {Count} locks with TTL {TtlSeconds}s, expires at {LockExpiresAt}", lockedItems.Count, ttlSeconds, lockExpiresAt);
 
@@ -1843,6 +1882,7 @@ public class QueueActor : Actor, IQueueActor
         await SetMetadataAsync(metadata with { LockCount = metadata.LockCount - settledIds.Count });
 
         await StateManager.SaveStateAsync();
+        Count(QueueCounter.Acknowledged, settledIds.Count);
 
         // Acknowledge is the finalization point for DequeueLocked items - if an item's payload was
         // offloaded to an object store, schedule deletion of the underlying blob. Best-effort.
@@ -2181,6 +2221,7 @@ public class QueueActor : Actor, IQueueActor
         await SetMetadataAsync(metadata with { LockCount = metadata.LockCount - 1 });
 
         await StateManager.SaveStateAsync();
+        Count(QueueCounter.DeadLettered);
 
         return dlqActorId;
     }
@@ -2258,6 +2299,7 @@ public class QueueActor : Actor, IQueueActor
                     };
                 }
 
+                Count(QueueCounter.Nacked);
                 Logger.LogWarning(
                     "Nack of lock {LockId} exceeded MaxDeliveryCount {MaxDeliveryCount}; dead-lettered",
                     lockId, _lockConfig.MaxDeliveryCount);
@@ -2281,6 +2323,7 @@ public class QueueActor : Actor, IQueueActor
             await SetMetadataAsync(metadata with { LockCount = Math.Max(0, metadata.LockCount - 1) });
 
             await StateManager.SaveStateAsync();
+            Count(QueueCounter.Nacked);
 
             Logger.LogDebug("Nacked lock {LockId}; item returned to its original position", lockId);
 
