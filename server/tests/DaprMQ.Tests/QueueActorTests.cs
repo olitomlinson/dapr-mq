@@ -173,7 +173,7 @@ public class QueueActorTests
         return mock;
     }
 
-    private async Task<QueueActor> CreateActorAsync(Mock<IActorStateManager> mockStateManager, Mock<IBlobReaperActorInvoker>? mockBlobReaperActorInvoker = null, IdempotencyConfig? idempotencyConfig = null, LockConfig? lockConfig = null)
+    private async Task<QueueActor> CreateActorAsync(Mock<IActorStateManager> mockStateManager, Mock<IBlobReaperActorInvoker>? mockBlobReaperActorInvoker = null, IdempotencyConfig? idempotencyConfig = null, LockConfig? lockConfig = null, string? actorId = null, ICatalogRegistrar? catalogRegistrar = null)
     {
         // Create mock timer manager that no-ops timer registration
         var mockTimerManager = new Mock<ActorTimerManager>();
@@ -184,6 +184,10 @@ public class QueueActorTests
         {
             TimerManager = mockTimerManager.Object
         };
+        if (actorId != null)
+        {
+            testOptions.ActorId = new ActorId(actorId);
+        }
 
         // Create mock actor invoker to handle DLQ enqueue
         var mockInvoker = new Mock<IQueueActorInvoker>();
@@ -216,7 +220,7 @@ public class QueueActorTests
         lockConfig ??= new LockConfig { MaxDeliveryCount = 10, SweepBatchSize = 200 };
 
         var actorHost = ActorHost.CreateForTest<QueueActor>(testOptions);
-        var actor = new QueueActor(actorHost, mockInvoker.Object, mockBlobReaperActorInvoker.Object, mockSessionCoordinatorActorInvoker.Object, tokenIssuer, blobReapConfig, idempotencyConfig, lockConfig);
+        var actor = new QueueActor(actorHost, mockInvoker.Object, mockBlobReaperActorInvoker.Object, mockSessionCoordinatorActorInvoker.Object, tokenIssuer, blobReapConfig, idempotencyConfig, lockConfig, catalogRegistrar ?? Mock.Of<ICatalogRegistrar>());
 
         // Use reflection to set the StateManager property
         var stateManagerProperty = typeof(Actor).GetProperty("StateManager");
@@ -2963,5 +2967,25 @@ public class QueueActorTests
 
         Assert.Equal(1, Assert.Single(redelivered.Items).DeliveryCount);
     }
-}
 
+    [Fact]
+    public async Task OnActivate_RegistersTheQueueInTheCatalog()
+    {
+        var registrar = new Mock<ICatalogRegistrar>();
+
+        await CreateActorAsync(CreateMockStateManager(), actorId: "orders", catalogRegistrar: registrar.Object);
+
+        registrar.Verify(r => r.Register(It.Is<CatalogEntry>(e => e.Id == "orders" && e.Kind == CatalogEntryKind.Queue && e.ParentId == null)), Times.Once);
+    }
+
+    [Fact]
+    public async Task OnActivate_DeadLetterQueue_RegistersWithItsParent()
+    {
+        var registrar = new Mock<ICatalogRegistrar>();
+
+        await CreateActorAsync(CreateMockStateManager(), actorId: "orders-deadletter", catalogRegistrar: registrar.Object);
+
+        registrar.Verify(r => r.Register(It.Is<CatalogEntry>(e =>
+            e.Id == "orders-deadletter" && e.Kind == CatalogEntryKind.DeadLetter && e.ParentId == "orders")), Times.Once);
+    }
+}

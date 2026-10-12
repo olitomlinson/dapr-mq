@@ -31,4 +31,6 @@ public static class ActorMethodNames
     public const string AcceptSession = "AcceptSession";
     public const string RenewSessionLease = "RenewSessionLease";
     public const string ReleaseSession = "ReleaseSession";
+
+    public const string RegisterCatalogBatch = "RegisterBatchAsync";
 }

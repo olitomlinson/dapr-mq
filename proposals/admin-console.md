@@ -1,6 +1,6 @@
 # Admin console
 
-**Status:** proposed. Delivered as five PRs (see [Delivery](#delivery)).
+**Status:** PR 1 (catalog) in progress. Delivered as five PRs (see [Delivery](#delivery)).
 
 ## Context
 
@@ -61,10 +61,11 @@ of committed state.
 - **Sharding.** 64 shards, `catalog-{n}`, where n is a stable FNV-1a hash of the entity id.
   `string.GetHashCode` is randomised per process, so it can't be used.
 - **Entries:** `CatalogEntry { Id, Kind: Queue | DeadLetter | Topic | Sink, ParentId?, RegisteredAt }`.
-- **Storage** uses the segmented pattern: append-only `entries_seg_{n}` keys of 100 entries each,
-  plus `metadata` holding the segment count.
-- **Duplicates.** On activation the shard loads its ids into an in-memory set, so registering a
-  known id costs no write. At 100k entities a shard holds about 1.6k entries, or 16 segments.
+- **Storage** is one `entries` key per shard, a map of id to entry. It isn't segmented: the
+  segmented pattern is for a queue's head/tail access, and nothing consumes from a catalog head.
+  Sharding already bounds the blob, and it's only rewritten when the shard sees a new id.
+- **Duplicates.** On activation the shard loads `entries`, so registering a known id costs no
+  write. At 100k entities a shard holds about 1.6k entries.
 - **`RegisterBatchAsync(entries)`** writes only new ids, in one `SaveStateAsync`.
 - **Reads.** The console reads shards through the state reader and never calls the actor.
 - Follow the existing invoker pattern: add a `CatalogActorInvoker` and `ActorMethodNames`
@@ -104,8 +105,8 @@ There is no deregistration in v1, because queues are never deleted. An empty que
   `MapQueueDepthEndpoint` whenever actors are registered.
 - **Logic:** `AdminReadService` in `server/src/DaprMQ/`.
 - **Models:** `server/src/DaprMQ.Interfaces/AdminModels.cs`.
-- **State reader:** `IQueueActorStateReader` gains a generic `ReadStateAsync<T>(actorType, actorId,
-  key)`. Today's `ReadMetadataAsync` becomes a call to it.
+- **State reader:** `IQueueActorStateReader.ReadStateAsync<T>(actorType, actorId, key)` (added in
+  PR 1 for the catalog read).
 
 | Route (GET) | Returns |
 |---|---|
@@ -431,8 +432,8 @@ once the worker endpoints exist.
 1. **Integration test (HTTP contract):** after an enqueue, `/api/console/queues` lists the queue and
    `/messages` returns its items, without changing depth.
 2. **Unit tests** in `server/tests/DaprMQ.Tests/`:
-   - `CatalogActorTests`: a known id causes no write, a new segment rolls over at 100 entries, the
-     id set loads on activation.
+   - `CatalogActorTests`: a known id causes no write, duplicates in a batch are added once, the
+     entries load on activation.
    - `CatalogRegistrarTests`: repeats are dropped, batches are grouped by shard, the
      one-per-second rate holds.
    - Registration hooks in `QueueActorTests` and `TopicActorTests`: sessions are skipped, DLQs

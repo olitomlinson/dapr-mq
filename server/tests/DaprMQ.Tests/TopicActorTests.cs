@@ -81,7 +81,8 @@ public class TopicActorTests
         TopicActorConfig? config = null,
         Mock<ActorTimerManager>? mockTimerManager = null,
         string actorId = "test-topic",
-        Mock<IHttpSinkActorInvoker>? mockHttpSinkActorInvoker = null)
+        Mock<IHttpSinkActorInvoker>? mockHttpSinkActorInvoker = null,
+        ICatalogRegistrar? catalogRegistrar = null)
     {
         bool timerManagerProvided = mockTimerManager != null;
         mockTimerManager ??= new Mock<ActorTimerManager>();
@@ -100,7 +101,7 @@ public class TopicActorTests
         config ??= new TopicActorConfig();
 
         var actorHost = ActorHost.CreateForTest<TopicActor>(testOptions);
-        var actor = new TopicActor(actorHost, mockQueueActorInvoker.Object, mockHttpSinkActorInvoker.Object, config);
+        var actor = new TopicActor(actorHost, mockQueueActorInvoker.Object, mockHttpSinkActorInvoker.Object, config, catalogRegistrar ?? Mock.Of<ICatalogRegistrar>());
 
         typeof(Actor).GetProperty("StateManager")?.SetValue(actor, mockStateManager.Object);
 
@@ -585,5 +586,15 @@ public class TopicActorTests
         var response = await actor.GetPublishStatus(new GetPublishStatusRequest { PublishId = "does-not-exist" });
 
         Assert.False(response.Found);
+    }
+
+    [Fact]
+    public async Task OnActivate_RegistersTheTopicInTheCatalog()
+    {
+        var registrar = new Mock<ICatalogRegistrar>();
+
+        await CreateActorAsync(CreateMockStateManager(new Dictionary<string, object>()), actorId: "news", catalogRegistrar: registrar.Object);
+
+        registrar.Verify(r => r.Register(It.Is<CatalogEntry>(e => e.Id == "news" && e.Kind == CatalogEntryKind.Topic)), Times.Once);
     }
 }

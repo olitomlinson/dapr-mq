@@ -103,7 +103,8 @@ var actorConfig = new
     HttpSinkActorTypeName = builder.Configuration.GetValue("HTTP_SINK_ACTOR_TYPE_NAME", "HttpSinkActor"),
     BlobReaperActorTypeName = builder.Configuration.GetValue("BLOB_REAPER_ACTOR_TYPE_NAME", "BlobReaperActor"),
     TopicActorTypeName = builder.Configuration.GetValue("TOPIC_ACTOR_TYPE_NAME", "TopicActor"),
-    SessionCoordinatorActorTypeName = builder.Configuration.GetValue("SESSION_COORDINATOR_ACTOR_TYPE_NAME", "SessionCoordinatorActor")
+    SessionCoordinatorActorTypeName = builder.Configuration.GetValue("SESSION_COORDINATOR_ACTOR_TYPE_NAME", "SessionCoordinatorActor"),
+    CatalogActorTypeName = builder.Configuration.GetValue("CATALOG_ACTOR_TYPE_NAME", "CatalogActor")
 };
 
 // builder.Services.AddSingleton(actorConfig);
@@ -139,6 +140,12 @@ builder.Services.AddSingleton<ISessionCoordinatorActorInvoker>(sp =>
         sp.GetRequiredService<Dapr.Actors.Client.IActorProxyFactory>(),
         actorConfig.SessionCoordinatorActorTypeName));
 
+// Register CatalogActor invoker (dedicated invoker for CatalogActor operations, used by CatalogRegistrar)
+builder.Services.AddSingleton<ICatalogActorInvoker>(sp =>
+    new CatalogActorInvoker(
+        sp.GetRequiredService<Dapr.Actors.Client.IActorProxyFactory>(),
+        actorConfig.CatalogActorTypeName));
+
 // Register QueueActorStateReader (used by SessionCoordinatorActor's directory sweep to check a
 // session's item count via Dapr's actor-state data-plane API directly, bypassing actor
 // activation - see QueueActorStateReader for why that matters for a sweep that specifically
@@ -155,6 +162,11 @@ builder.Services.AddSingleton<DaprMQ.IQueueActorStateReader>(sp =>
 // KEDA scaler). Only meaningful on workers - see QueueDepthEndpoint.
 builder.Services.AddSingleton<DaprMQ.IQueueDepthService>(sp =>
     new DaprMQ.QueueDepthService(sp.GetRequiredService<DaprMQ.IQueueActorStateReader>()));
+
+// Catalog read behind the worker's internal /internal/admin/catalog endpoint (the admin console).
+// Only meaningful on workers - see AdminReadEndpoints.
+builder.Services.AddSingleton<DaprMQ.ICatalogReadService>(sp =>
+    new DaprMQ.CatalogReadService(sp.GetRequiredService<DaprMQ.IQueueActorStateReader>(), actorConfig.CatalogActorTypeName));
 
 // Register TopicActor tunables (global defaults - see TopicActorConfig)
 builder.Services.AddSingleton(new TopicActorConfig());
@@ -226,6 +238,7 @@ if (registerActors)
         options.Actors.RegisterActor<DaprMQ.BlobReaperActor>(actorConfig.BlobReaperActorTypeName);
         options.Actors.RegisterActor<DaprMQ.TopicActor>(actorConfig.TopicActorTypeName);
         options.Actors.RegisterActor<DaprMQ.SessionCoordinatorActor>(actorConfig.SessionCoordinatorActorTypeName);
+        options.Actors.RegisterActor<DaprMQ.CatalogActor>(actorConfig.CatalogActorTypeName);
 
         // Configure actor runtime settings. Overridable for tests that need to force actors cold
         // deterministically (e.g. the reentrancy A -> B -> A hazard below only manifests when the
@@ -258,6 +271,15 @@ if (registerActors)
             WriteIndented = false // Set to true only for debugging
         };
     });
+
+    // Actors hand catalog entries to this worker-local registrar, which batches them to CatalogActor
+    // shards in the background (see CatalogRegistrar).
+    builder.Services.AddSingleton<CatalogRegistrar>(sp => new CatalogRegistrar(
+        sp.GetRequiredService<ICatalogActorInvoker>(),
+        TimeProvider.System,
+        sp.GetRequiredService<ILogger<CatalogRegistrar>>()));
+    builder.Services.AddSingleton<ICatalogRegistrar>(sp => sp.GetRequiredService<CatalogRegistrar>());
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<CatalogRegistrar>());
 }
 // No else needed - Dapr Client (from AddDapr) is sufficient for actor invocation
 
@@ -331,6 +353,7 @@ if (registerActors)
 {
     app.MapActorsHandlers();
     app.MapQueueDepthEndpoint();
+    app.MapAdminReadEndpoints();
 }
 
 // Readiness is mapped on every instance (workers included), not just API-serving ones

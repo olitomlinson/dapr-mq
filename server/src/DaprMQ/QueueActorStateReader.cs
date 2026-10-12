@@ -54,6 +54,12 @@ public interface IQueueActorStateReader
     /// metadata key means no sessions; a failed request throws.
     /// </summary>
     Task<IReadOnlyCollection<string>> ReadSessionDirectoryAsync(string queueId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reads one state key of any actor. Returns null when the key doesn't exist; throws on a failed
+    /// request or an undeserializable body.
+    /// </summary>
+    Task<T?> ReadStateAsync<T>(string actorType, string actorId, string key, CancellationToken cancellationToken = default) where T : class;
 }
 
 /// <inheritdoc cref="IQueueActorStateReader" />
@@ -81,7 +87,7 @@ public class QueueActorStateReader : IQueueActorStateReader
     /// <inheritdoc />
     public async Task<SessionActorState> ReadSessionStateAsync(ActorId actorId, CancellationToken cancellationToken = default)
     {
-        var metadata = await ReadMetadataAsync<ActorMetadata>(_actorType, actorId.GetId(), cancellationToken)
+        var metadata = await ReadStateAsync<ActorMetadata>(_actorType, actorId.GetId(), "metadata", cancellationToken)
             ?? throw new InvalidOperationException(
                 $"No metadata state found for actor '{actorId.GetId()}' - inconclusive read, cannot determine emptiness");
 
@@ -94,7 +100,7 @@ public class QueueActorStateReader : IQueueActorStateReader
     /// <inheritdoc />
     public async Task<QueueDepth> ReadQueueDepthAsync(ActorId actorId, CancellationToken cancellationToken = default)
     {
-        var metadata = await ReadMetadataAsync<ActorMetadata>(_actorType, actorId.GetId(), cancellationToken);
+        var metadata = await ReadStateAsync<ActorMetadata>(_actorType, actorId.GetId(), "metadata", cancellationToken);
         return metadata == null
             ? new QueueDepth(0, 0)
             : new QueueDepth(metadata.Queues.Values.Sum(q => (long)q.Count), metadata.LockCount);
@@ -103,24 +109,21 @@ public class QueueActorStateReader : IQueueActorStateReader
     /// <inheritdoc />
     public async Task<IReadOnlyCollection<string>> ReadSessionDirectoryAsync(string queueId, CancellationToken cancellationToken = default)
     {
-        var metadata = await ReadMetadataAsync<SessionCoordinatorMetadata>(_sessionCoordinatorActorType, queueId, cancellationToken);
+        var metadata = await ReadStateAsync<SessionCoordinatorMetadata>(_sessionCoordinatorActorType, queueId, "metadata", cancellationToken);
         return metadata?.SessionDirectory.Keys.ToArray() ?? [];
     }
 
-    /// <summary>
-    /// GETs an actor's "metadata" key. Returns null when the key doesn't exist (empty body); throws on
-    /// a non-success status or an undeserializable body.
-    /// </summary>
-    private async Task<T?> ReadMetadataAsync<T>(string actorType, string actorId, CancellationToken cancellationToken) where T : class
+    /// <inheritdoc />
+    public async Task<T?> ReadStateAsync<T>(string actorType, string actorId, string key, CancellationToken cancellationToken = default) where T : class
     {
         var client = _httpClientFactory.CreateClient();
-        var url = $"{_daprHttpEndpoint}/v1.0/actors/{actorType}/{actorId}/state/metadata";
+        var url = $"{_daprHttpEndpoint}/v1.0/actors/{actorType}/{actorId}/state/{key}";
 
         var response = await client.GetAsync(url, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             throw new InvalidOperationException(
-                $"Failed to read metadata state for actor '{actorId}': HTTP {(int)response.StatusCode}");
+                $"Failed to read {key} state for actor '{actorId}': HTTP {(int)response.StatusCode}");
         }
 
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -130,6 +133,6 @@ public class QueueActorStateReader : IQueueActorStateReader
         }
 
         return JsonSerializer.Deserialize<T>(body, DeserializeOptions)
-            ?? throw new InvalidOperationException($"Failed to deserialize metadata state for actor '{actorId}'");
+            ?? throw new InvalidOperationException($"Failed to deserialize {key} state for actor '{actorId}'");
     }
 }

@@ -74,7 +74,7 @@ public class HttpSinkActorTests
 
         var testOptions = new ActorTestOptions { TimerManager = mockTimerManager.Object };
         var actorHost = ActorHost.CreateForTest<HttpSinkActor>(testOptions);
-        var actor = new HttpSinkActor(actorHost, mockQueueInvoker.Object, mockHttpClientFactory.Object);
+        var actor = new HttpSinkActor(actorHost, mockQueueInvoker.Object, mockHttpClientFactory.Object, Mock.Of<ICatalogRegistrar>());
 
         typeof(Actor).GetProperty("StateManager")?.SetValue(actor, mockStateManager.Object);
 
@@ -128,7 +128,7 @@ public class HttpSinkActorTests
 
         var testOptions = new ActorTestOptions { TimerManager = mockTimerManager.Object };
         var actorHost = ActorHost.CreateForTest<HttpSinkActor>(testOptions);
-        var actor = new HttpSinkActor(actorHost, mockQueueInvoker.Object, mockHttpClientFactory.Object);
+        var actor = new HttpSinkActor(actorHost, mockQueueInvoker.Object, mockHttpClientFactory.Object, Mock.Of<ICatalogRegistrar>());
 
         typeof(Actor).GetProperty("StateManager")?.SetValue(actor, mockStateManager.Object);
 
@@ -199,7 +199,7 @@ public class HttpSinkActorTests
 
         var testOptions = new ActorTestOptions { TimerManager = mockTimerManager.Object };
         var actorHost = ActorHost.CreateForTest<HttpSinkActor>(testOptions);
-        var actor = new HttpSinkActor(actorHost, mockQueueInvoker.Object, mockHttpClientFactory.Object);
+        var actor = new HttpSinkActor(actorHost, mockQueueInvoker.Object, mockHttpClientFactory.Object, Mock.Of<ICatalogRegistrar>());
 
         typeof(Actor).GetProperty("StateManager")?.SetValue(actor, mockStateManager.Object);
 
@@ -251,7 +251,7 @@ public class HttpSinkActorTests
 
         var testOptions = new ActorTestOptions { TimerManager = mockTimerManager.Object };
         var actorHost = ActorHost.CreateForTest<HttpSinkActor>(testOptions);
-        var actor = new HttpSinkActor(actorHost, mockQueueInvoker.Object, mockHttpClientFactory.Object);
+        var actor = new HttpSinkActor(actorHost, mockQueueInvoker.Object, mockHttpClientFactory.Object, Mock.Of<ICatalogRegistrar>());
 
         typeof(Actor).GetProperty("StateManager")?.SetValue(actor, mockStateManager.Object);
 
@@ -271,5 +271,26 @@ public class HttpSinkActorTests
         updatedState = (HttpSinkActorState)stateData["sink-state"];
         Assert.Equal(4, updatedState.CurrentIntervalSeconds);
         Assert.Empty(reminderRegistrations); // No re-registration since interval unchanged
+    }
+
+    [Fact]
+    public async Task InitializeHttpSink_RegistersTheSinkInTheCatalog()
+    {
+        var mockStateManager = CreateMockStateManager(new Dictionary<string, object>());
+        var mockTimerManager = new Mock<ActorTimerManager>();
+        mockTimerManager.Setup(m => m.RegisterReminderAsync(It.IsAny<ActorReminder>())).Returns(Task.CompletedTask);
+        var registrar = new Mock<ICatalogRegistrar>();
+        var actorHost = ActorHost.CreateForTest<HttpSinkActor>(new ActorTestOptions
+        {
+            TimerManager = mockTimerManager.Object,
+            ActorId = new ActorId("orders-sink")
+        });
+        var actor = new HttpSinkActor(actorHost, new Mock<IQueueActorInvoker>().Object, new Mock<IHttpClientFactory>().Object, registrar.Object);
+        typeof(Actor).GetProperty("StateManager")?.SetValue(actor, mockStateManager.Object);
+
+        await actor.InitializeHttpSink(new InitializeHttpSinkRequest { Url = "http://svc", QueueActorId = "orders", MaxConcurrency = 1, LockTtlSeconds = 30 });
+
+        registrar.Verify(r => r.Register(It.Is<CatalogEntry>(e =>
+            e.Id == "orders-sink" && e.Kind == CatalogEntryKind.Sink && e.ParentId == "orders")), Times.Once);
     }
 }

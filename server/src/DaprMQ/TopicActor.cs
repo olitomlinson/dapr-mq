@@ -82,6 +82,7 @@ public class TopicActor : Actor, ITopicActor, IRemindable
     private readonly IQueueActorInvoker _queueActorInvoker;
     private readonly IHttpSinkActorInvoker _httpSinkActorInvoker;
     private readonly TopicActorConfig _config;
+    private readonly ICatalogRegistrar _catalogRegistrar;
 
     private const string MetadataKey = "metadata";
     private const string RelayReminderName = "relay";
@@ -91,15 +92,19 @@ public class TopicActor : Actor, ITopicActor, IRemindable
         ActorHost host,
         IQueueActorInvoker queueActorInvoker,
         IHttpSinkActorInvoker httpSinkActorInvoker,
-        TopicActorConfig config) : base(host)
+        TopicActorConfig config,
+        ICatalogRegistrar catalogRegistrar) : base(host)
     {
         _queueActorInvoker = queueActorInvoker ?? throw new ArgumentNullException(nameof(queueActorInvoker));
         _httpSinkActorInvoker = httpSinkActorInvoker ?? throw new ArgumentNullException(nameof(httpSinkActorInvoker));
         _config = config ?? throw new ArgumentNullException(nameof(config));
+        _catalogRegistrar = catalogRegistrar ?? throw new ArgumentNullException(nameof(catalogRegistrar));
     }
 
     protected override async Task OnActivateAsync()
     {
+        _catalogRegistrar.Register(new CatalogEntry { Id = Id.GetId(), Kind = CatalogEntryKind.Topic, RegisteredAt = DateTimeOffset.UtcNow });
+
         var existing = await StateManager.TryGetStateAsync<TopicMetadata>(MetadataKey);
 
         if (!existing.HasValue)

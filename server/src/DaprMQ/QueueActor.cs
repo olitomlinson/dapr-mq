@@ -149,6 +149,7 @@ public class QueueActor : Actor, IQueueActor
     private readonly BlobReapConfig _blobReapConfig;
     private readonly IdempotencyConfig _idempotencyConfig;
     private readonly LockConfig _lockConfig;
+    private readonly ICatalogRegistrar _catalogRegistrar;
 
     private const int MaxSegmentSize = 100;
     private const int MinLockTtlSeconds = 1;
@@ -323,7 +324,8 @@ public class QueueActor : Actor, IQueueActor
         IObjectClaimTokenIssuer objectClaimTokenIssuer,
         BlobReapConfig blobReapConfig,
         IdempotencyConfig idempotencyConfig,
-        LockConfig lockConfig) : base(host)
+        LockConfig lockConfig,
+        ICatalogRegistrar catalogRegistrar) : base(host)
     {
         _actorInvoker = queueActorInvoker ?? throw new ArgumentNullException(nameof(queueActorInvoker));
         _blobReaperActorInvoker = blobReaperActorInvoker ?? throw new ArgumentNullException(nameof(blobReaperActorInvoker));
@@ -332,6 +334,7 @@ public class QueueActor : Actor, IQueueActor
         _blobReapConfig = blobReapConfig ?? throw new ArgumentNullException(nameof(blobReapConfig));
         _idempotencyConfig = idempotencyConfig ?? throw new ArgumentNullException(nameof(idempotencyConfig));
         _lockConfig = lockConfig ?? throw new ArgumentNullException(nameof(lockConfig));
+        _catalogRegistrar = catalogRegistrar ?? throw new ArgumentNullException(nameof(catalogRegistrar));
     }
 
     /// <summary>
@@ -422,6 +425,13 @@ public class QueueActor : Actor, IQueueActor
         }
 
         await RegisterAsSessionActorIfNeededAsync();
+
+        // Non-blocking hand-off to the worker's CatalogRegistrar; per-session actors are skipped.
+        var catalogEntry = CatalogEntry.ForQueueActorId(Id.GetId(), DateTimeOffset.UtcNow);
+        if (catalogEntry != null)
+        {
+            _catalogRegistrar.Register(catalogEntry);
+        }
     }
 
     /// <summary>

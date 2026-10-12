@@ -365,6 +365,28 @@ outage. Configure the ScaledObject's `fallback` for what should happen instead.
 
 Trigger fields and a full example: [examples/keda/consumer-scaledobject.yaml](../examples/keda/consumer-scaledobject.yaml).
 
+## Catalog
+
+Queues are virtual actors that exist only by id, and Dapr actor state has no key enumeration, so nothing could list
+them. The catalog is a registry of queues, DLQs, topics and HTTP sinks, read by the admin console
+([proposals/admin-console.md](../proposals/admin-console.md)).
+
+- **Shards.** 64 `CatalogActor` instances, `catalog-{n}`, where n is a stable FNV-1a hash of the entity id
+  (`CatalogShards`). Each holds its entries in one `entries` key. It isn't segmented: nothing consumes from a head,
+  sharding bounds the blob, and it's only rewritten when a shard sees a new id.
+- **Registration, off the actor's turn.** `QueueActor` and `TopicActor` register on every activation, and
+  `HttpSinkActor` on `InitializeHttpSink`, by a non-blocking write to the worker's `CatalogRegistrar`. The registrar
+  drops ids it has already sent in this process, then batches by shard, at most one call per shard per second. Nothing
+  is persisted: an id whose send fails registers again on the actor's next activation.
+- **Kinds.** `{id}-deadletter` registers as `DeadLetter` with its queue as `ParentId`; a sink's `ParentId` is its
+  queue. Per-session actors are skipped (sessions are listed from the SessionCoordinatorActor directory), and topic
+  subscriptions come from each topic's `SubscriberIds`.
+- **Reads.** `GET /internal/admin/catalog?kind=&cursor=&limit=` on workers reads all shards through the actor-state API
+  (never calling or activating them, as with queue depth above), merges them sorted by id and pages with the last id
+  as the cursor. `limit` defaults to 100, max 1000.
+- **Eventually consistent.** A queue appears about a second after it first activates. Queues that existed before the
+  catalog appear the next time they activate. There is no deregistration, because queues are never deleted.
+
 ## Integration Patterns
 
 ### 1. Direct Actor Invocation

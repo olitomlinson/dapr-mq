@@ -33,7 +33,7 @@ public class DaprTestEnvironment : IAsyncLifetime
     // Containers hosting the actors (the workers when split), for tests that take them down.
     private readonly List<(IContainer App, IContainer Sidecar)> _actorHosts = [];
 
-    private const string WorkerAppId = "daprmq-api";
+    public const string WorkerAppId = "daprmq-api";
     private const string GatewayAppId = "daprmq-gateway";
 
     // Exposed endpoints and connection strings

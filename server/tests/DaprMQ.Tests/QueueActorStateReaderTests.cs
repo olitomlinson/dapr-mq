@@ -1,5 +1,6 @@
 using System.Net;
 using Dapr.Actors;
+using DaprMQ.Interfaces;
 using Moq;
 using Moq.Protected;
 
@@ -211,5 +212,36 @@ public class QueueActorStateReaderTests
             ItExpr.Is<HttpRequestMessage>(r =>
                 r.RequestUri!.ToString() == "http://localhost:3500/v1.0/actors/QueueActor/orders-session-42/state/metadata"),
             ItExpr.IsAny<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ReadStateAsync_ReadsTheGivenKeyOfTheGivenActorType()
+    {
+        var entries = new Dictionary<string, CatalogEntry> { ["q"] = new() { Id = "q", Kind = CatalogEntryKind.DeadLetter, ParentId = "p" } };
+        var json = System.Text.Json.JsonSerializer.Serialize(entries, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+        var reader = CreateReader(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
+        }, out var mockHandler);
+
+        var read = await reader.ReadStateAsync<Dictionary<string, CatalogEntry>>("CatalogActor", "catalog-3", "entries");
+
+        var entry = Assert.Single(read!.Values);
+        Assert.Equal(CatalogEntryKind.DeadLetter, entry.Kind);
+        Assert.Equal("p", entry.ParentId);
+        mockHandler.Protected().Verify(
+            "SendAsync",
+            Times.Once(),
+            ItExpr.Is<HttpRequestMessage>(r =>
+                r.RequestUri!.ToString() == "http://localhost:3500/v1.0/actors/CatalogActor/catalog-3/state/entries"),
+            ItExpr.IsAny<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ReadStateAsync_NoContent_ReturnsNull()
+    {
+        var reader = CreateReader(new HttpResponseMessage(HttpStatusCode.NoContent), out _);
+
+        Assert.Null(await reader.ReadStateAsync<Dictionary<string, CatalogEntry>>("CatalogActor", "catalog-0", "entries"));
     }
 }

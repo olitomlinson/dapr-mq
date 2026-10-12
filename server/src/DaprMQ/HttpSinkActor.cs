@@ -26,13 +26,15 @@ public class HttpSinkActor : Actor, IHttpSinkActor, IRemindable
 {
     private readonly IQueueActorInvoker _queueActorInvoker;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly ICatalogRegistrar _catalogRegistrar;
     private const string StateKey = "sink-state";
     private const string ReminderName = "sink-poll";
 
-    public HttpSinkActor(ActorHost host, IQueueActorInvoker actorInvoker, IHttpClientFactory httpClientFactory) : base(host)
+    public HttpSinkActor(ActorHost host, IQueueActorInvoker actorInvoker, IHttpClientFactory httpClientFactory, ICatalogRegistrar catalogRegistrar) : base(host)
     {
         _queueActorInvoker = actorInvoker ?? throw new ArgumentNullException(nameof(actorInvoker));
         _httpClientFactory = httpClientFactory ?? throw new ArgumentNullException(nameof(httpClientFactory));
+        _catalogRegistrar = catalogRegistrar ?? throw new ArgumentNullException(nameof(catalogRegistrar));
     }
 
     /// <summary>
@@ -61,6 +63,14 @@ public class HttpSinkActor : Actor, IHttpSinkActor, IRemindable
 
         await StateManager.SetStateAsync(StateKey, state);
         await StateManager.SaveStateAsync();
+
+        _catalogRegistrar.Register(new CatalogEntry
+        {
+            Id = Id.GetId(),
+            Kind = CatalogEntryKind.Sink,
+            ParentId = request.QueueActorId,
+            RegisteredAt = DateTimeOffset.UtcNow
+        });
 
         // Register reminder for periodic polling (starting at 1s for dynamic polling)
         await RegisterReminderAsync(
