@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 2,
+  "runId": "20261012T115023Z_python_ci-ubuntu-latest_queue-drain-slow",
+  "timestampUtc": "2026-10-12T11:50:23.539353+00:00",
+  "sdk": {
+    "name": "python",
+    "version": "0.0.0a0",
+    "runtime": "CPython 3.12.15"
+  },
+  "environment": {
+    "label": "ci-ubuntu-latest",
+    "gitSha": "394267fd2af235f3d7975ff301055833d27ba195",
+    "gitBranch": "main",
+    "gitDirty": false,
+    "os": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+    "cpuCount": 4
+  },
+  "topology": {
+    "apiReplicas": 1,
+    "schedulerReplicas": 3,
+    "loadBalancer": false,
+    "server": "testcontainers daprmq-api:test"
+  },
+  "scale": "pr",
+  "scenario": {
+    "id": "P-05",
+    "name": "queue-drain",
+    "profile": "queue-drain-slow",
+    "key": "queue:3000@100ms/active100",
+    "params": {
+      "messages": 3000,
+      "settleMs": 100,
+      "maxActiveMessages": 100,
+      "maxConcurrentHandlers": 0,
+      "strictOrder": false,
+      "publishIntervalMs": 0,
+      "publishJitterMs": 0,
+      "tailEvery": 0,
+      "tailMs": 0
+    }
+  },
+  "metrics": {
+    "seedSeconds": 0.14175008600000183,
+    "wallClockSeconds": 5.056905939999979,
+    "messagesPerSecond": 593.2481314849239,
+    "idealSeconds": 3.0,
+    "efficiency": 0.5932481314849238,
+    "timeToFirstMessageSeconds": 0.015642193000019233,
+    "peakConcurrentHandlers": 100,
+    "deliveryLatencyMs": {
+      "count": 3000,
+      "mean": 2586.052,
+      "p50": 2489,
+      "p95": 4839,
+      "p99": 5093,
+      "max": 5095
+    },
+    "messagesHandled": 3000,
+    "duplicates": 0,
+    "missing": 0,
+    "orderViolations": 11
+  },
+  "checks": {
+    "passed": true,
+    "failures": []
+  },
+  "timeline": {
+    "bucketMs": 1000,
+    "series": {
+      "messagesPerSecond": [
+        600,
+        600,
+        600,
+        500,
+        600,
+        100
+      ],
+      "busyHandlers": [
+        60.117,
+        60.093,
+        60.106,
+        56.918,
+        57.876,
+        5.428
+      ]
+    }
+  }
+}
