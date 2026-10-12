@@ -27,7 +27,7 @@ public class HttpSinkActor : Actor, IHttpSinkActor, IRemindable
     private readonly IQueueActorInvoker _queueActorInvoker;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ICatalogRegistrar _catalogRegistrar;
-    private const string StateKey = "sink-state";
+    internal const string StateKey = "sink-state";
     private const string ReminderName = "sink-poll";
 
     public HttpSinkActor(ActorHost host, IQueueActorInvoker actorInvoker, IHttpClientFactory httpClientFactory, ICatalogRegistrar catalogRegistrar) : base(host)

@@ -384,8 +384,17 @@ them. The catalog is a registry of queues, DLQs, topics and HTTP sinks, read by 
 - **Reads.** `GET /internal/admin/catalog?kind=&cursor=&limit=` on workers reads all shards through the actor-state API
   (never calling or activating them, as with queue depth above), merges them sorted by id and pages with the last id
   as the cursor. `limit` defaults to 100, max 1000.
+- **Session-only queues.** A queue that only receives session enqueues never activates its own `QueueActor`, so its
+  `SessionCoordinatorActor` (same id) registers it.
 - **Eventually consistent.** A queue appears about a second after it first activates. Queues that existed before the
   catalog appear the next time they activate. There is no deregistration, because queues are never deleted.
+
+The workers serve the console's other reads the same way, from committed state and never through the actor
+(`AdminReadEndpoints` / `AdminReadService`): queue detail, ready messages (walking `queue_{p}_seg_{n}` head to tail,
+including offloaded segments, which keep their key), locks (through the expiry-bucket or session lock index), sessions,
+topics, and blob payloads resolved from a named message or lock. Browsing loads whole segments, so it is paged (≤ 100)
+and never polled. See [proposals/admin-console.md](../proposals/admin-console.md#2-worker-read-only-admin-endpoints)
+for the routes.
 
 ## Integration Patterns
 

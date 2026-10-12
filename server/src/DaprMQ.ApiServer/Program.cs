@@ -163,10 +163,21 @@ builder.Services.AddSingleton<DaprMQ.IQueueActorStateReader>(sp =>
 builder.Services.AddSingleton<DaprMQ.IQueueDepthService>(sp =>
     new DaprMQ.QueueDepthService(sp.GetRequiredService<DaprMQ.IQueueActorStateReader>()));
 
-// Catalog read behind the worker's internal /internal/admin/catalog endpoint (the admin console).
+// Catalog and admin reads behind the worker's internal /internal/admin/* endpoints (the admin console).
 // Only meaningful on workers - see AdminReadEndpoints.
 builder.Services.AddSingleton<DaprMQ.ICatalogReadService>(sp =>
     new DaprMQ.CatalogReadService(sp.GetRequiredService<DaprMQ.IQueueActorStateReader>(), actorConfig.CatalogActorTypeName));
+builder.Services.AddSingleton<DaprMQ.IAdminReadService>(sp =>
+    new DaprMQ.AdminReadService(
+        sp.GetRequiredService<DaprMQ.IQueueActorStateReader>(),
+        new DaprMQ.AdminActorTypes
+        {
+            Queue = actorConfig.QueueActorTypeName,
+            Topic = actorConfig.TopicActorTypeName,
+            HttpSink = actorConfig.HttpSinkActorTypeName
+        },
+        sp.GetRequiredService<LockConfig>(),
+        sp.GetRequiredService<IObjectStore>()));
 
 // Register TopicActor tunables (global defaults - see TopicActorConfig)
 builder.Services.AddSingleton(new TopicActorConfig());

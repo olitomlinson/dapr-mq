@@ -163,7 +163,7 @@ public class QueueActor : Actor, IQueueActor
     private const int LockBucketWidthSeconds = 5;
 
     /// <summary>Index of a session actor's lease-scoped locks; see ActorMetadata.LockExpiryBuckets.</summary>
-    private const string SessionLockIndexKey = "locks_session";
+    internal const string SessionLockIndexKey = "locks_session";
     /// <summary>Matches the bulk DequeueLocked cap, so one batch settles what one bulk dequeue produced.</summary>
     private const int MaxAcknowledgeBatchSize = 1000;
     private const int LockIdLength = 11;
@@ -174,12 +174,12 @@ public class QueueActor : Actor, IQueueActor
     // needed on Enqueue/EnqueueItem for this. Same risk class as the existing "-deadletter"/"-sink"
     // conventions: a queueId that happens to contain this marker would be misread as a session
     // actor. Accepted, not solved, consistent with those existing conventions.
-    private const string SessionActorIdMarker = "-session-";
+    internal const string SessionActorIdMarker = "-session-";
 
     // Suffix of a dead-letter queue actor's id. A session queue's DLQ is
     // "{queueId}-session-{sessionId}-deadletter", so it carries the session marker too and must
     // be excluded from session self-registration - a DLQ is not a claimable session.
-    private const string DeadLetterActorIdSuffix = "-deadletter";
+    internal const string DeadLetterActorIdSuffix = "-deadletter";
 
     private static bool IsQueueCorrupted(ActorMetadata metadata) =>
         !string.IsNullOrEmpty(metadata.ErrorMessage);
@@ -196,7 +196,11 @@ public class QueueActor : Actor, IQueueActor
     private static long ExpiryBucketFor(double expiresAt) =>
         (long)Math.Floor(expiresAt / LockBucketWidthSeconds) * LockBucketWidthSeconds;
 
-    private static string ExpiryBucketKey(long bucket) => $"locks_exp_{bucket}";
+    internal static string ExpiryBucketKey(long bucket) => $"locks_exp_{bucket}";
+
+    // Key formats the admin reads walk; the actor itself builds these inline.
+    internal static string SegmentKey(int priority, int segment) => $"queue_{priority}_seg_{segment}";
+    internal static string LockKey(string lockId) => $"{lockId}-lock";
 
     /// <summary>
     /// Adds lock ids to the index, staged (no save). On a session actor everything goes in the single

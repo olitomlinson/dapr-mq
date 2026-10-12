@@ -84,7 +84,7 @@ public class TopicActor : Actor, ITopicActor, IRemindable
     private readonly TopicActorConfig _config;
     private readonly ICatalogRegistrar _catalogRegistrar;
 
-    private const string MetadataKey = "metadata";
+    internal const string MetadataKey = "metadata";
     private const string RelayReminderName = "relay";
     private const string ReapItemsReminderName = "reap-items";
 
@@ -147,11 +147,13 @@ public class TopicActor : Actor, ITopicActor, IRemindable
 
     private static string PublishSeqKey(long publishSequence) => $"publish-seq_{publishSequence}";
 
-    private static string CircuitKey(string subscriberId) => $"circuit_{subscriberId}";
+    internal static string CircuitKey(string subscriberId) => $"circuit_{subscriberId}";
 
     private static string GenerationReapReminderName(long generationId) => $"reap-generation-{generationId}";
 
-    private string BuildSubscriberQueueActorId(string subscriberId) => $"{Id.GetId()}-sub-{subscriberId}";
+    private string BuildSubscriberQueueActorId(string subscriberId) => SubscriberQueueId(Id.GetId(), subscriberId);
+
+    internal static string SubscriberQueueId(string topicId, string subscriberId) => $"{topicId}-sub-{subscriberId}";
 
     private async Task<TopicMetadata> GetMetadataAsync()
     {

@@ -1,6 +1,6 @@
 # Admin console
 
-**Status:** PR 1 (catalog) in progress. Delivered as five PRs (see [Delivery](#delivery)).
+**Status:** PR 1 (catalog) and PR 2 (worker admin reads) built. Delivered as five PRs (see [Delivery](#delivery)).
 
 ## Context
 
@@ -111,16 +111,23 @@ There is no deregistration in v1, because queues are never deleted. An empty que
 | Route (GET) | Returns |
 |---|---|
 | `/internal/admin/catalog?kind=&cursor=&limit=` | Merged entries from all shards, read in parallel, paged |
-| `/internal/admin/queues/{id}` | Per-priority count and head/tail segments, `LockCount`, `NextSequence`, config (segment size, dedup), session lease, `ErrorMessage` (the corrupt flag), DLQ depth, sink config if `{id}-sink` exists, global `MaxDeliveryCount` |
-| `/internal/admin/queues/{id}/messages?priority=&cursor=&limit=` | Ready items walked head to tail through `queue_{p}_seg_{n}`. Each item: `Sequence`, `DeliveryCount`, a 1 KB payload preview, whether it is a blob reference, and a location cursor `{p}:{seg}:{idx}`. `limit` ≤ 100. |
-| `/internal/admin/queues/{id}/messages/{location}?sequence=` | Full item, capped at 1 MB. **410** if the item at that location no longer has that sequence (consumed or moved). |
+| `/internal/admin/queues/{id}` | Per-priority count and head/tail segments, `LockCount`, `NextSequence`, config (segment size, dedup), session lease expiry (never the lease id), `ErrorMessage` (the corrupt flag), session count, DLQ depth, sink config if `{id}-sink` exists, global `MaxDeliveryCount`. A session-only queue is found through its directory. |
+| `/internal/admin/queues/{id}/messages?priority=&cursor=&limit=` | Ready items walked head to tail through `queue_{p}_seg_{n}`. Each item: `Sequence`, `DeliveryCount`, a 1 KB payload preview, whether it is a blob reference, and a location `{p}:{seg}:{idx}`. The cursor is `{p}:{seg}:{lastSequence}`, so consuming the head between pages doesn't skip items. `limit` ≤ 100. |
+| `/internal/admin/queues/{id}/messages/{location}?sequence=` | Full item, capped at 1 MB, found by sequence within the location's segment (the index is a hint, since dequeues shift it). **410** if it has left that segment (consumed, locked or moved). |
+| `/internal/admin/queues/{id}/messages/{location}/payload?sequence=` | A blob-reference item's payload through `IObjectStore`, capped at 1 MB, base64. Called only when the user clicks "load payload". |
 | `/internal/admin/queues/{id}/locks?cursor=&limit=` | Walks `LockExpiryBuckets` → `locks_exp_{b}` → `{lockId}-lock`, or `locks_session` on a session actor. Each lock: id, created and expiry times, priority, sequence, delivery count, competing-consumer mode, preview. `limit` ≤ 100. |
 | `/internal/admin/queues/{id}/locks/{lockId}` | The full locked item |
-| `/internal/admin/queues/{id}/sessions?cursor=&limit=` | One page of the coordinator directory, with each session's depth and lease. The directory is never read in full. |
+| `/internal/admin/queues/{id}/locks/{lockId}/payload` | A locked blob-reference item's payload, as above |
+| `/internal/admin/queues/{id}/sessions?cursor=&limit=` | One page of the coordinator directory, with each session's depth and lease expiry. Only the page's session actors are read. |
 | `/internal/admin/topics/{id}` | Subscribers, each subscriber's lag (`NextSequence − cursor`), circuit-breaker state, generation, publish-log counts |
-| `/internal/admin/objects/{ref}` | Resolves a `BlobReferenceEnvelope` through `IObjectStore`, capped at 1 MB. Called only when the user clicks "load payload". |
 
 A DLQ is browsed as `queues/{id}-deadletter/messages`, so it needs no route of its own.
+
+Payloads are resolved from a named message or lock rather than from a raw blob reference, so the
+endpoint can't be used to read arbitrary keys from the object store binding.
+
+Lock ids are returned in full: they authorise Ack/Nack/ExtendLock, so the operator's console API
+(PR 3) should mask them, as the wireframe does.
 
 ## 3. Metrics (OpenTelemetry → Prometheus)
 
