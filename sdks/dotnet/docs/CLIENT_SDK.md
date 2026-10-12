@@ -6,7 +6,12 @@ See also: [Cluster Discovery](CLUSTER_DISCOVERY.md) - finding `HttpBaseAddress`/
 
 ## Install / Reference
 
-Not yet published as a NuGet package. Reference the project directly:
+```bash
+dotnet add package DaprMQ.Client --prerelease
+```
+
+DaprMQ is pre-release (`0.0.0-alpha.N`), so `--prerelease` is needed. To work on the SDK itself, reference the
+project directly:
 
 ```bash
 dotnet add reference path/to/sdks/dotnet/src/DaprMQ.Client/DaprMQ.Client.csproj

@@ -1,7 +1,7 @@
 name: Release
 
 # Pushing a tag vX.Y.Z[-alpha.N|-rc.N] publishes every asset at that version (docs/RELEASING.md).
-# npm, PyPI, the Go module, the images and the Helm chart are wired up so far; NuGet and Maven follow.
+# Everything but Maven Central is wired up so far.
 on:
   push:
     tags: ['v*']
@@ -139,6 +139,41 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: sdks/python/dist
+
+  nuget:
+    name: NuGet (DaprMQ.Client)
+    needs: version
+    runs-on: ubuntu-latest
+    environment: nuget
+    permissions:
+      contents: read
+      id-token: write # trusted publishing: exchanged for a short-lived API key
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Unit tests
+        run: dotnet test sdks/dotnet/tests/DaprMQ.Client.Tests -c Release
+
+      # ContinuousIntegrationBuild makes the build deterministic and lets Source Link map the symbols to GitHub.
+      - name: Pack
+        run: >-
+          dotnet pack sdks/dotnet/src/DaprMQ.Client -c Release -o out
+          -p:Version='${{ needs.version.outputs.version }}' -p:ContinuousIntegrationBuild=true
+
+      - uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ vars.NUGET_USER }}
+
+      # Pushes the .snupkg symbols package alongside.
+      - name: Push
+        run: >-
+          dotnet nuget push 'out/*.nupkg' --source https://api.nuget.org/v3/index.json
+          --api-key '${{ steps.login.outputs.NUGET_API_KEY }}'
 
   go:
     name: Go module (sdks/go)
