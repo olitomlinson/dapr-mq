@@ -114,13 +114,46 @@ that happens exactly when they are under the most load.
 
 In rough order of value against effort:
 
-1. **Keep a running count of non-empty sessions on the coordinator (O(1) read).** Session actors
-   already call the coordinator in `RegisterSession`. Add an `empty → non-empty` and
-   `non-empty → empty` signal, sent from the session actor when its `ItemCount + LockCount` crosses
-   zero, and keep `NonEmptySessions` (plus total ready and locked counts, if wanted) in a small
-   separate key. The scaler then reads one key instead of N + 1. This removes Problems 1, 2 and 5
-   for the scaler. Getting the count correct across failures needs care: an idempotent
-   transition keyed on session id, and the sweep reconciling any drift.
+1. **Keep a count of active sessions on the coordinator, built from rate-limited non-empty
+   reports (O(1) read).** The scaler reads one key instead of N + 1, which removes Problems 1, 2
+   and 5 for the scaler.
+
+   **Rejected alternative: signal every empty ↔ non-empty change.** A session flipping between 0
+   and 1 items would send a call on every flip. All of those calls go to the one coordinator per
+   queue, which handles one call at a time, so the bottleneck moves rather than disappears.
+
+   **The design:**
+   - **Session actor: report non-empty only, at most once per window.** After a successful save
+     with `ItemCount + LockCount > 0`, the session reports itself only if it hasn't reported
+     within the last T seconds (about 30). A session that empties never reports. So a flapping
+     session costs at most one report per T, however often it flips. The first item into an idle
+     session reports straight away, so scaling up from zero stays fast. "Last reported" is kept in
+     the actor's memory, not in state, so a reactivated session reports on its first save.
+   - **Worker: batch the reports.** Reports go into a worker-local buffer, off the actor's turn.
+     The buffer sends at most one batched call per coordinator per second, so load on the
+     coordinator grows with the number of workers, not the number of sessions.
+   - **Coordinator: keep a set of active sessions.** A separate key (split into segments if it
+     gets large) maps sessionId to its last report time, alongside a cached count. The scaler
+     reads only the count.
+   - **Check before dropping a session.** An entry with no report for 2T may still hold items
+     that nobody is consuming, so it isn't dropped blindly. The coordinator reads that one
+     session's state. If it's empty, the entry is removed. If it's still non-empty, the entry is
+     kept and checked again with backoff, capped at a few minutes. Reads therefore grow with the
+     number of sessions going quiet or stuck, never with the size of the directory.
+
+   **When the count is wrong, it's too high.** A drained session stays counted for up to 2T plus
+   the check. That keeps consumers running slightly longer, which KEDA's cooldown absorbs anyway.
+   It never counts too low, which would strand items.
+
+   **Known gap:** if a worker crashes after buffering a report but before sending it, and that
+   session then gets no further calls, it stays uncounted. The directory sweep finds it within an
+   hour, or sooner once direction 4 lands, because it adds any non-empty session it reads to the
+   set.
+
+   **Rejected alternative: a rolling re-read of a fixed number of sessions per second.** It needs
+   no change on the hot path and its load is fixed, but the time to notice a revived session
+   grows with N: about 100 s at 10k sessions and 100 reads/s. That's too slow for scaling up from
+   zero with `external-push`.
 2. **Never start a second read while one is in flight.** In `CachingWorkerDepthClient`, keep
    returning the running task after the TTL expires, and only start a new read once it finishes.
    This is a small change that removes Problem 2 on its own.
