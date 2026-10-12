@@ -17,14 +17,24 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  const tabs = document.querySelectorAll('.compare-tab');
-  const panels = document.querySelectorAll('.compare-panel');
-  tabs.forEach(tab => {
-    tab.addEventListener('click', () => {
-      tabs.forEach(t => t.classList.remove('active'));
-      panels.forEach(p => p.classList.remove('active'));
-      tab.classList.add('active');
-      document.getElementById(tab.dataset.target).classList.add('active');
+  const cards = document.querySelectorAll('.feature-card');
+  const setOpen = (card, open) => {
+    card.classList.toggle('open', open);
+    card.setAttribute('aria-expanded', String(open));
+  };
+  cards.forEach(card => {
+    card.addEventListener('click', e => {
+      if (e.target.closest('.feature-more a')) return;
+      if (card.classList.contains('open') && e.target.closest('.feature-more')) return;
+      const open = !card.classList.contains('open');
+      cards.forEach(c => setOpen(c, false));
+      setOpen(card, open);
+      if (open) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+    card.addEventListener('keydown', e => {
+      if (e.target !== card) return;
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); card.click(); }
+      if (e.key === 'Escape') setOpen(card, false);
     });
   });
 });
