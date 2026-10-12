@@ -3,12 +3,19 @@
 Steady, varied traffic against a DaprMQ gateway, so the admin console has something to show.
 
 Per queue, a producer enqueues at a rate that swings on a slow wave (so depth rises and falls), and
-competing consumers lock-dequeue, "work", then mostly acknowledge. A few items are poison: consumers
-always nack those, so after MaxDeliveryCount (10) they land in the queue's DLQ. Some locks are
-abandoned to expire. A publisher feeds a topic with subscribers.
+competing consumers take items, "work", then mostly acknowledge. A few items are poison: consumers
+always nack those, so after MaxDeliveryCount (10) they land in the queue's DLQ. A publisher feeds a
+topic with subscribers.
 
-Standard library only. Configured by environment variables (see DEFAULTS). Stop with Ctrl+C / SIGTERM.
+Consumers are unary (CONSUMER_MODE=unary: REST locked dequeues in batches, polling when empty, with a
+few locks abandoned to expire) or streaming (CONSUMER_MODE=stream: the Python SDK's QueueConsumer
+over the gRPC Consume stream, which keeps CONSUME_BATCH messages in flight and renews their locks).
+Either way a consumer handles about CONSUME_BATCH items per WORK_MS.
+
+Standard library only, except stream mode, which needs the daprmq-client SDK (sdks/python).
+Configured by environment variables (see DEFAULTS). Stop with Ctrl+C / SIGTERM.
 """
+import asyncio
 import json
 import math
 import os
@@ -21,17 +28,19 @@ import urllib.request
 
 DEFAULTS = {
     "GATEWAY_URL": "http://localhost:8002",
+    "GRPC_ADDRESS": "localhost:8102",   # gateway gRPC (host:port), stream mode only
+    "CONSUMER_MODE": "unary",           # unary | stream
     "QUEUES": "orders,emails,payments",
     "PRODUCE_RATE": "20",          # items/s per queue, average
     "PRODUCE_WAVE": "0.6",         # rate swings +/- this fraction of PRODUCE_RATE
     "WAVE_PERIOD_SECONDS": "300",  # one full swing
     "CONSUMERS": "2",              # consumer threads per queue
-    "CONSUME_BATCH": "10",         # items per locked dequeue
-    "WORK_MS": "400",              # simulated work per batch
+    "CONSUME_BATCH": "10",         # unary: items per locked dequeue; stream: messages in flight
+    "WORK_MS": "400",              # simulated work per batch (unary) or per message (stream)
     "LOCK_TTL_SECONDS": "30",
     "PRIORITY0_PERCENT": "10",     # fast lane
     "POISON_PERCENT": "1",         # always nacked -> dead-lettered after MaxDeliveryCount
-    "ABANDON_PERCENT": "1",        # lock left to expire, redelivered later
+    "ABANDON_PERCENT": "1",        # unary only: lock left to expire, redelivered later
     "TOPIC": "news",               # "" to skip
     "TOPIC_SUBSCRIBERS": "audit,search",
     "PUBLISH_RATE": "2",           # items/s
@@ -129,6 +138,37 @@ def consumer(queue):
             count("acked", len(acks))
 
 
+class PoisonItem(Exception):
+    """Raised by the stream handler so QueueConsumer nacks the message."""
+
+
+async def stream_consumers(queues):
+    """CONSUMERS QueueConsumers per queue, each with CONSUME_BATCH messages in flight and as many
+    handlers. QueueConsumer acks after the handler returns and nacks if it raises."""
+    from daprmq_client import DaprMQClient, QueueConsumer, QueueConsumerOptions  # stream mode only
+
+    batch, work, ttl = setting("CONSUME_BATCH", int), setting("WORK_MS", int) / 1000, setting("LOCK_TTL_SECONDS", int)
+
+    async def handle(context):
+        count("dequeued")
+        await asyncio.sleep(work)
+        if isinstance(context.item, dict) and context.item.get("poison"):
+            count("nacked")
+            raise PoisonItem()
+        count("acked")
+
+    client = DaprMQClient(http_base_url=GATEWAY, grpc_address=setting("GRPC_ADDRESS"))
+    options = QueueConsumerOptions(max_active_messages=batch, max_concurrent_handlers=batch, lock_ttl_seconds=ttl)
+    consumers = [QueueConsumer(client, queue, options, handle)
+                 for queue in queues for _ in range(setting("CONSUMERS", int))]
+    for consumer in consumers:
+        consumer.start()
+    while not stop.is_set():
+        await asyncio.sleep(0.5)
+    await asyncio.gather(*(consumer.stop() for consumer in consumers))
+    await client.aclose()
+
+
 def publisher(topic):
     rate = setting("PUBLISH_RATE", float)
     for subscriber in filter(None, setting("TOPIC_SUBSCRIBERS").split(",")):
@@ -159,7 +199,10 @@ def report():
 def main():
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     queues = [q.strip() for q in setting("QUEUES").split(",") if q.strip()]
-    print(f"loadgen -> {GATEWAY}: queues {queues}, topic {setting('TOPIC') or '-'}", flush=True)
+    mode = setting("CONSUMER_MODE")
+    if mode not in ("unary", "stream"):
+        raise SystemExit(f"CONSUMER_MODE must be unary or stream, got {mode!r}")
+    print(f"loadgen -> {GATEWAY}: queues {queues}, {mode} consumers, topic {setting('TOPIC') or '-'}", flush=True)
 
     while not stop.is_set():  # wait for the gateway (compose starts everything at once)
         try:
@@ -172,8 +215,12 @@ def main():
         stop.wait(3)
 
     threads = [threading.Thread(target=producer, args=(q,), daemon=True) for q in queues]
-    threads += [threading.Thread(target=consumer, args=(q,), daemon=True)
-                for q in queues for _ in range(setting("CONSUMERS", int))]
+    if mode == "unary":
+        threads += [threading.Thread(target=consumer, args=(q,), daemon=True)
+                    for q in queues for _ in range(setting("CONSUMERS", int))]
+    elif setting("CONSUMERS", int) > 0:
+        streams = threading.Thread(target=lambda: asyncio.run(stream_consumers(queues)))
+        threads.append(streams)
     if setting("TOPIC"):
         threads.append(threading.Thread(target=publisher, args=(setting("TOPIC"),), daemon=True))
     threads.append(threading.Thread(target=report, daemon=True))
@@ -186,6 +233,9 @@ def main():
     except KeyboardInterrupt:
         pass
     stop.set()
+    for thread in threads:
+        if not thread.daemon:
+            thread.join(timeout=40)  # stream consumers settle and close their streams
     print(f"stopped: {stats}", flush=True)
 
 

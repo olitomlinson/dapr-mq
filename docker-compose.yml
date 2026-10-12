@@ -477,9 +477,12 @@ services:
     container_name: loadgen
     profiles: ["load"]
     build:
-      context: ./tools/loadgen
+      context: .
+      dockerfile: tools/loadgen/Dockerfile
     environment:
       - GATEWAY_URL=http://gateway-1:8080
+      - GRPC_ADDRESS=gateway-1:8081
+      - CONSUMER_MODE=${LOADGEN_CONSUMER_MODE:-unary}
       - QUEUES=${LOADGEN_QUEUES:-orders,emails,payments}
       - PRODUCE_RATE=${LOADGEN_PRODUCE_RATE:-20}
     depends_on:
