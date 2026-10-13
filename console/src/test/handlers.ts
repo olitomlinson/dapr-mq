@@ -104,6 +104,4 @@ export const handlers = [
   http.get(api('/queues/:id/sessions'), () =>
     HttpResponse.json({ items: [{ sessionId: 'a', ready: 2, locked: 1, leaseExpiresAt: null }], nextCursor: null } satisfies SessionPage)),
   http.get(api('/topics/news'), () => HttpResponse.json(topic)),
-  // The default deployment has no PROMETHEUS_URL.
-  http.get(api('/metrics/:name'), () => new HttpResponse(null, { status: 501 })),
 ]
