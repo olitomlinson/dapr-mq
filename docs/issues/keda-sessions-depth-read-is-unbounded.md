@@ -36,7 +36,7 @@ How a sessions-mode read works:
 3. Each miss runs `QueueDepthService.GetSessionsDepthAsync` on a worker
    ([QueueDepthService.cs:59](../../server/src/DaprMQ/QueueDepthService.cs#L59)):
    - one read of the coordinator's `metadata`, which holds the **entire** directory
-     ([QueueActorStateReader.cs:104](../../server/src/DaprMQ/QueueActorStateReader.cs#L104));
+     ([QueueActorStateReader.cs:110](../../server/src/DaprMQ/QueueActorStateReader.cs#L110));
    - then **one state read per session** in the directory, 16 at a time
      ([QueueDepthService.cs:64](../../server/src/DaprMQ/QueueDepthService.cs#L64)).
 
@@ -68,9 +68,9 @@ other operation.
 A session's entry is removed only by `SessionCoordinatorActor`'s directory sweep:
 
 - The sweep is a reminder that fires **once an hour**
-  ([SessionCoordinatorActor.cs:90](../../server/src/DaprMQ/SessionCoordinatorActor.cs#L90)).
-- Each run checks at most **200** candidates
   ([SessionCoordinatorActor.cs:91](../../server/src/DaprMQ/SessionCoordinatorActor.cs#L91)).
+- Each run checks at most **200** candidates
+  ([SessionCoordinatorActor.cs:92](../../server/src/DaprMQ/SessionCoordinatorActor.cs#L92)).
 - An entry is evicted only after **two** consecutive empty readings. The second check is scheduled
   300 s after the first, but it can only happen on the next run, an hour later.
 
@@ -88,14 +88,14 @@ Problems 1, 2 and 4 directly.
 one `metadata` key. The whole dictionary is copied and rewritten:
 
 - on every new session's `RegisterSession`
-  ([SessionCoordinatorActor.cs:143](../../server/src/DaprMQ/SessionCoordinatorActor.cs#L143));
+  ([SessionCoordinatorActor.cs:150](../../server/src/DaprMQ/SessionCoordinatorActor.cs#L150));
 - on every `AcceptSession`, to update `LastClaimedAt`
-  ([SessionCoordinatorActor.cs:251](../../server/src/DaprMQ/SessionCoordinatorActor.cs#L251));
+  ([SessionCoordinatorActor.cs:258](../../server/src/DaprMQ/SessionCoordinatorActor.cs#L258));
 - on every sweep run.
 
 An any-available `AcceptSession` also sorts the full directory by `LastClaimedAt` and checks the
 lease of each candidate in turn until it finds a free one
-([SessionCoordinatorActor.cs:197](../../server/src/DaprMQ/SessionCoordinatorActor.cs#L197)).
+([SessionCoordinatorActor.cs:204](../../server/src/DaprMQ/SessionCoordinatorActor.cs#L204)).
 
 So the cost of each write and each claim is O(N) in the directory size. That breaks the project's
 rule of segmented storage with 100 items per segment. It also turns every scaler read into an
