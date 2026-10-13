@@ -31,7 +31,11 @@ internal sealed class TcpProxy : IAsyncDisposable
         {
             foreach (var client in _open)
             {
-                client.Client.LingerState = new LingerOption(true, 0); // reset, not a clean close
+                // A pipe that ended on its own has already disposed its clients, which nulls Client.
+                if (client.Client is { } socket)
+                {
+                    socket.LingerState = new LingerOption(true, 0); // reset, not a clean close
+                }
                 client.Dispose();
             }
             _open.Clear();
