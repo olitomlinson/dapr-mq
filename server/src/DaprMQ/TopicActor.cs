@@ -84,9 +84,17 @@ public class TopicActor : Actor, ITopicActor, IRemindable
     private readonly TopicActorConfig _config;
     private readonly ICatalogRegistrar _catalogRegistrar;
     private readonly TopicTelemetry _telemetry;
+    private readonly TimeProvider _time;
 
     internal const string MetadataKey = "metadata";
     private const string RelayReminderName = "relay";
+
+    /// <summary>How long past its due time a relay reminder may go unfired before a publish re-arms it.</summary>
+    private static readonly TimeSpan RelayOverdueGrace = TimeSpan.FromSeconds(10);
+
+    // When the relay reminder is next due, as last registered by this activation; null when unknown
+    // (a fresh activation, or a registration that failed). In memory only: a reactivation re-arms.
+    private DateTimeOffset? _relayDueAt;
     private const string ReapItemsReminderName = "reap-items";
 
     public TopicActor(
@@ -95,13 +103,15 @@ public class TopicActor : Actor, ITopicActor, IRemindable
         IHttpSinkActorInvoker httpSinkActorInvoker,
         TopicActorConfig config,
         ICatalogRegistrar catalogRegistrar,
-        TopicTelemetry telemetry) : base(host)
+        TopicTelemetry telemetry,
+        TimeProvider time) : base(host)
     {
         _queueActorInvoker = queueActorInvoker ?? throw new ArgumentNullException(nameof(queueActorInvoker));
         _httpSinkActorInvoker = httpSinkActorInvoker ?? throw new ArgumentNullException(nameof(httpSinkActorInvoker));
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _catalogRegistrar = catalogRegistrar ?? throw new ArgumentNullException(nameof(catalogRegistrar));
         _telemetry = telemetry ?? throw new ArgumentNullException(nameof(telemetry));
+        _time = time ?? throw new ArgumentNullException(nameof(time));
     }
 
     protected override async Task OnActivateAsync()
@@ -133,8 +143,7 @@ public class TopicActor : Actor, ITopicActor, IRemindable
         bool anyBehind = metadata.DispatchCursors.Values.Any(cursor => cursor < metadata.NextSequence);
         if (anyBehind)
         {
-            var interval = TimeSpan.FromSeconds(metadata.CurrentRelayIntervalSeconds);
-            await TryRegisterReminderAsync(RelayReminderName, interval, interval);
+            await ArmRelayAsync(TimeSpan.FromSeconds(metadata.CurrentRelayIntervalSeconds));
         }
 
         await TryRegisterReminderAsync(GenerationReapReminderName(metadata.CurrentGeneration), TimeSpan.FromDays(_config.GenerationRetentionDays), TimeSpan.FromMilliseconds(-1));
@@ -166,16 +175,25 @@ public class TopicActor : Actor, ITopicActor, IRemindable
 
     private Task SetMetadataAsync(TopicMetadata metadata) => StateManager.SetStateAsync(MetadataKey, metadata);
 
-    private async Task TryRegisterReminderAsync(string name, TimeSpan dueTime, TimeSpan period)
+    private async Task<bool> TryRegisterReminderAsync(string name, TimeSpan dueTime, TimeSpan period)
     {
         try
         {
             await RegisterReminderAsync(name, null, dueTime, period);
+            return true;
         }
         catch (Exception ex)
         {
             Logger.LogDebug(ex, "TopicActor {ActorId} failed to register reminder {ReminderName} (scheduler unavailable)", Id.GetId(), name);
+            return false;
         }
+    }
+
+    private async Task ArmRelayAsync(TimeSpan interval)
+    {
+        _relayDueAt = await TryRegisterReminderAsync(RelayReminderName, interval, interval)
+            ? _time.GetUtcNow() + interval
+            : null;
     }
 
     // ------------------------------------------------------------------
@@ -384,7 +402,16 @@ public class TopicActor : Actor, ITopicActor, IRemindable
         await StateManager.SaveStateAsync();
         _telemetry.Published(Id.GetId(), request.Items.Count);
 
-        await TryRegisterReminderAsync(RelayReminderName, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+        // Re-registering replaces the pending reminder and restarts its due time, so re-arming on every
+        // publish would postpone the relay for as long as publishes keep arriving less than a second
+        // apart. Leave a relay that's already due within a second; re-arm one that has backed off, is
+        // unknown to this activation, or is long overdue (lost).
+        var now = _time.GetUtcNow();
+        var relayInterval = TimeSpan.FromSeconds(1);
+        if (_relayDueAt is not { } dueAt || dueAt > now + relayInterval || dueAt < now - RelayOverdueGrace)
+        {
+            await ArmRelayAsync(relayInterval);
+        }
 
         Logger.LogDebug("TopicActor {ActorId} published {Count} item(s) as PublishId {PublishId}, sequence {First}-{Last}", Id.GetId(), request.Items.Count, publishId, firstSequence, lastSequence);
 
@@ -680,8 +707,7 @@ public class TopicActor : Actor, ITopicActor, IRemindable
             _telemetry.Dispatched(Id.GetId(), subscriberId, batches[subscriberId].Count);
         }
 
-        var nextIntervalSpan = TimeSpan.FromSeconds(nextInterval);
-        await TryRegisterReminderAsync(RelayReminderName, nextIntervalSpan, nextIntervalSpan);
+        await ArmRelayAsync(TimeSpan.FromSeconds(nextInterval));
     }
 
     private async Task ReapItemsTickAsync()

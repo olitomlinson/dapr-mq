@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -209,6 +210,7 @@ builder.Services.AddOpenTelemetry()
 
 // Register TopicActor tunables (global defaults - see TopicActorConfig)
 builder.Services.AddSingleton(new TopicActorConfig());
+builder.Services.TryAddSingleton(TimeProvider.System);
 
 // Register object store used to offload large item payloads (backed by a Dapr output binding)
 var objectStoreConfig = new ObjectStoreConfig
