@@ -34,12 +34,11 @@ tests against MSW fixtures.
 |---|---|---|
 | Overview | Counts of queues, topics and sinks; total ready and locked; throughput; top queues by depth; DLQs with messages | Every 5 s |
 | Queues | Paged list with ready, locked and DLQ counts, in/out rates and a 1h depth sparkline | Every 5 s |
-| Queue → Overview | Config, ready by priority, lease, corrupt state, HTTP sink | Every 5 s |
+| Queue → Overview | Config, ready by priority, lease, corrupt state, HTTP sink; then produced vs consumed, ack/nack/expired/dead-lettered rates, depth over 15m-24h, and the KEDA consumers chart | Every 5 s |
 | Queue → Messages / Dead-letter | Ready messages in queue order, 100 per page, with 1 KB previews | Manual |
 | Queue → Locked | Locks with live countdowns, delivery counts and mode | Manual |
 | Queue → Sessions | Sessions with depth and lease | Manual |
 | Message drawer | The full message (up to 1 MB) as JSON, raw or hex; blob payloads load on request | On open |
-| Queue → Metrics | Produced vs consumed, ack/nack/expired/dead-lettered rates, and depth, over 15m-24h | Every 5 s |
 | Topics → topic | Subscribers with lag, dispatch rate and circuit-breaker state; publish vs dispatch chart | Every 5 s |
 | Sinks | URL, max concurrency, lock TTL and polling interval | Every 5 s |
 
@@ -65,7 +64,7 @@ from the browser. Ranges are 15m, 1h, 6h or 24h at 120 points.
 
 ## KEDA scaling overlay
 
-On a queue scaled by KEDA through the DaprMQ scaler, the Metrics tab adds a **Consumers** chart for each ScaledObject:
+On a queue scaled by KEDA through the DaprMQ scaler, the queue's Overview tab adds a **Consumers** chart for each ScaledObject:
 desired replicas (KEDA/HPA) against actual replicas, with the HPA's min and max. A ScaledJob shows active Jobs instead.
 
 - **No Kubernetes API access.** KEDA's calls to the scaler carry the ScaledObject's name, namespace and trigger
