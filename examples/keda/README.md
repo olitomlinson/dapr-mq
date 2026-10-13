@@ -88,7 +88,7 @@ kubectl get deploy <consumer> -n <consumer-namespace> -w  # replicas move 0 → 
 Enqueue some items: the Deployment scales up, drains the queue, and scales back to `minReplicaCount` about
 `cooldownPeriod` seconds after the queue is empty.
 
-The [admin console](../../docs/CONSOLE.md#keda-scaling-overlay) charts this on the queue's Metrics tab: desired and
+The [admin console](../../docs/CONSOLE.md#keda-scaling-overlay) charts this on the queue's Overview tab: desired and
 actual consumers for each ScaledObject, next to the queue's rates and depth.
 
 ## Long-running work
