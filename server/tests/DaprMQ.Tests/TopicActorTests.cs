@@ -1,5 +1,6 @@
 using Dapr.Actors;
 using Dapr.Actors.Runtime;
+using Microsoft.Extensions.Time.Testing;
 using Moq;
 using DaprMQ.ApiServer.Constants;
 using DaprMQ.Interfaces;
@@ -83,7 +84,8 @@ public class TopicActorTests
         string actorId = "test-topic",
         Mock<IHttpSinkActorInvoker>? mockHttpSinkActorInvoker = null,
         ICatalogRegistrar? catalogRegistrar = null,
-        TopicTelemetry? telemetry = null)
+        TopicTelemetry? telemetry = null,
+        TimeProvider? time = null)
     {
         bool timerManagerProvided = mockTimerManager != null;
         mockTimerManager ??= new Mock<ActorTimerManager>();
@@ -102,7 +104,7 @@ public class TopicActorTests
         config ??= new TopicActorConfig();
 
         var actorHost = ActorHost.CreateForTest<TopicActor>(testOptions);
-        var actor = new TopicActor(actorHost, mockQueueActorInvoker.Object, mockHttpSinkActorInvoker.Object, config, catalogRegistrar ?? Mock.Of<ICatalogRegistrar>(), telemetry ?? TestTelemetry.Topic);
+        var actor = new TopicActor(actorHost, mockQueueActorInvoker.Object, mockHttpSinkActorInvoker.Object, config, catalogRegistrar ?? Mock.Of<ICatalogRegistrar>(), telemetry ?? TestTelemetry.Topic, time ?? TimeProvider.System);
 
         typeof(Actor).GetProperty("StateManager")?.SetValue(actor, mockStateManager.Object);
 
@@ -619,5 +621,92 @@ public class TopicActorTests
         Assert.Equal(2, collector.Sum("daprmq.topic.published", ("topic", "news")));
         Assert.Equal(2, collector.Sum("daprmq.topic.dispatched", ("subscriber", "good")));
         Assert.Equal(0, collector.Sum("daprmq.topic.dispatched", ("subscriber", "bad")));
+    }
+
+    // --- relay arming ---
+
+    private static Mock<ActorTimerManager> RecordingTimerManager(List<ActorReminder> relays, Func<int, bool>? failAttempt = null)
+    {
+        var manager = new Mock<ActorTimerManager>();
+        manager.Setup(m => m.RegisterReminderAsync(It.IsAny<ActorReminder>()))
+            .Returns((ActorReminder reminder) =>
+            {
+                if (reminder.Name != "relay")
+                {
+                    return Task.CompletedTask;
+                }
+
+                relays.Add(reminder);
+                return failAttempt?.Invoke(relays.Count) == true ? Task.FromException(new InvalidOperationException("scheduler down")) : Task.CompletedTask;
+            });
+        manager.Setup(m => m.UnregisterReminderAsync(It.IsAny<ActorReminderToken>())).Returns(Task.CompletedTask);
+        return manager;
+    }
+
+    private static PublishRequest OneItem => new() { Items = [new EnqueueItem { ItemJson = "{}" }] };
+
+    [Fact]
+    public async Task Publish_WhileTheRelayIsDueWithinASecond_DoesNotPostponeIt()
+    {
+        // Re-registering a reminder restarts its due time, so re-arming on every publish starves the
+        // relay of a topic published to more often than once a second.
+        var relays = new List<ActorReminder>();
+        var time = new FakeTimeProvider();
+        var actor = await CreateActorAsync(CreateMockStateManager(new Dictionary<string, object>()), mockTimerManager: RecordingTimerManager(relays), time: time);
+        await actor.Subscribe(new SubscribeRequest { SubscriberId = "a" });
+
+        await actor.Publish(OneItem);
+        time.Advance(TimeSpan.FromMilliseconds(300));
+        await actor.Publish(OneItem);
+        time.Advance(TimeSpan.FromMilliseconds(300));
+        await actor.Publish(OneItem);
+
+        var relay = Assert.Single(relays);
+        Assert.Equal(TimeSpan.FromSeconds(1), relay.DueTime);
+    }
+
+    [Fact]
+    public async Task Publish_AfterTheRelayBackedOff_RearmsItAtOneSecond()
+    {
+        var relays = new List<ActorReminder>();
+        var actor = await CreateActorAsync(CreateMockStateManager(new Dictionary<string, object>()), mockTimerManager: RecordingTimerManager(relays), time: new FakeTimeProvider());
+        await actor.Subscribe(new SubscribeRequest { SubscriberId = "a" });
+
+        // An idle tick backs the relay off past a second.
+        await actor.ReceiveReminderAsync("relay", Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.FromSeconds(1));
+        await actor.Publish(OneItem);
+
+        Assert.Equal([TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(1)], relays.Select(r => r.DueTime));
+    }
+
+    [Fact]
+    public async Task Publish_RetriesTheRelay_AfterARegistrationFailed()
+    {
+        var relays = new List<ActorReminder>();
+        var actor = await CreateActorAsync(CreateMockStateManager(new Dictionary<string, object>()),
+            mockTimerManager: RecordingTimerManager(relays, failAttempt: attempt => attempt == 1), time: new FakeTimeProvider());
+        await actor.Subscribe(new SubscribeRequest { SubscriberId = "a" });
+
+        await actor.Publish(OneItem);
+        await actor.Publish(OneItem);
+
+        Assert.Equal(2, relays.Count);
+    }
+
+    [Fact]
+    public async Task Publish_RearmsARelayThatIsLongOverdue()
+    {
+        // A reminder that never fired (lost by the scheduler) mustn't leave every later publish
+        // thinking the relay is about to run.
+        var relays = new List<ActorReminder>();
+        var time = new FakeTimeProvider();
+        var actor = await CreateActorAsync(CreateMockStateManager(new Dictionary<string, object>()), mockTimerManager: RecordingTimerManager(relays), time: time);
+        await actor.Subscribe(new SubscribeRequest { SubscriberId = "a" });
+
+        await actor.Publish(OneItem);
+        time.Advance(TimeSpan.FromSeconds(15));
+        await actor.Publish(OneItem);
+
+        Assert.Equal(2, relays.Count);
     }
 }
