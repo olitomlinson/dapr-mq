@@ -1,3 +1,5 @@
+using OpenTelemetry.Metrics;
+using DaprMQ.Operator.Console;
 using DaprMQ.Operator.Scaling;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 
@@ -38,14 +40,59 @@ builder.Services.AddSingleton(new ScalerOptions
     StreamPollInterval = TimeSpan.FromMilliseconds(builder.Configuration.GetValue("STREAM_POLL_INTERVAL_MS", 1000))
 });
 
+// The read-only admin console: /api/console/* plus the SPA from wwwroot, on the HTTP port. Off by
+// default, and with it off the operator is unchanged. No auth in v1 - anyone who can reach the
+// Service can read message payloads (docs/CONSOLE.md).
+var consoleEnabled = builder.Configuration.GetValue("CONSOLE_ENABLED", false);
+if (consoleEnabled)
+{
+    builder.Services.AddSingleton<IWorkerAdminClient>(sp => new ConcurrencyLimitedWorkerAdminClient(
+        new DaprWorkerAdminClient(sp.GetRequiredService<Dapr.Client.DaprClient>(), workerAppId),
+        builder.Configuration.GetValue("CONSOLE_MAX_WORKER_CALLS", 8)));
+    // Charts: named PromQL against PROMETHEUS_URL. Without it, /api/console/metrics/* is a 501.
+    var prometheusUrl = builder.Configuration.GetValue<string>("PROMETHEUS_URL");
+    if (!string.IsNullOrWhiteSpace(prometheusUrl))
+    {
+        builder.Services.AddHttpClient<IPrometheusClient, PrometheusClient>(http =>
+        {
+            http.BaseAddress = new Uri(prometheusUrl.TrimEnd('/') + "/");
+            http.Timeout = TimeSpan.FromSeconds(10);
+        });
+    }
+    builder.Services.AddSingleton(sp => new ConsoleResponseCache(
+        TimeSpan.FromMilliseconds(builder.Configuration.GetValue("CONSOLE_CACHE_TTL_MS", 10_000)),
+        sp.GetRequiredService<TimeProvider>()));
+}
+
+// Which ScaledObjects scale on which queue, learned from KEDA's calls; exported on /metrics for the
+// console's scaling overlay.
+builder.Services.AddSingleton<ScalerBindingRegistry>();
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(metrics => metrics.AddMeter(ScalerBindingRegistry.MeterName).AddPrometheusExporter());
+
 builder.Services.AddGrpc();
 builder.Services.AddGrpcHealthChecks();
 builder.Services.AddHealthChecks();
 
 var app = builder.Build();
 
-app.MapGrpcService<DaprMQExternalScaler>();
+// Off on a console-only Deployment (Helm console.separateDeployment), so console load can never
+// delay KEDA's GetMetrics.
+if (builder.Configuration.GetValue("SCALER_ENABLED", true))
+{
+    app.MapGrpcService<DaprMQExternalScaler>();
+}
 app.MapGrpcHealthChecksService();
 app.MapGet("/health", () => new { status = "healthy", service = "daprmq-operator" });
+app.MapPrometheusScrapingEndpoint();
+
+if (consoleEnabled)
+{
+    app.UseDefaultFiles();
+    app.UseStaticFiles();
+    app.MapConsoleEndpoints();
+    // Client-side routes (/queues/orders) load the SPA.
+    app.MapFallbackToFile("index.html");
+}
 
 app.Run();

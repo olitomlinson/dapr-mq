@@ -1,0 +1,55 @@
+{{- if and .Values.console.enabled .Values.console.separateDeployment }}
+# The admin console on its own pods (same image as the operator, KEDA scaler off), so console load
+# can never delay the scaler. Its own Dapr app-id; it reads through the workers like the operator.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "daprmq.fullname" . }}-console
+  labels:
+    {{- include "daprmq.console.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.console.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "daprmq.console.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id: "{{ .Release.Name }}-daprmq-console"
+        dapr.io/config: {{ include "daprmq.fullname" . }}-dapr-config
+        dapr.io/log-level: {{ .Values.dapr.logLevel | quote }}
+      labels:
+        {{- include "daprmq.console.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.operator.podSecurityContext | nindent 8 }}
+      containers:
+      - name: console
+        image: {{ include "daprmq.operator.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.operator.httpPort }}
+          protocol: TCP
+        env:
+        - name: ASPNETCORE_URLS
+          value: "http://+:{{ .Values.operator.httpPort }}"
+        - name: WORKER_APP_ID
+          value: "{{ .Release.Name }}-daprmq-worker"
+        - name: SCALER_ENABLED
+          value: "false"
+        {{- include "daprmq.console.env" . | nindent 8 }}
+        livenessProbe:
+          {{- toYaml .Values.operator.livenessProbe | nindent 10 }}
+        readinessProbe:
+          {{- toYaml .Values.operator.readinessProbe | nindent 10 }}
+        resources:
+          {{- toYaml .Values.console.resources | nindent 10 }}
+        securityContext:
+          {{- toYaml .Values.operator.securityContext | nindent 10 }}
+{{- end }}

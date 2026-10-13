@@ -52,6 +52,7 @@ jobs:
           filters: |
             server:
               - 'server/**'
+              - 'console/**' # built into the operator image the console API tests run against
             dotnet:
               - 'sdks/dotnet/**'
             python:
@@ -124,7 +125,7 @@ jobs:
       - name: Build operator image
         uses: docker/build-push-action@v6
         with:
-          context: server
+          context: .
           file: server/Dockerfile.operator
           tags: daprmq-operator:test
           outputs: type=docker,dest=daprmq-operator.tar

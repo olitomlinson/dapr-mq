@@ -91,7 +91,7 @@ public class HttpSinkActorBlobOffloadTests
 
         var testOptions = new ActorTestOptions { TimerManager = mockTimerManager.Object };
         var actorHost = ActorHost.CreateForTest<HttpSinkActor>(testOptions);
-        var actor = new HttpSinkActor(actorHost, mockQueueInvoker.Object, mockHttpClientFactory.Object);
+        var actor = new HttpSinkActor(actorHost, mockQueueInvoker.Object, mockHttpClientFactory.Object, Mock.Of<ICatalogRegistrar>());
         typeof(Actor).GetProperty("StateManager")?.SetValue(actor, mockStateManager.Object);
 
         await actor.ReceiveReminderAsync("sink-poll", null!, TimeSpan.Zero, TimeSpan.FromSeconds(1));
@@ -174,7 +174,7 @@ public class HttpSinkActorBlobOffloadTests
 
         var testOptions = new ActorTestOptions { TimerManager = mockTimerManager.Object };
         var actorHost = ActorHost.CreateForTest<HttpSinkActor>(testOptions);
-        var actor = new HttpSinkActor(actorHost, mockQueueInvoker.Object, mockHttpClientFactory.Object);
+        var actor = new HttpSinkActor(actorHost, mockQueueInvoker.Object, mockHttpClientFactory.Object, Mock.Of<ICatalogRegistrar>());
         typeof(Actor).GetProperty("StateManager")?.SetValue(actor, mockStateManager.Object);
 
         await actor.ReceiveReminderAsync("sink-poll", null!, TimeSpan.Zero, TimeSpan.FromSeconds(1));
@@ -240,7 +240,7 @@ public class HttpSinkActorBlobOffloadTests
 
         var testOptions = new ActorTestOptions { TimerManager = mockTimerManager.Object };
         var actorHost = ActorHost.CreateForTest<HttpSinkActor>(testOptions);
-        var actor = new HttpSinkActor(actorHost, mockQueueInvoker.Object, mockHttpClientFactory.Object);
+        var actor = new HttpSinkActor(actorHost, mockQueueInvoker.Object, mockHttpClientFactory.Object, Mock.Of<ICatalogRegistrar>());
         typeof(Actor).GetProperty("StateManager")?.SetValue(actor, mockStateManager.Object);
 
         await actor.ReceiveReminderAsync("sink-poll", null!, TimeSpan.Zero, TimeSpan.FromSeconds(1));

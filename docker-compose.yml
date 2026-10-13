@@ -401,6 +401,96 @@ services:
       - daprmq-network
 
   ############################
+  # Operator (KEDA scaler + read-only admin console at http://localhost:9100)
+  ############################
+  operator:
+    container_name: operator
+    build:
+      context: .
+      dockerfile: server/Dockerfile.operator
+    environment:
+      - ASPNETCORE_URLS=http://+:8080
+      - DAPR_GRPC_ENDPOINT=http://operator-dapr:50001
+      - DAPR_HTTP_ENDPOINT=http://operator-dapr:3500
+      # The workers' app-id: the console reads through their internal admin endpoints
+      - WORKER_APP_ID=daprmq-service
+      - CONSOLE_ENABLED=true
+      - PROMETHEUS_URL=http://prometheus:9090
+    ports:
+      - "9100:8080" # Admin console and /api/console
+    depends_on:
+      operator-dapr:
+        condition: service_started
+    networks:
+      - daprmq-network
+
+  operator-dapr:
+    container_name: operator-dapr
+    image: "${DAPR_RUNTIME_VERSION}"
+    command:
+      [
+        "./daprd",
+        "-app-id",
+        "daprmq-operator",
+        "-dapr-http-port",
+        "3500",
+        "-dapr-grpc-port",
+        "50001",
+        "-placement-host-address",
+        "placement:50015",
+        "-scheduler-host-address",
+        "scheduler-0:50016",
+        "-resources-path",
+        "/components",
+        "-config",
+        "/dapr-config/config.yml",
+        "-log-level",
+        "info",
+      ]
+    volumes:
+      - "./server/dapr/components:/components"
+      - "./server/dapr/config:/dapr-config"
+    depends_on:
+      placement:
+        condition: service_started
+    networks:
+      - daprmq-network
+
+  ############################
+  # Prometheus (metrics for the admin console's charts; UI at http://localhost:9090)
+  ############################
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus:v3.5.0
+    volumes:
+      - "./server/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"
+    ports:
+      - "9090:9090"
+    networks:
+      - daprmq-network
+
+  ############################
+  # Load generator (opt-in): docker compose --profile load up -d loadgen
+  # Varied traffic for the admin console. Settings: tools/loadgen/README.md
+  ############################
+  loadgen:
+    container_name: loadgen
+    profiles: ["load"]
+    build:
+      context: .
+      dockerfile: tools/loadgen/Dockerfile
+    environment:
+      - GATEWAY_URL=http://gateway-1:8080
+      - GRPC_ADDRESS=gateway-1:8081
+      - CONSUMER_MODE=${LOADGEN_CONSUMER_MODE:-unary}
+      - QUEUES=${LOADGEN_QUEUES:-orders,emails,payments}
+      - PRODUCE_RATE=${LOADGEN_PRODUCE_RATE:-20}
+    depends_on:
+      - gateway-1
+    networks:
+      - daprmq-network
+
+  ############################
   # Zookeeper
   ############################
   # zookeeper:

@@ -22,6 +22,11 @@ spec:
         dapr.io/app-id: "{{ .Release.Name }}-daprmq-operator"
         dapr.io/config: {{ include "daprmq.fullname" . }}-dapr-config
         dapr.io/log-level: {{ .Values.dapr.logLevel | quote }}
+        {{- if .Values.metrics.scrapeAnnotations }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.operator.httpPort }}"
+        prometheus.io/path: /metrics
+        {{- end }}
         {{- with .Values.operator.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -54,6 +59,9 @@ spec:
           value: {{ .Values.operator.depthCacheTtlMs | quote }}
         - name: STREAM_POLL_INTERVAL_MS
           value: {{ .Values.operator.streamPollIntervalMs | quote }}
+        {{- if and .Values.console.enabled (not .Values.console.separateDeployment) }}
+        {{- include "daprmq.console.env" . | nindent 8 }}
+        {{- end }}
         livenessProbe:
           {{- toYaml .Values.operator.livenessProbe | nindent 10 }}
         readinessProbe:

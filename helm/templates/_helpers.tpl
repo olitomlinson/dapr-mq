@@ -97,6 +97,35 @@ app.kubernetes.io/component: operator
 {{- end }}
 
 {{/*
+Console labels (console.separateDeployment)
+*/}}
+{{- define "daprmq.console.labels" -}}
+{{ include "daprmq.labels" . }}
+app.kubernetes.io/component: console
+{{- end }}
+
+{{- define "daprmq.console.selectorLabels" -}}
+{{ include "daprmq.selectorLabels" . }}
+app.kubernetes.io/component: console
+{{- end }}
+
+{{/*
+Console env, on whichever pods serve it
+*/}}
+{{- define "daprmq.console.env" -}}
+- name: CONSOLE_ENABLED
+  value: "true"
+- name: CONSOLE_CACHE_TTL_MS
+  value: {{ .Values.console.cacheTtlMs | quote }}
+- name: CONSOLE_MAX_WORKER_CALLS
+  value: {{ .Values.console.maxWorkerCalls | quote }}
+{{- with .Values.console.prometheusUrl }}
+- name: PROMETHEUS_URL
+  value: {{ . | quote }}
+{{- end }}
+{{- end }}
+
+{{/*
 Operator image reference (falls back to the global registry/tag)
 */}}
 {{- define "daprmq.operator.image" -}}

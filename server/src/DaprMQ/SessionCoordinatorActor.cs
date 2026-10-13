@@ -76,6 +76,7 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
 {
     private readonly IQueueActorInvoker _queueActorInvoker;
     private readonly IQueueActorStateReader _queueActorStateReader;
+    private readonly ICatalogRegistrar _catalogRegistrar;
 
     private const int MinLeaseSeconds = 1;
     private const int MaxLeaseSeconds = 300;
@@ -94,14 +95,20 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
     private const double SecondPassDelaySeconds = 300; // re-check soon for the second confirmation
     private const double LeaseSkipRecheckSeconds = 3600; // don't let a leased session dominate every batch
 
-    public SessionCoordinatorActor(ActorHost host, IQueueActorInvoker queueActorInvoker, IQueueActorStateReader queueActorStateReader) : base(host)
+    public SessionCoordinatorActor(ActorHost host, IQueueActorInvoker queueActorInvoker, IQueueActorStateReader queueActorStateReader,
+        ICatalogRegistrar catalogRegistrar) : base(host)
     {
         _queueActorInvoker = queueActorInvoker ?? throw new ArgumentNullException(nameof(queueActorInvoker));
         _queueActorStateReader = queueActorStateReader ?? throw new ArgumentNullException(nameof(queueActorStateReader));
+        _catalogRegistrar = catalogRegistrar ?? throw new ArgumentNullException(nameof(catalogRegistrar));
     }
 
     protected override async Task OnActivateAsync()
     {
+        // A queue that only ever receives session enqueues never activates its own QueueActor, so
+        // the coordinator (same id) registers it in the catalog.
+        _catalogRegistrar.Register(new CatalogEntry { Id = Id.GetId(), Kind = CatalogEntryKind.Queue, RegisteredAt = DateTimeOffset.UtcNow });
+
         var metadataExists = await StateManager.TryGetStateAsync<SessionCoordinatorMetadata>("metadata");
         if (!metadataExists.HasValue)
         {

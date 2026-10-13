@@ -60,7 +60,8 @@ public class SessionCoordinatorActorTests
     private async Task<(SessionCoordinatorActor actor, Mock<IQueueActorInvoker> mockQueueActorInvoker, Mock<IQueueActorStateReader> mockStateReader)> CreateActorAsync(
         Mock<IActorStateManager> mockStateManager,
         string actorId = "orders",
-        bool setSessionLeaseSucceeds = true)
+        bool setSessionLeaseSucceeds = true,
+        ICatalogRegistrar? catalogRegistrar = null)
     {
         var mockTimerManager = new Mock<ActorTimerManager>();
         mockTimerManager.Setup(m => m.RegisterTimerAsync(It.IsAny<ActorTimer>())).Returns(Task.CompletedTask);
@@ -92,7 +93,7 @@ public class SessionCoordinatorActorTests
             .ReturnsAsync(new SessionActorState(0, 0, null));
 
         var actorHost = ActorHost.CreateForTest<SessionCoordinatorActor>(testOptions);
-        var actor = new SessionCoordinatorActor(actorHost, mockQueueActorInvoker.Object, mockStateReader.Object);
+        var actor = new SessionCoordinatorActor(actorHost, mockQueueActorInvoker.Object, mockStateReader.Object, catalogRegistrar ?? Mock.Of<ICatalogRegistrar>());
 
         var stateManagerProperty = typeof(Actor).GetProperty("StateManager");
         stateManagerProperty?.SetValue(actor, mockStateManager.Object);
@@ -760,5 +761,17 @@ public class SessionCoordinatorActorTests
 
         var metadata = await GetDirectoryMetadataAsync(mockStateManager);
         Assert.False(metadata.SessionDirectory.ContainsKey("priority")); // evicted - was processed this tick
+    }
+
+    [Fact]
+    public async Task OnActivate_RegistersTheQueueInTheCatalog()
+    {
+        var registrar = new Mock<ICatalogRegistrar>();
+
+        var (mockStateManager, _) = CreateMockStateManager();
+
+        await CreateActorAsync(mockStateManager, actorId: "orders", catalogRegistrar: registrar.Object);
+
+        registrar.Verify(r => r.Register(It.Is<CatalogEntry>(e => e.Id == "orders" && e.Kind == CatalogEntryKind.Queue)), Times.Once);
     }
 }

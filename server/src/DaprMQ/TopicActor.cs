@@ -82,8 +82,10 @@ public class TopicActor : Actor, ITopicActor, IRemindable
     private readonly IQueueActorInvoker _queueActorInvoker;
     private readonly IHttpSinkActorInvoker _httpSinkActorInvoker;
     private readonly TopicActorConfig _config;
+    private readonly ICatalogRegistrar _catalogRegistrar;
+    private readonly TopicTelemetry _telemetry;
 
-    private const string MetadataKey = "metadata";
+    internal const string MetadataKey = "metadata";
     private const string RelayReminderName = "relay";
     private const string ReapItemsReminderName = "reap-items";
 
@@ -91,15 +93,21 @@ public class TopicActor : Actor, ITopicActor, IRemindable
         ActorHost host,
         IQueueActorInvoker queueActorInvoker,
         IHttpSinkActorInvoker httpSinkActorInvoker,
-        TopicActorConfig config) : base(host)
+        TopicActorConfig config,
+        ICatalogRegistrar catalogRegistrar,
+        TopicTelemetry telemetry) : base(host)
     {
         _queueActorInvoker = queueActorInvoker ?? throw new ArgumentNullException(nameof(queueActorInvoker));
         _httpSinkActorInvoker = httpSinkActorInvoker ?? throw new ArgumentNullException(nameof(httpSinkActorInvoker));
         _config = config ?? throw new ArgumentNullException(nameof(config));
+        _catalogRegistrar = catalogRegistrar ?? throw new ArgumentNullException(nameof(catalogRegistrar));
+        _telemetry = telemetry ?? throw new ArgumentNullException(nameof(telemetry));
     }
 
     protected override async Task OnActivateAsync()
     {
+        _catalogRegistrar.Register(new CatalogEntry { Id = Id.GetId(), Kind = CatalogEntryKind.Topic, RegisteredAt = DateTimeOffset.UtcNow });
+
         var existing = await StateManager.TryGetStateAsync<TopicMetadata>(MetadataKey);
 
         if (!existing.HasValue)
@@ -142,11 +150,13 @@ public class TopicActor : Actor, ITopicActor, IRemindable
 
     private static string PublishSeqKey(long publishSequence) => $"publish-seq_{publishSequence}";
 
-    private static string CircuitKey(string subscriberId) => $"circuit_{subscriberId}";
+    internal static string CircuitKey(string subscriberId) => $"circuit_{subscriberId}";
 
     private static string GenerationReapReminderName(long generationId) => $"reap-generation-{generationId}";
 
-    private string BuildSubscriberQueueActorId(string subscriberId) => $"{Id.GetId()}-sub-{subscriberId}";
+    private string BuildSubscriberQueueActorId(string subscriberId) => SubscriberQueueId(Id.GetId(), subscriberId);
+
+    internal static string SubscriberQueueId(string topicId, string subscriberId) => $"{topicId}-sub-{subscriberId}";
 
     private async Task<TopicMetadata> GetMetadataAsync()
     {
@@ -372,6 +382,7 @@ public class TopicActor : Actor, ITopicActor, IRemindable
         };
         await SetMetadataAsync(metadata);
         await StateManager.SaveStateAsync();
+        _telemetry.Published(Id.GetId(), request.Items.Count);
 
         await TryRegisterReminderAsync(RelayReminderName, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
 
@@ -630,6 +641,7 @@ public class TopicActor : Actor, ITopicActor, IRemindable
         }
 
         var updatedCursors = new Dictionary<string, long>(metadata.DispatchCursors);
+        var dispatched = new List<string>();
 
         foreach (var subscriberId in eligibleSubscribers)
         {
@@ -646,6 +658,7 @@ public class TopicActor : Actor, ITopicActor, IRemindable
             if (success)
             {
                 updatedCursors[subscriberId] = advancedCursors[subscriberId];
+                dispatched.Add(subscriberId);
                 await ClearCircuitBreakerAsync(subscriberId);
             }
             else
@@ -662,6 +675,10 @@ public class TopicActor : Actor, ITopicActor, IRemindable
         metadata = metadata with { DispatchCursors = updatedCursors, CurrentRelayIntervalSeconds = nextInterval };
         await SetMetadataAsync(metadata);
         await StateManager.SaveStateAsync();
+        foreach (var subscriberId in dispatched)
+        {
+            _telemetry.Dispatched(Id.GetId(), subscriberId, batches[subscriberId].Count);
+        }
 
         var nextIntervalSpan = TimeSpan.FromSeconds(nextInterval);
         await TryRegisterReminderAsync(RelayReminderName, nextIntervalSpan, nextIntervalSpan);

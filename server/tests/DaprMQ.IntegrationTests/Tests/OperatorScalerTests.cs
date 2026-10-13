@@ -94,4 +94,17 @@ public class OperatorScalerTests(OperatorTestFixture fixture)
 
         Assert.Equal(2, sessions);
     }
+
+    [Fact]
+    public async Task Calls_ExportTheScaledObjectsBindingOnTheOperatorsMetrics()
+    {
+        var queueId = $"keda-binding-{Guid.NewGuid():N}";
+        await EnqueueAsync(queueId, 4);
+
+        await GetMetricAsync(Ref(queueId, ("targetValue", "2")));
+        var metrics = await fixture.OperatorClient.GetStringAsync("/metrics");
+
+        Assert.Matches($"daprmq_scaler_binding\\{{[^}}]*hpa=\"keda-hpa-consumer\"[^}}]*queue=\"{queueId}\"[^}}]*scaled_object=\"consumer\"[^}}]*\\}} 1", metrics);
+        Assert.Matches($"daprmq_scaler_metric_value\\{{[^}}]*queue=\"{queueId}\"[^}}]*\\}} 4", metrics);
+    }
 }

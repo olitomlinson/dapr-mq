@@ -12,11 +12,15 @@ public class OperatorTestFixture : IAsyncLifetime
     public HttpClient ApiClient => Environment.ApiClient;
     public string OperatorGrpcUrl { get; private set; } = string.Empty;
 
+    /// <summary>The operator's HTTP port, where CONSOLE_ENABLED serves the admin console and /api/console.</summary>
+    public HttpClient OperatorClient { get; private set; } = null!;
+
     public async Task InitializeAsync()
     {
         Environment = new DaprTestEnvironment();
         await Environment.InitializeAsync();
         OperatorGrpcUrl = await Environment.StartOperatorAsync();
+        OperatorClient = new HttpClient { BaseAddress = new Uri(Environment.OperatorHttpUrl) };
     }
 
     public async Task DisposeAsync()

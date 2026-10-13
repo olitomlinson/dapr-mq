@@ -5,6 +5,8 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 using DaprMQ.ApiServer.Endpoints;
 using DaprMQ.ApiServer.Services;
 using DaprMQ.Interfaces;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
 using Grpc.Net.Client;
 
 // Enable HTTP/2 without TLS for gRPC (h2c protocol)
@@ -103,7 +105,8 @@ var actorConfig = new
     HttpSinkActorTypeName = builder.Configuration.GetValue("HTTP_SINK_ACTOR_TYPE_NAME", "HttpSinkActor"),
     BlobReaperActorTypeName = builder.Configuration.GetValue("BLOB_REAPER_ACTOR_TYPE_NAME", "BlobReaperActor"),
     TopicActorTypeName = builder.Configuration.GetValue("TOPIC_ACTOR_TYPE_NAME", "TopicActor"),
-    SessionCoordinatorActorTypeName = builder.Configuration.GetValue("SESSION_COORDINATOR_ACTOR_TYPE_NAME", "SessionCoordinatorActor")
+    SessionCoordinatorActorTypeName = builder.Configuration.GetValue("SESSION_COORDINATOR_ACTOR_TYPE_NAME", "SessionCoordinatorActor"),
+    CatalogActorTypeName = builder.Configuration.GetValue("CATALOG_ACTOR_TYPE_NAME", "CatalogActor")
 };
 
 // builder.Services.AddSingleton(actorConfig);
@@ -139,6 +142,12 @@ builder.Services.AddSingleton<ISessionCoordinatorActorInvoker>(sp =>
         sp.GetRequiredService<Dapr.Actors.Client.IActorProxyFactory>(),
         actorConfig.SessionCoordinatorActorTypeName));
 
+// Register CatalogActor invoker (dedicated invoker for CatalogActor operations, used by CatalogRegistrar)
+builder.Services.AddSingleton<ICatalogActorInvoker>(sp =>
+    new CatalogActorInvoker(
+        sp.GetRequiredService<Dapr.Actors.Client.IActorProxyFactory>(),
+        actorConfig.CatalogActorTypeName));
+
 // Register QueueActorStateReader (used by SessionCoordinatorActor's directory sweep to check a
 // session's item count via Dapr's actor-state data-plane API directly, bypassing actor
 // activation - see QueueActorStateReader for why that matters for a sweep that specifically
@@ -155,6 +164,48 @@ builder.Services.AddSingleton<DaprMQ.IQueueActorStateReader>(sp =>
 // KEDA scaler). Only meaningful on workers - see QueueDepthEndpoint.
 builder.Services.AddSingleton<DaprMQ.IQueueDepthService>(sp =>
     new DaprMQ.QueueDepthService(sp.GetRequiredService<DaprMQ.IQueueActorStateReader>()));
+
+// Catalog and admin reads behind the worker's internal /internal/admin/* endpoints (the admin console).
+// Only meaningful on workers - see AdminReadEndpoints.
+builder.Services.AddSingleton<DaprMQ.ICatalogReadService>(sp =>
+    new DaprMQ.CatalogReadService(sp.GetRequiredService<DaprMQ.IQueueActorStateReader>(), actorConfig.CatalogActorTypeName));
+builder.Services.AddSingleton<DaprMQ.IAdminReadService>(sp =>
+    new DaprMQ.AdminReadService(
+        sp.GetRequiredService<DaprMQ.IQueueActorStateReader>(),
+        new DaprMQ.AdminActorTypes
+        {
+            Queue = actorConfig.QueueActorTypeName,
+            Topic = actorConfig.TopicActorTypeName,
+            HttpSink = actorConfig.HttpSinkActorTypeName
+        },
+        sp.GetRequiredService<LockConfig>(),
+        sp.GetRequiredService<IObjectStore>()));
+
+// Metrics (DaprMQ.Queue, DaprMQ.Topic, DaprMQ.Delivery), scraped from /metrics on every instance and
+// pushed over OTLP when OTEL_EXPORTER_OTLP_ENDPOINT is set. DAPRMQ_METRICS_QUEUE_LABEL bounds the
+// series count: all (one series per queue), none (aggregates only), or allowlist
+// (DAPRMQ_METRICS_QUEUE_ALLOWLIST, comma-separated; the rest are "_other").
+var queueLabelMode = Enum.Parse<DaprMQ.QueueLabelMode>(builder.Configuration.GetValue("DAPRMQ_METRICS_QUEUE_LABEL", "all")!, ignoreCase: true);
+var queueLabelAllowlist = (builder.Configuration.GetValue<string>("DAPRMQ_METRICS_QUEUE_ALLOWLIST") ?? string.Empty)
+    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+var metricLabels = new DaprMQ.MetricLabelPolicy(queueLabelMode, queueLabelAllowlist);
+builder.Services.AddSingleton(new DaprMQ.QueueTelemetry(metricLabels, TimeProvider.System));
+builder.Services.AddSingleton(new DaprMQ.TopicTelemetry(metricLabels));
+var metricsCardinalityLimit = builder.Configuration.GetValue("DAPRMQ_METRICS_CARDINALITY_LIMIT", 20_000);
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(resource => resource.AddService(builder.Configuration.GetValue("REGISTER_ACTORS", true) ? "daprmq-worker" : "daprmq-gateway"))
+    .WithMetrics(metrics =>
+    {
+        metrics
+            .AddMeter(DaprMQ.QueueTelemetry.MeterName, DaprMQ.TopicTelemetry.MeterName, "DaprMQ.Delivery")
+            // Set explicitly rather than left at the SDK default: series beyond it are dropped.
+            .AddView(_ => new OpenTelemetry.Metrics.MetricStreamConfiguration { CardinalityLimit = metricsCardinalityLimit })
+            .AddPrometheusExporter();
+        if (!string.IsNullOrEmpty(builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]))
+        {
+            metrics.AddOtlpExporter();
+        }
+    });
 
 // Register TopicActor tunables (global defaults - see TopicActorConfig)
 builder.Services.AddSingleton(new TopicActorConfig());
@@ -226,6 +277,7 @@ if (registerActors)
         options.Actors.RegisterActor<DaprMQ.BlobReaperActor>(actorConfig.BlobReaperActorTypeName);
         options.Actors.RegisterActor<DaprMQ.TopicActor>(actorConfig.TopicActorTypeName);
         options.Actors.RegisterActor<DaprMQ.SessionCoordinatorActor>(actorConfig.SessionCoordinatorActorTypeName);
+        options.Actors.RegisterActor<DaprMQ.CatalogActor>(actorConfig.CatalogActorTypeName);
 
         // Configure actor runtime settings. Overridable for tests that need to force actors cold
         // deterministically (e.g. the reentrancy A -> B -> A hazard below only manifests when the
@@ -258,6 +310,15 @@ if (registerActors)
             WriteIndented = false // Set to true only for debugging
         };
     });
+
+    // Actors hand catalog entries to this worker-local registrar, which batches them to CatalogActor
+    // shards in the background (see CatalogRegistrar).
+    builder.Services.AddSingleton<CatalogRegistrar>(sp => new CatalogRegistrar(
+        sp.GetRequiredService<ICatalogActorInvoker>(),
+        TimeProvider.System,
+        sp.GetRequiredService<ILogger<CatalogRegistrar>>()));
+    builder.Services.AddSingleton<ICatalogRegistrar>(sp => sp.GetRequiredService<CatalogRegistrar>());
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<CatalogRegistrar>());
 }
 // No else needed - Dapr Client (from AddDapr) is sufficient for actor invocation
 
@@ -331,7 +392,11 @@ if (registerActors)
 {
     app.MapActorsHandlers();
     app.MapQueueDepthEndpoint();
+    app.MapAdminReadEndpoints();
 }
+
+// Prometheus scrape endpoint, on every instance
+app.MapPrometheusScrapingEndpoint();
 
 // Readiness is mapped on every instance (workers included), not just API-serving ones
 app.MapGrpcHealthChecksService();

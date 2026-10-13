@@ -1,0 +1,26 @@
+{{- if .Values.metrics.podMonitor.enabled }}
+# Scrapes /metrics on worker, gateway and operator pods (Prometheus Operator). A PodMonitor rather
+# than a ServiceMonitor: workers have no Service. The operator exports the KEDA scaler bindings.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "daprmq.fullname" . }}
+  labels:
+    {{- include "daprmq.labels" . | nindent 4 }}
+    {{- with .Values.metrics.podMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchExpressions:
+      - key: app.kubernetes.io/instance
+        operator: In
+        values: [{{ .Release.Name | quote }}]
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [worker, gateway, operator]
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.metrics.podMonitor.interval }}
+{{- end }}

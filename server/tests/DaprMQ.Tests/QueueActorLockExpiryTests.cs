@@ -132,7 +132,9 @@ public class QueueActorLockExpiryTests
             tokenIssuer,
             new BlobReapConfig { BackstopSeconds = 86400, PostDownloadSeconds = 86400 },
             new IdempotencyConfig { TtlSeconds = 86400 },
-            lockConfig ?? new LockConfig { MaxDeliveryCount = 10, SweepBatchSize = 200 });
+            lockConfig ?? new LockConfig { MaxDeliveryCount = 10, SweepBatchSize = 200 },
+            Mock.Of<ICatalogRegistrar>(),
+            TestTelemetry.Queue);
 
         typeof(Actor).GetProperty("StateManager")!.SetValue(actor, mockStateManager.Object);
 

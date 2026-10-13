@@ -172,6 +172,16 @@ all_logs() {
 }
 count_logs() { all_logs "$1" | grep -c -E "$2" || true; }
 
+# operator_exports <regex>: true once any operator pod's /metrics has a matching line (read through
+# the API server's pod proxy, so no port-forward is needed).
+operator_exports() {
+    local p
+    for p in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/component=operator -o name 2>/dev/null); do
+        kubectl get --raw "/api/v1/namespaces/${NAMESPACE}/pods/${p#pod/}:8080/proxy/metrics" 2>/dev/null | grep -qE "$1" && return 0
+    done
+    return 1
+}
+
 # wait_until <timeout seconds> <command...>: polls every 2s until the command succeeds.
 wait_until() {
     local deadline=$((SECONDS + $1)); shift
@@ -239,6 +249,12 @@ if wait_until 240 at_least succeeded_count "$name" 5; then
     sleep $((POLL * 3))   # a few more polls: no extra Jobs once the queue is empty
     check "${name}: exactly 5 Jobs for 5 items" "$(pod_count "$name")" 5
     check_items_once "$name" 1 5
+    # The admin console's scaling overlay starts from this: the operator learns the link from KEDA's calls.
+    if wait_until 60 operator_exports "daprmq_scaler_binding\\{[^}]*queue=\"${queue}\"[^}]*scaled_object=\"${name}\"[^}]*scaled_object_namespace=\"${TEST_NAMESPACE}\""; then
+        pass "${name}: operator exports the ScaledJob's binding to ${queue}"
+    else
+        fail "${name}: operator exports the ScaledJob's binding" "no daprmq_scaler_binding for ${queue} on any operator pod"
+    fi
 else
     fail "${name}: 5 Jobs completed" "only $(succeeded_count "$name") succeeded within 240s"
 fi

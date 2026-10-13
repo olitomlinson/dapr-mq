@@ -365,6 +365,69 @@ outage. Configure the ScaledObject's `fallback` for what should happen instead.
 
 Trigger fields and a full example: [examples/keda/consumer-scaledobject.yaml](../examples/keda/consumer-scaledobject.yaml).
 
+**Bindings.** Each call from KEDA carries the ScaledObject's name and namespace, so the operator keeps an in-memory map
+of which ScaledObjects scale on which queue (expiring 5 minutes after the last call) and exports it on `/metrics`
+(`daprmq_scaler_binding`, `daprmq_scaler_metric_value`). The admin console joins it to kube-state-metrics to chart
+desired and actual consumers ([CONSOLE.md](CONSOLE.md#keda-scaling-overlay)).
+
+## Catalog
+
+Queues are virtual actors that exist only by id, and Dapr actor state has no key enumeration, so nothing could list
+them. The catalog is a registry of queues, DLQs, topics and HTTP sinks, read by the admin console
+([proposals/admin-console.md](../proposals/admin-console.md)).
+
+- **Shards.** 64 `CatalogActor` instances, `catalog-{n}`, where n is a stable FNV-1a hash of the entity id
+  (`CatalogShards`). Each holds its entries in one `entries` key. It isn't segmented: nothing consumes from a head,
+  sharding bounds the blob, and it's only rewritten when a shard sees a new id.
+- **Registration, off the actor's turn.** `QueueActor` and `TopicActor` register on every activation, and
+  `HttpSinkActor` on `InitializeHttpSink`, by a non-blocking write to the worker's `CatalogRegistrar`. The registrar
+  drops ids it has already sent in this process, then batches by shard, at most one call per shard per second. Nothing
+  is persisted: an id whose send fails registers again on the actor's next activation.
+- **Kinds.** `{id}-deadletter` registers as `DeadLetter` with its queue as `ParentId`; a sink's `ParentId` is its
+  queue. Per-session actors are skipped (sessions are listed from the SessionCoordinatorActor directory), and topic
+  subscriptions come from each topic's `SubscriberIds`.
+- **Reads.** `GET /internal/admin/catalog?kind=&cursor=&limit=` on workers reads all shards through the actor-state API
+  (never calling or activating them, as with queue depth above), merges them sorted by id and pages with the last id
+  as the cursor. `limit` defaults to 100, max 1000.
+- **Session-only queues.** A queue that only receives session enqueues never activates its own `QueueActor`, so its
+  `SessionCoordinatorActor` (same id) registers it.
+- **Eventually consistent.** A queue appears about a second after it first activates. Queues that existed before the
+  catalog appear the next time they activate. There is no deregistration, because queues are never deleted.
+
+The workers serve the console's other reads the same way, from committed state and never through the actor
+(`AdminReadEndpoints` / `AdminReadService`): queue detail, ready messages (walking `queue_{p}_seg_{n}` head to tail,
+including offloaded segments, which keep their key), locks (through the expiry-bucket or session lock index), sessions,
+topics, and blob payloads resolved from a named message or lock. Browsing loads whole segments, so it is paged (≤ 100)
+and never polled. See [proposals/admin-console.md](../proposals/admin-console.md#2-worker-read-only-admin-endpoints)
+for the routes. The operator serves them to the browser as the admin console ([CONSOLE.md](CONSOLE.md)).
+
+## Metrics
+
+Workers and gateways export OpenTelemetry metrics on `/metrics` (Prometheus format), and over OTLP when
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set. Three meters:
+
+| Meter | Instruments | Labels |
+|---|---|---|
+| `DaprMQ.Queue` | counters `daprmq.queue.enqueued`, `dequeued`, `acknowledged`, `nacked`, `deadlettered`, `lock_expired` | `queue`, `kind` (`queue`/`deadletter`), `session` |
+| | gauges `daprmq.queue.depth` (`state` = `ready`/`locked`) and `daprmq.queue.depth_updated` (unix seconds) | `queue`, `kind` |
+| `DaprMQ.Topic` | counters `daprmq.topic.published`, `daprmq.topic.dispatched` | `topic`, and `subscriber` on dispatched |
+| `DaprMQ.Delivery` | counters `daprmq.delivery.retries`, `daprmq.delivery.failures` | `outcome` |
+
+- **Counted after the commit.** A queue actor bumps a counter only after the `SaveStateAsync` that commits the work, so
+  a failed save counts nothing.
+- **Labels stay bounded.** A session actor is labelled with its parent queue plus `session=true`, and a DLQ with its
+  parent queue plus `kind=deadletter`, so session and DLQ ids never become label values. `DAPRMQ_METRICS_QUEUE_LABEL`
+  is `all` (one series per queue), `none` (aggregates only) or `allowlist` (`DAPRMQ_METRICS_QUEUE_ALLOWLIST`; the rest
+  are `_other`). `DAPRMQ_METRICS_CARDINALITY_LIMIT` (default 20,000 per instrument) is set explicitly; series beyond it
+  are dropped.
+- **Depth costs no I/O.** After every method that completes (`OnPostActorMethodAsync`), and on activation, a queue
+  actor records its depth from the metadata already in its state manager's cache into a worker-local map. Sessions sum
+  under their parent queue. An entry outlives deactivation on purpose: an idle queue's depth can only change inside the
+  actor, so the last value stays true. After a rebalance two workers can report one queue; queries keep the series with
+  the newest `depth_updated` (the console does). A restarted worker forgets idle queues until they next activate.
+- **History only.** The depth gauge is not for scaling decisions: a missing entry would read as 0. KEDA reads depth
+  from state ([above](#autoscaling-consumers-with-keda)).
+
 ## Integration Patterns
 
 ### 1. Direct Actor Invocation

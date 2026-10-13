@@ -119,7 +119,8 @@ public class SessionQueueActorTests
         Mock<IActorStateManager> mockStateManager,
         string actorId = "test-queue",
         RegisterSessionResponse? registerSessionResponse = null,
-        Exception? registerSessionThrows = null)
+        Exception? registerSessionThrows = null,
+        ICatalogRegistrar? catalogRegistrar = null)
     {
         var mockTimerManager = new Mock<ActorTimerManager>();
         mockTimerManager.Setup(m => m.RegisterTimerAsync(It.IsAny<ActorTimer>()))
@@ -180,7 +181,9 @@ public class SessionQueueActorTests
             tokenIssuer,
             blobReapConfig,
             idempotencyConfig,
-            lockConfig);
+            lockConfig,
+            catalogRegistrar ?? Mock.Of<ICatalogRegistrar>(),
+            TestTelemetry.Queue);
 
         var stateManagerProperty = typeof(Actor).GetProperty("StateManager");
         stateManagerProperty?.SetValue(actor, mockStateManager.Object);
@@ -566,5 +569,18 @@ public class SessionQueueActorTests
         var result = await actor.DeadLetter(new DeadLetterRequest { LockId = dequeueResult.Items[0].LockId, LeaseId = "correct-lease" });
 
         Assert.Equal("SUCCESS", result.Status);
+    }
+
+    [Theory]
+    [InlineData("orders-session-order-42")]
+    [InlineData("orders-session-order-42-deadletter")]
+    public async Task OnActivate_SessionActor_NotRegisteredInTheCatalog(string actorId)
+    {
+        var (mockStateManager, _) = CreateMockStateManager();
+        var registrar = new Mock<ICatalogRegistrar>();
+
+        await CreateActorAsync(mockStateManager, actorId: actorId, catalogRegistrar: registrar.Object);
+
+        registrar.Verify(r => r.Register(It.IsAny<CatalogEntry>()), Times.Never);
     }
 }

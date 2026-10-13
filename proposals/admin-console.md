@@ -1,6 +1,6 @@
 # Admin console
 
-**Status:** proposed. Delivered as five PRs (see [Delivery](#delivery)).
+**Status:** all five PRs built. Delivered as five PRs (see [Delivery](#delivery)).
 
 ## Context
 
@@ -61,10 +61,11 @@ of committed state.
 - **Sharding.** 64 shards, `catalog-{n}`, where n is a stable FNV-1a hash of the entity id.
   `string.GetHashCode` is randomised per process, so it can't be used.
 - **Entries:** `CatalogEntry { Id, Kind: Queue | DeadLetter | Topic | Sink, ParentId?, RegisteredAt }`.
-- **Storage** uses the segmented pattern: append-only `entries_seg_{n}` keys of 100 entries each,
-  plus `metadata` holding the segment count.
-- **Duplicates.** On activation the shard loads its ids into an in-memory set, so registering a
-  known id costs no write. At 100k entities a shard holds about 1.6k entries, or 16 segments.
+- **Storage** is one `entries` key per shard, a map of id to entry. It isn't segmented: the
+  segmented pattern is for a queue's head/tail access, and nothing consumes from a catalog head.
+  Sharding already bounds the blob, and it's only rewritten when the shard sees a new id.
+- **Duplicates.** On activation the shard loads `entries`, so registering a known id costs no
+  write. At 100k entities a shard holds about 1.6k entries.
 - **`RegisterBatchAsync(entries)`** writes only new ids, in one `SaveStateAsync`.
 - **Reads.** The console reads shards through the state reader and never calls the actor.
 - Follow the existing invoker pattern: add a `CatalogActorInvoker` and `ActorMethodNames`
@@ -104,22 +105,29 @@ There is no deregistration in v1, because queues are never deleted. An empty que
   `MapQueueDepthEndpoint` whenever actors are registered.
 - **Logic:** `AdminReadService` in `server/src/DaprMQ/`.
 - **Models:** `server/src/DaprMQ.Interfaces/AdminModels.cs`.
-- **State reader:** `IQueueActorStateReader` gains a generic `ReadStateAsync<T>(actorType, actorId,
-  key)`. Today's `ReadMetadataAsync` becomes a call to it.
+- **State reader:** `IQueueActorStateReader.ReadStateAsync<T>(actorType, actorId, key)` (added in
+  PR 1 for the catalog read).
 
 | Route (GET) | Returns |
 |---|---|
 | `/internal/admin/catalog?kind=&cursor=&limit=` | Merged entries from all shards, read in parallel, paged |
-| `/internal/admin/queues/{id}` | Per-priority count and head/tail segments, `LockCount`, `NextSequence`, config (segment size, dedup), session lease, `ErrorMessage` (the corrupt flag), DLQ depth, sink config if `{id}-sink` exists, global `MaxDeliveryCount` |
-| `/internal/admin/queues/{id}/messages?priority=&cursor=&limit=` | Ready items walked head to tail through `queue_{p}_seg_{n}`. Each item: `Sequence`, `DeliveryCount`, a 1 KB payload preview, whether it is a blob reference, and a location cursor `{p}:{seg}:{idx}`. `limit` ≤ 100. |
-| `/internal/admin/queues/{id}/messages/{location}?sequence=` | Full item, capped at 1 MB. **410** if the item at that location no longer has that sequence (consumed or moved). |
+| `/internal/admin/queues/{id}` | Per-priority count and head/tail segments, `LockCount`, `NextSequence`, config (segment size, dedup), session lease expiry (never the lease id), `ErrorMessage` (the corrupt flag), session count, DLQ depth, sink config if `{id}-sink` exists, global `MaxDeliveryCount`. A session-only queue is found through its directory. |
+| `/internal/admin/queues/{id}/messages?priority=&cursor=&limit=` | Ready items walked head to tail through `queue_{p}_seg_{n}`. Each item: `Sequence`, `DeliveryCount`, a 1 KB payload preview, whether it is a blob reference, and a location `{p}:{seg}:{idx}`. The cursor is `{p}:{seg}:{lastSequence}`, so consuming the head between pages doesn't skip items. `limit` ≤ 100. |
+| `/internal/admin/queues/{id}/messages/{location}?sequence=` | Full item, capped at 1 MB, found by sequence within the location's segment (the index is a hint, since dequeues shift it). **410** if it has left that segment (consumed, locked or moved). |
+| `/internal/admin/queues/{id}/messages/{location}/payload?sequence=` | A blob-reference item's payload through `IObjectStore`, capped at 1 MB, base64. Called only when the user clicks "load payload". |
 | `/internal/admin/queues/{id}/locks?cursor=&limit=` | Walks `LockExpiryBuckets` → `locks_exp_{b}` → `{lockId}-lock`, or `locks_session` on a session actor. Each lock: id, created and expiry times, priority, sequence, delivery count, competing-consumer mode, preview. `limit` ≤ 100. |
 | `/internal/admin/queues/{id}/locks/{lockId}` | The full locked item |
-| `/internal/admin/queues/{id}/sessions?cursor=&limit=` | One page of the coordinator directory, with each session's depth and lease. The directory is never read in full. |
+| `/internal/admin/queues/{id}/locks/{lockId}/payload` | A locked blob-reference item's payload, as above |
+| `/internal/admin/queues/{id}/sessions?cursor=&limit=` | One page of the coordinator directory, with each session's depth and lease expiry. Only the page's session actors are read. |
 | `/internal/admin/topics/{id}` | Subscribers, each subscriber's lag (`NextSequence − cursor`), circuit-breaker state, generation, publish-log counts |
-| `/internal/admin/objects/{ref}` | Resolves a `BlobReferenceEnvelope` through `IObjectStore`, capped at 1 MB. Called only when the user clicks "load payload". |
 
 A DLQ is browsed as `queues/{id}-deadletter/messages`, so it needs no route of its own.
+
+Payloads are resolved from a named message or lock rather than from a raw blob reference, so the
+endpoint can't be used to read arbitrary keys from the object store binding.
+
+Lock ids are returned in full, by the workers and by the console API. They authorise
+Ack/Nack/ExtendLock, so this is part of the v1 security posture ([CONSOLE.md](../docs/CONSOLE.md#security)).
 
 ## 3. Metrics (OpenTelemetry → Prometheus)
 
@@ -234,7 +242,8 @@ These come from kube-state-metrics, which ships with kube-prometheus-stack. KEDA
 - **The SPA** is served from `wwwroot` (`UseStaticFiles`, falling back to `index.html`) on the
   existing HTTP port.
 - **Gating.** Everything is behind `CONSOLE_ENABLED`. With it off, the operator is unchanged.
-- **Image.** `Dockerfile.operator` gains a node stage that builds `console/` into `wwwroot`.
+- **Image.** `Dockerfile.operator` gains a node stage that builds `console/` into `wwwroot`, so the
+  operator image now builds from the repo root.
 - **Isolation from KEDA.** The console can run as its own Deployment of the same image
   (`console.separateDeployment`, with the scaler disabled there). Then console load can never
   delay KEDA's `GetMetrics`.
@@ -431,8 +440,8 @@ once the worker endpoints exist.
 1. **Integration test (HTTP contract):** after an enqueue, `/api/console/queues` lists the queue and
    `/messages` returns its items, without changing depth.
 2. **Unit tests** in `server/tests/DaprMQ.Tests/`:
-   - `CatalogActorTests`: a known id causes no write, a new segment rolls over at 100 entries, the
-     id set loads on activation.
+   - `CatalogActorTests`: a known id causes no write, duplicates in a batch are added once, the
+     entries load on activation.
    - `CatalogRegistrarTests`: repeats are dropped, batches are grouped by shard, the
      one-per-second rate holds.
    - Registration hooks in `QueueActorTests` and `TopicActorTests`: sessions are skipped, DLQs
@@ -477,9 +486,19 @@ Each PR is usable on its own:
 1. **Catalog:** `CatalogActor`, `CatalogRegistrar`, the registration hooks and
    `/internal/admin/catalog`.
 2. **Worker admin read endpoints.**
-3. **Browsing:** the operator console API, static hosting and the browse UI.
-4. **Charts:** OTel metrics, the depth gauge, Prometheus and the charts.
-5. **The KEDA scaling overlay.**
+3. **Browsing:** the operator console API, static hosting and the browse UI. Built with the Helm
+   `console.enabled` switch and Service, and the compose operator. The Overview page shows catalog
+   counts only: total ready/locked, DLQs with messages and top queues need every queue's depth, so
+   they come from Prometheus in PR 4.
+4. **Charts:** OTel metrics, the depth gauge, Prometheus and the charts, plus Helm
+   `console.prometheusUrl`, `separateDeployment` (with a new `SCALER_ENABLED` switch) and `ingress`.
+   Counters are bumped right after each committing `SaveStateAsync` rather than through a hook.
+   `metrics.serviceMonitor` became `metrics.podMonitor`, because workers have no Service.
+5. **The KEDA scaling overlay.** The binding's namespace label is `scaled_object_namespace`, since a
+   scrape would rename a `namespace` label (the operator pod has one). Overlay series come from the
+   `scaling` named query (`/api/console/metrics/scaling?id=&range=`) rather than a route of their
+   own. The kind CI asserts the operator exports the ScaledJob's binding; the kube-state-metrics joins
+   were verified by hand on a kind cluster, since CI has no Prometheus.
 
 ## Open questions
 

@@ -242,6 +242,58 @@ operator:
   tolerations: []
   affinity: {}
 
+# Read-only admin console, served by the operator on its HTTP port (requires operator.enabled).
+# No auth in v1: anyone who can reach the console Service can read message payloads and lock ids,
+# so it is ClusterIP only. Reach it with
+#   kubectl port-forward svc/<fullname>-operator-console 9100:8080
+# or put your own authenticating ingress in front. See docs/CONSOLE.md.
+console:
+  enabled: false
+  # List and detail reads are cached this long, shared by every user.
+  cacheTtlMs: 10000
+  # Worker calls the console may have in flight at once (per operator pod).
+  maxWorkerCalls: 8
+  # Prometheus HTTP API for the charts, e.g. http://prometheus-operated.monitoring:9090.
+  # Empty = no charts ("metrics not configured"). Scrape the workers with metrics.* below.
+  prometheusUrl: ""
+  # Run the console as its own Deployment of the operator image (scaler off there), so console
+  # load can never delay KEDA's GetMetrics. Off = the operator pods serve it.
+  separateDeployment: false
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+  # Optional ingress to the console Service. It has no auth of its own: put authentication in
+  # front (e.g. oauth2-proxy annotations for your ingress controller).
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: daprmq-console.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+
+# Prometheus metrics on /metrics: DaprMQ.Queue, DaprMQ.Topic and DaprMQ.Delivery on every worker and
+# gateway pod, and the KEDA scaler bindings (DaprMQ.Operator) on operator pods.
+metrics:
+  # Annotate worker, gateway and operator pods with prometheus.io/scrape, /port and /path.
+  scrapeAnnotations: true
+  # A PodMonitor (Prometheus Operator / kube-prometheus-stack) for worker and gateway pods.
+  podMonitor:
+    enabled: false
+    interval: 15s
+    labels: {}
+  # Per-queue series: all | none | allowlist (with queueAllowlist).
+  queueLabel: all
+  queueAllowlist: []
+
 # Autoscaling configuration (for worker)
 autoscaling:
   enabled: false
