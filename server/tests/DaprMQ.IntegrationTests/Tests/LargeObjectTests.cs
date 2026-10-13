@@ -29,6 +29,35 @@ public class LargeObjectTests(DaprTestFixture fixture)
         return request;
     }
 
+    /// <summary>
+    /// Sizes of the blobs stored for <paramref name="queueId"/> (keyed "{queueId}/{objectId}" when no
+    /// prefix is given), so other tests' blobs in the shared directory don't count. The reaper deletes
+    /// files at any moment, so one that vanishes between listing and reading is simply gone.
+    /// </summary>
+    private long[] BlobSizes(string queueId)
+    {
+        if (!Directory.Exists(fixture.BlobStoreDirectory))
+        {
+            return [];
+        }
+
+        return Directory.GetFiles(fixture.BlobStoreDirectory, "*", SearchOption.AllDirectories)
+            .Where(f => Path.GetFileName(Path.GetDirectoryName(f)) == queueId)
+            .Select(f =>
+            {
+                try
+                {
+                    return new FileInfo(f).Length;
+                }
+                catch (FileNotFoundException)
+                {
+                    return -1L;
+                }
+            })
+            .Where(length => length >= 0)
+            .ToArray();
+    }
+
     [Fact]
     public async Task EnqueueObject_DequeueLocked_Acknowledge_RoundTripsBytesThenReapsBlob()
     {
@@ -57,8 +86,7 @@ public class LargeObjectTests(DaprTestFixture fixture)
         Assert.Equal(content, downloadedBytes);
 
         // Recoverable until ack - the blob must still exist right after Dequeue and download.
-        var blobFilesAfterDownload = Directory.GetFiles(fixture.BlobStoreDirectory, "*", SearchOption.AllDirectories);
-        Assert.Contains(blobFilesAfterDownload, f => new FileInfo(f).Length == content.Length);
+        Assert.Contains(content.LongLength, BlobSizes(queueId));
 
         var ackResponse = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/acknowledge", new ApiAcknowledgeRequest(lockId!));
         Assert.Equal(HttpStatusCode.OK, ackResponse.StatusCode);
@@ -70,10 +98,7 @@ public class LargeObjectTests(DaprTestFixture fixture)
         var stillPresent = true;
         while (DateTime.UtcNow < deadline)
         {
-            var remainingFiles = Directory.Exists(fixture.BlobStoreDirectory)
-                ? Directory.GetFiles(fixture.BlobStoreDirectory, "*", SearchOption.AllDirectories)
-                : Array.Empty<string>();
-            stillPresent = remainingFiles.Any(f => new FileInfo(f).Length == content.Length);
+            stillPresent = BlobSizes(queueId).Contains(content.LongLength);
             if (!stillPresent)
             {
                 break;
@@ -94,10 +119,7 @@ public class LargeObjectTests(DaprTestFixture fixture)
         var enqueueResponse = await fixture.ApiClient.SendAsync(BuildEnqueueObjectRequest(queueId, content));
         Assert.Equal(HttpStatusCode.OK, enqueueResponse.StatusCode);
 
-        var blobFilesBeforeDequeue = Directory.Exists(fixture.BlobStoreDirectory)
-            ? Directory.GetFiles(fixture.BlobStoreDirectory, "*", SearchOption.AllDirectories)
-            : Array.Empty<string>();
-        Assert.Contains(blobFilesBeforeDequeue, f => new FileInfo(f).Length == content.Length);
+        Assert.Contains(content.LongLength, BlobSizes(queueId));
 
         var dequeueResponse = await fixture.ApiClient.SendAsync(BuildDequeueRequest(queueId, requireAck: false));
         Assert.Equal(HttpStatusCode.OK, dequeueResponse.StatusCode);
@@ -119,10 +141,7 @@ public class LargeObjectTests(DaprTestFixture fixture)
         var stillPresent = true;
         while (DateTime.UtcNow < deadline)
         {
-            var remainingFiles = Directory.Exists(fixture.BlobStoreDirectory)
-                ? Directory.GetFiles(fixture.BlobStoreDirectory, "*", SearchOption.AllDirectories)
-                : Array.Empty<string>();
-            stillPresent = remainingFiles.Any(f => new FileInfo(f).Length == content.Length);
+            stillPresent = BlobSizes(queueId).Contains(content.LongLength);
             if (!stillPresent)
             {
                 break;
