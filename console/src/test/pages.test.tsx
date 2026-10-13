@@ -3,20 +3,48 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { server } from './server'
-import { api, ordersDetail, queuePage } from './handlers'
+import { api, ordersDetail, overview, queuePage } from './handlers'
 import { renderAt } from './render'
 
 describe('Overview', () => {
-  it('shows catalog totals as tiles', async () => {
+  it('shows catalog totals and depth totals as tiles', async () => {
     renderAt('/')
     const queues = await screen.findByRole('link', { name: /^Queues\s*42$/ })
     expect(queues).toHaveAttribute('href', '/queues')
-    expect(screen.getByRole('link', { name: /Dead-letter queues\s*3/ })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Topics\s*6/ })).toBeInTheDocument()
+    expect(screen.getByText('12,480')).toBeInTheDocument()
+    expect(screen.getByText('311')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /DLQs with messages ⚠\s*2/ })).toHaveAttribute('href', '/queues?kind=DeadLetter')
+  })
+
+  it('ranks the top queues and the DLQs with messages, linking to each', async () => {
+    renderAt('/')
+    const top = (await screen.findByRole('heading', { name: 'Top queues by depth' })).parentElement!
+    expect(within(top).getByRole('link', { name: 'orders' })).toHaveAttribute('href', '/queues/orders')
+    expect(within(top).getByText('8,330')).toBeInTheDocument()
+    const dlqs = screen.getByRole('heading', { name: 'DLQs with messages' }).parentElement!
+    expect(within(dlqs).getByRole('link', { name: 'payments-deadletter' })).toHaveAttribute('href', '/queues/payments?tab=deadletter')
+  })
+
+  it('counts every DLQ when none has messages', async () => {
+    server.use(http.get(api('/overview'), () => HttpResponse.json({ ...overview, deadLetterQueuesWithMessages: 0, deadLetterQueues: [] })))
+    renderAt('/')
+    expect(await screen.findByRole('link', { name: /^Dead-letter queues\s*3$/ })).toBeInTheDocument()
+    expect(screen.getByText('No dead-lettered messages.')).toBeInTheDocument()
+  })
+
+  it('says when the overview stopped short or some reads failed', async () => {
+    server.use(http.get(api('/overview'), () => HttpResponse.json({ ...overview, truncated: true, queuesRead: 10000, errors: 3 })))
+    renderAt('/')
+    expect(await screen.findByText(/first 10,000 queues/)).toBeInTheDocument()
+    expect(screen.getByText(/3 depth reads failed/)).toBeInTheDocument()
   })
 
   it('marks workers unreachable when the API is unavailable', async () => {
-    server.use(http.get(api('/catalog'), () => new HttpResponse(null, { status: 503 })))
+    server.use(
+      http.get(api('/catalog'), () => new HttpResponse(null, { status: 503 })),
+      http.get(api('/overview'), () => new HttpResponse(null, { status: 503 })),
+    )
     renderAt('/')
     expect(await screen.findByText(/Workers unavailable/)).toBeInTheDocument()
     expect(screen.getAllByLabelText('unreachable').length).toBeGreaterThan(0)

@@ -2,7 +2,7 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { getJson, seg } from './client'
 import { usePollInterval } from './refresh'
 import type {
-  CatalogEntryKind, CatalogPage, Lock, LockPage, Message, MessagePage, Payload,
+  CatalogEntryKind, CatalogPage, Lock, LockPage, Message, MessagePage, Overview, Payload,
   QueueDetail, QueuePage, SessionPage, TopicDetail,
 } from './types'
 
@@ -16,6 +16,16 @@ export function useCatalog(kind: CatalogEntryKind | null, cursor: string | null,
     queryKey: ['catalog', kind, cursor, limit],
     queryFn: () => getJson<CatalogPage>('/catalog', { kind, cursor, limit }),
     refetchInterval,
+  })
+}
+
+export function useOverview() {
+  const refetchInterval = usePollInterval()
+  return useQuery({
+    queryKey: ['overview'],
+    queryFn: () => getJson<Overview>('/overview'),
+    refetchInterval,
+    placeholderData: (previous) => previous,
   })
 }
 

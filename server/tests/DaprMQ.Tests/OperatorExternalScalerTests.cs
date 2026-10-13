@@ -13,11 +13,10 @@ public class OperatorExternalScalerTests
 {
     private readonly Mock<IWorkerDepthClient> _client = new();
     private readonly Mock<ServerCallContext> _context = new();
-    private readonly ScalerBindingRegistry _bindings = new(TimeProvider.System);
 
     private DaprMQExternalScaler CreateScaler(TimeSpan? pollInterval = null) =>
         new(_client.Object, new ScalerOptions { StreamPollInterval = pollInterval ?? TimeSpan.FromMilliseconds(10) },
-            NullLogger<DaprMQExternalScaler>.Instance, _bindings);
+            NullLogger<DaprMQExternalScaler>.Instance);
 
     private static ScaledObjectRef Ref(params (string Key, string Value)[] metadata)
     {
@@ -190,29 +189,5 @@ public class OperatorExternalScalerTests
         await CreateScaler().StreamIsActive(Ref(("queueId", "orders")), writer, _context.Object);
 
         Assert.Equal([true], writer.Written.Select(w => w.Result));
-    }
-
-    [Fact]
-    public async Task EveryCall_RecordsTheScaledObjectsLinkToItsQueue()
-    {
-        SetupDepth(new QueueDepthResult { QueueId = "orders", Ready = 7, Locked = 1 });
-        var scaler = CreateScaler();
-
-        await scaler.GetMetricSpec(Ref(("queueId", "orders"), ("targetValue", "5")), _context.Object);
-        var afterSpec = Assert.Single(_bindings.Active());
-        await scaler.GetMetrics(new GetMetricsRequest { ScaledObjectRef = Ref(("queueId", "orders"), ("targetValue", "5")) }, _context.Object);
-
-        var binding = Assert.Single(_bindings.Active());
-        Assert.Null(afterSpec.MetricValue);
-        Assert.Equal(("orders", "messages", "default", "consumer", "keda-hpa-consumer", 5.0), (binding.Queue, binding.Mode, binding.Namespace, binding.ScaledObject, binding.Hpa, binding.TargetValue));
-        Assert.Equal(8, binding.MetricValue);
-    }
-
-    [Fact]
-    public async Task HpaName_OverridesKedasDefaultName()
-    {
-        await CreateScaler().GetMetricSpec(Ref(("queueId", "orders"), ("hpaName", "orders-hpa")), _context.Object);
-
-        Assert.Equal("orders-hpa", Assert.Single(_bindings.Active()).Hpa);
     }
 }

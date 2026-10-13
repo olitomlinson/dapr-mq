@@ -119,10 +119,6 @@ Console env, on whichever pods serve it
   value: {{ .Values.console.cacheTtlMs | quote }}
 - name: CONSOLE_MAX_WORKER_CALLS
   value: {{ .Values.console.maxWorkerCalls | quote }}
-{{- with .Values.console.prometheusUrl }}
-- name: PROMETHEUS_URL
-  value: {{ . | quote }}
-{{- end }}
 {{- end }}
 
 {{/*
