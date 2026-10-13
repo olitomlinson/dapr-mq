@@ -6,7 +6,6 @@ import { OverviewTab } from './queue/OverviewTab'
 import { MessagesTab } from './queue/MessagesTab'
 import { LockedTab } from './queue/LockedTab'
 import { SessionsTab } from './queue/SessionsTab'
-import { MetricsTab } from './queue/MetricsTab'
 
 type Tab = 'overview' | 'messages' | 'locked' | 'deadletter' | 'sessions'
 
@@ -40,12 +39,7 @@ export function QueueDetailPage() {
       {d && (
         <>
           <Tabs tabs={tabs} value={tab} onChange={(next) => setParams(next === 'overview' ? {} : { tab: next })} />
-          {tab === 'overview' && (
-            <>
-              <OverviewTab detail={d} />
-              <MetricsTab queueId={queueId} />
-            </>
-          )}
+          {tab === 'overview' && <OverviewTab detail={d} />}
           {tab === 'messages' && <MessagesTab key={queueId} queueId={queueId} maxDeliveryCount={d.maxDeliveryCount} />}
           {tab === 'locked' && <LockedTab queueId={queueId} maxDeliveryCount={d.maxDeliveryCount} />}
           {tab === 'deadletter' && <MessagesTab key={`${queueId}-deadletter`} queueId={`${queueId}-deadletter`} maxDeliveryCount={d.maxDeliveryCount} />}

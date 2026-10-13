@@ -1,6 +1,8 @@
 # Admin console
 
-**Status:** all five PRs built. Delivered as five PRs (see [Delivery](#delivery)).
+**Status:** all five PRs built (see [Delivery](#delivery)). **Metrics have since been removed**: see
+[Metrics removed](#metrics-removed). Sections 3 and 4 and the charts in section 6 describe what was built and then taken
+out.
 
 ## Context
 
@@ -499,6 +501,26 @@ Each PR is usable on its own:
    `scaling` named query (`/api/console/metrics/scaling?id=&range=`) rather than a route of their
    own. The kind CI asserts the operator exports the ScaledJob's binding; the kube-state-metrics joins
    were verified by hand on a kind cluster, since CI has no Prometheus.
+
+## Metrics removed
+
+After running the console without metrics, Prometheus wasn't providing enough value to justify running it, so
+everything that fed it was removed:
+
+- the OpenTelemetry counters (`DaprMQ.Queue`, `DaprMQ.Topic`), the in-memory depth gauge, `/metrics` and OTLP export
+  on workers and gateways, and the `DAPRMQ_METRICS_*` settings;
+- the operator's Prometheus client, `/api/console/metrics/*` and `PROMETHEUS_URL`;
+- the KEDA overlay's binding registry and its gauges, and the `hpaName` trigger key;
+- Prometheus in docker compose, and the Helm PodMonitor, scrape annotations, `metrics.*` and `console.prometheusUrl`;
+- every chart, rate and sparkline in the console, and Recharts.
+
+`DaprMQ.Delivery` stays as it was before the console: defined, but not exported.
+
+The overview's totals, top queues and DLQs with messages, which came from the depth gauge, now come from state:
+`GET /api/console/overview` reads every catalogued queue's depth and its DLQ's through the depth read the queue list
+already uses, capped at 10,000 queues and cached like other list reads ([CONSOLE.md](../docs/CONSOLE.md#overview)).
+Session items aren't counted, as in the queue list. The removal also took with it two depth-gauge bugs (session queues
+reported by more than one worker were miscounted, and the gauge kept an entry for every session ever hosted).
 
 ## Open questions
 

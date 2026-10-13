@@ -72,7 +72,6 @@ Trigger metadata (all strings):
 | `targetValue` | `10` | Metric per replica the HPA aims for (replicas ≈ metric / targetValue) |
 | `activationValue` | `0` | Scales up from zero once the metric is above this |
 | `includeDeadLetter` | `false` | Messages mode only: also count `{queueId}-deadletter` |
-| `hpaName` | `keda-hpa-<ScaledObject name>` | Only if you set `advanced.horizontalPodAutoscalerConfig.name`: the admin console uses it to chart replicas |
 
 Use trigger `type: external-push` to scale up from zero as soon as items arrive, or `type: external` to pick changes
 up only every `pollingInterval`.
@@ -87,9 +86,6 @@ kubectl get deploy <consumer> -n <consumer-namespace> -w  # replicas move 0 → 
 
 Enqueue some items: the Deployment scales up, drains the queue, and scales back to `minReplicaCount` about
 `cooldownPeriod` seconds after the queue is empty.
-
-The [admin console](../../docs/CONSOLE.md#keda-scaling-overlay) charts this on the queue's Overview tab: desired and
-actual consumers for each ScaledObject, next to the queue's rates and depth.
 
 ## Long-running work
 

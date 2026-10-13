@@ -196,6 +196,136 @@ public class OperatorConsoleEndpointsTests
         Assert.Equal(503, StatusOf(result));
     }
 
+    // --- overview ---
+
+    private void CatalogPage(string? cursor, CatalogPage page) =>
+        _client.Setup(c => c.GetAsync("internal/admin/catalog",
+                It.Is<IReadOnlyCollection<KeyValuePair<string, string>>>(q =>
+                    q.Contains(new("kind", "Queue")) && (cursor == null ? q.All(p => p.Key != "cursor") : q.Contains(new("cursor", cursor)))),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new WorkerReply(200, JsonSerializer.Serialize(page, JsonOptions)));
+
+    private static CatalogPage Queues(string? nextCursor, params string[] ids) => new()
+    {
+        Entries = ids.Select(id => new CatalogEntry { Id = id, Kind = CatalogEntryKind.Queue }).ToList(),
+        NextCursor = nextCursor,
+        Totals = new() { [CatalogEntryKind.Queue] = 3, [CatalogEntryKind.Topic] = 1 }
+    };
+
+    private void Depths(params QueueDepthResult[] results) =>
+        _client.Setup(c => c.GetDepthsAsync(It.IsAny<QueueDepthRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((QueueDepthRequest r, CancellationToken _) => new QueueDepthResponse
+            {
+                Results = r.Queries.Select(q => results.FirstOrDefault(d => d.QueueId == q.QueueId) ?? new QueueDepthResult { QueueId = q.QueueId }).ToList()
+            });
+
+    private static ConsoleOverview OverviewOf(IResult result) =>
+        JsonSerializer.Deserialize<ConsoleOverview>(Assert.IsType<ContentHttpResult>(result).ResponseContent!, JsonOptions)!;
+
+    [Fact]
+    public async Task Overview_SumsDepths_AndRanksTopQueuesAndDeadLetterQueues()
+    {
+        CatalogPage(null, Queues(null, "emails", "idle", "orders"));
+        Depths(
+            new() { QueueId = "orders", Ready = 8, Locked = 2 },
+            new() { QueueId = "orders-deadletter", Ready = 3 },
+            new() { QueueId = "emails", Ready = 1, Locked = 1 },
+            new() { QueueId = "emails-deadletter", Ready = 5, Locked = 1 });
+
+        var overview = OverviewOf(await ConsoleEndpoints.HandleOverviewAsync(_client.Object, _cache, CancellationToken.None));
+
+        Assert.Equal(9, overview.Ready);
+        Assert.Equal(3, overview.Locked);
+        Assert.Equal(9, overview.DeadLettered);
+        Assert.Equal(2, overview.DeadLetterQueuesWithMessages);
+        Assert.Equal(["orders", "emails"], overview.TopQueues.Select(q => q.Id));
+        Assert.Equal(["emails", "orders"], overview.DeadLetterQueues.Select(q => q.Id));
+        Assert.Equal(6, overview.DeadLetterQueues[0].Ready + overview.DeadLetterQueues[0].Locked);
+        Assert.Equal(3, overview.QueuesRead);
+        Assert.Equal(1, overview.Totals[CatalogEntryKind.Topic]);
+        Assert.False(overview.Truncated);
+    }
+
+    [Fact]
+    public async Task Overview_PagesThroughTheWholeCatalog()
+    {
+        CatalogPage(null, Queues("b", "a", "b"));
+        CatalogPage("b", Queues(null, "c"));
+        Depths(new QueueDepthResult { QueueId = "c", Ready = 4 });
+
+        var overview = OverviewOf(await ConsoleEndpoints.HandleOverviewAsync(_client.Object, _cache, CancellationToken.None));
+
+        Assert.Equal(3, overview.QueuesRead);
+        Assert.Equal(4, overview.Ready);
+    }
+
+    [Fact]
+    public async Task Overview_SplitsDepthReadsToTheEndpointLimit()
+    {
+        var ids = Enumerable.Range(0, 120).Select(i => $"q{i:D3}").ToArray();
+        CatalogPage(null, Queues(null, ids));
+        var sent = new List<int>();
+        _client.Setup(c => c.GetDepthsAsync(It.IsAny<QueueDepthRequest>(), It.IsAny<CancellationToken>()))
+            .Callback((QueueDepthRequest r, CancellationToken _) => { lock (sent) sent.Add(r.Queries.Count); })
+            .ReturnsAsync((QueueDepthRequest r, CancellationToken _) => new QueueDepthResponse
+            {
+                Results = r.Queries.Select(q => new QueueDepthResult { QueueId = q.QueueId }).ToList()
+            });
+
+        await ConsoleEndpoints.HandleOverviewAsync(_client.Object, _cache, CancellationToken.None);
+
+        Assert.Equal(240, sent.Sum());
+        Assert.All(sent, count => Assert.True(count <= 100));
+    }
+
+    [Fact]
+    public async Task Overview_StopsAtTheQueueCap_AndSaysSo()
+    {
+        CatalogPage(null, Queues("b", "a", "b"));
+        Depths();
+
+        var overview = OverviewOf(await ConsoleEndpoints.HandleOverviewAsync(_client.Object, _cache, CancellationToken.None, maxQueues: 2));
+
+        Assert.True(overview.Truncated);
+        Assert.Equal(2, overview.QueuesRead);
+        _client.Verify(c => c.GetAsync("internal/admin/catalog",
+            It.Is<IReadOnlyCollection<KeyValuePair<string, string>>>(q => q.Contains(new("limit", "2"))), It.IsAny<CancellationToken>()));
+    }
+
+    [Fact]
+    public async Task Overview_CountsFailedDepthReads_WithoutFailing()
+    {
+        CatalogPage(null, Queues(null, "bad", "good"));
+        Depths(new() { QueueId = "bad", Error = "boom" }, new() { QueueId = "good", Ready = 2 });
+
+        var overview = OverviewOf(await ConsoleEndpoints.HandleOverviewAsync(_client.Object, _cache, CancellationToken.None));
+
+        Assert.Equal(1, overview.Errors);
+        Assert.Equal(2, overview.Ready);
+    }
+
+    [Fact]
+    public async Task Overview_IsCachedForEveryCaller()
+    {
+        CatalogPage(null, Queues(null, "orders"));
+        Depths();
+
+        await ConsoleEndpoints.HandleOverviewAsync(_client.Object, _cache, CancellationToken.None);
+        await ConsoleEndpoints.HandleOverviewAsync(_client.Object, _cache, CancellationToken.None);
+
+        _client.Verify(c => c.GetDepthsAsync(It.IsAny<QueueDepthRequest>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Overview_CatalogFailure_Is503()
+    {
+        Worker("internal/admin/catalog", 503);
+
+        var result = await ConsoleEndpoints.HandleOverviewAsync(_client.Object, _cache, CancellationToken.None);
+
+        Assert.Equal(503, StatusOf(result));
+    }
+
     // --- concurrency limit ---
 
     [Fact]

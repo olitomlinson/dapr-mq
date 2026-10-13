@@ -33,6 +33,27 @@ export interface QueuePage {
   totals: Partial<Record<CatalogEntryKind, number>>
 }
 
+/** A queue's depth on the overview; on a DLQ row, id is the queue the DLQ belongs to. */
+export interface QueueDepth {
+  id: string
+  ready: number
+  locked: number
+}
+
+/** /api/console/overview: every catalogued queue's depth from committed state, summed and ranked. */
+export interface Overview {
+  totals: Partial<Record<CatalogEntryKind, number>>
+  ready: number
+  locked: number
+  deadLettered: number
+  deadLetterQueuesWithMessages: number
+  topQueues: QueueDepth[]
+  deadLetterQueues: QueueDepth[]
+  queuesRead: number
+  truncated: boolean
+  errors: number
+}
+
 export interface PriorityDetail {
   priority: number
   count: number
@@ -146,15 +167,3 @@ export interface Payload {
   truncated: boolean
 }
 
-export interface MetricSeries {
-  name: string
-  labels: Record<string, string>
-  /** [unixSeconds, value] */
-  points: [number, number][]
-}
-
-export interface MetricsResponse {
-  series: MetricSeries[]
-}
-
-export type MetricsRange = '15m' | '1h' | '6h' | '24h'

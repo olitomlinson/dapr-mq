@@ -1,6 +1,6 @@
 import { http, HttpResponse } from 'msw'
 import type {
-  CatalogPage, Lock, LockPage, Message, MessagePage, QueueDetail, QueuePage, SessionPage, TopicDetail,
+  CatalogPage, Lock, LockPage, Message, MessagePage, Overview, QueueDetail, QueuePage, SessionPage, TopicDetail,
 } from '../api/types'
 
 // Fixtures shaped like /api/console/* replies. Tests override per case with server.use(...).
@@ -11,6 +11,19 @@ export const catalog: CatalogPage = {
   entries: [],
   nextCursor: null,
   totals: { Queue: 42, DeadLetter: 3, Topic: 6, Sink: 2 },
+}
+
+export const overview: Overview = {
+  totals: { Queue: 42, DeadLetter: 3, Topic: 6, Sink: 2 },
+  ready: 12480,
+  locked: 311,
+  deadLettered: 27,
+  deadLetterQueuesWithMessages: 2,
+  topQueues: [{ id: 'orders', ready: 8210, locked: 120 }, { id: 'emails', ready: 2004, locked: 40 }],
+  deadLetterQueues: [{ id: 'orders', ready: 19, locked: 0 }, { id: 'payments', ready: 8, locked: 0 }],
+  queuesRead: 42,
+  truncated: false,
+  errors: 0,
 }
 
 export const queuePage: QueuePage = {
@@ -104,6 +117,5 @@ export const handlers = [
   http.get(api('/queues/:id/sessions'), () =>
     HttpResponse.json({ items: [{ sessionId: 'a', ready: 2, locked: 1, leaseExpiresAt: null }], nextCursor: null } satisfies SessionPage)),
   http.get(api('/topics/news'), () => HttpResponse.json(topic)),
-  // The default deployment has no PROMETHEUS_URL.
-  http.get(api('/metrics/:name'), () => new HttpResponse(null, { status: 501 })),
+  http.get(api('/overview'), () => HttpResponse.json(overview)),
 ]

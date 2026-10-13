@@ -55,6 +55,21 @@ public class ConsoleApiTests(OperatorTestFixture fixture)
     }
 
     [Fact]
+    public async Task Overview_CountsAnEnqueuedQueuesItems_FromState()
+    {
+        var queueId = $"console-overview-{Guid.NewGuid():N}";
+        await EnqueueAsync(queueId, 4);
+        await WaitForQueueRowAsync(queueId, TimeSpan.FromSeconds(15));
+
+        var overview = await GetOkAsync<ConsoleOverview>("/api/console/overview");
+
+        // Other tests share the environment, so only lower bounds hold.
+        Assert.True(overview.Ready >= 4, $"ready {overview.Ready}");
+        Assert.True(overview.QueuesRead >= 1);
+        Assert.False(overview.Truncated);
+    }
+
+    [Fact]
     public async Task WorkerStatusesPassThrough()
     {
         var missing = await fixture.OperatorClient.GetAsync($"/api/console/queues/console-missing-{Guid.NewGuid():N}");
@@ -62,14 +77,6 @@ public class ConsoleApiTests(OperatorTestFixture fixture)
 
         Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, badLimit.StatusCode);
-    }
-
-    [Fact]
-    public async Task Metrics_WithoutPrometheus_Are501()
-    {
-        var response = await fixture.OperatorClient.GetAsync("/api/console/metrics/throughput");
-
-        Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
     }
 
     [Fact]

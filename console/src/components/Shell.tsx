@@ -1,8 +1,8 @@
 import { useState, type FormEvent } from 'react'
 import { NavLink, Outlet, Link, useNavigate } from 'react-router-dom'
-import { useCatalog, useMetrics } from '../api/hooks'
+import { useCatalog } from '../api/hooks'
 import { useRefresh } from '../api/refresh'
-import { ApiError, seg } from '../api/client'
+import { seg } from '../api/client'
 import s from './Shell.module.css'
 import { ui } from './ui'
 
@@ -17,10 +17,6 @@ export function Shell() {
   const { pollMs, paused, setPaused } = useRefresh()
   // The overview's catalog read doubles as the worker health signal.
   const health = useCatalog(null, null, 1)
-  const prometheus = useMetrics('status', {})
-  const prometheusState = prometheus.error instanceof ApiError && prometheus.error.status === 501
-    ? null
-    : prometheus.isError ? 'unreachable' : 'reachable'
   const navigate = useNavigate()
   const [target, setTarget] = useState('')
 
@@ -59,12 +55,6 @@ export function Shell() {
         <div className={s.status}>
           Workers
           <span className={`${s.dot} ${health.isError ? s.down : s.up}`} aria-label={health.isError ? 'unreachable' : 'reachable'} />
-          {prometheusState && (
-            <div>
-              Prometheus
-              <span className={`${s.dot} ${prometheusState === 'reachable' ? s.up : s.down}`} aria-label={`Prometheus ${prometheusState}`} />
-            </div>
-          )}
         </div>
       </nav>
       <main className={s.main}>

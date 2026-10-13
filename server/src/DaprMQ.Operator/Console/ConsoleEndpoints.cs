@@ -19,6 +19,15 @@ public static class ConsoleEndpoints
     public const int MaxQueueListLimit = QueueDepthEndpointMaxQueries / 2;
 
     private const int QueueDepthEndpointMaxQueries = 100;
+
+    /// <summary>The overview reads at most this many queues; past it, it says Truncated.</summary>
+    public const int MaxOverviewQueues = 10_000;
+
+    public const int OverviewTopQueues = 10;
+    public const int OverviewDeadLetterQueues = 20;
+
+    /// <summary>The worker's catalog read caps a page at this.</summary>
+    private const int MaxCatalogPage = 1000;
     private const string WorkerPrefix = "internal/admin";
     private const string DeadLetterSuffix = "-deadletter";
 
@@ -39,9 +48,8 @@ public static class ConsoleEndpoints
         MapProxy(group, "/queues/{queueId}/sessions", ["cursor", "limit"], cacheable: false);
         MapProxy(group, "/topics/{topicId}", [], cacheable: true);
 
-        group.MapGet("/metrics/{name}", (string name, string? id, string? ids, string? range, IServiceProvider services,
-                ConsoleResponseCache cache, TimeProvider time, CancellationToken ct) =>
-            HandleMetricsAsync(name, id, ids, range, services.GetService<IPrometheusClient>(), cache, time, ct));
+        group.MapGet("/overview", (IWorkerAdminClient client, ConsoleResponseCache cache, CancellationToken ct) =>
+            HandleOverviewAsync(client, cache, ct));
 
         group.MapGet("/queues", (string? kind, string? cursor, int? limit, IWorkerAdminClient client, ConsoleResponseCache cache, CancellationToken ct) =>
             HandleQueuesAsync(kind, cursor, limit, client, cache, ct));
@@ -122,61 +130,102 @@ public static class ConsoleEndpoints
     }
 
     /// <summary>
-    /// Runs one named set of PromQL (<see cref="ConsoleMetricQueries"/>). 501 when PROMETHEUS_URL isn't
-    /// configured, 503 when Prometheus can't be reached. Cached like other polled reads.
+    /// The overview from committed state: every catalogued queue's depth and its DLQ's, through the
+    /// same depth read as the queue list, summed and ranked. Its cost grows with the number of queues
+    /// (one catalog read per 1,000, one depth call per 50), so it's capped at
+    /// <paramref name="maxQueues"/> and cached for every caller like other polled reads.
     /// </summary>
-    public static async Task<IResult> HandleMetricsAsync(
-        string name, string? id, string? ids, string? range, IPrometheusClient? prometheus,
-        ConsoleResponseCache cache, TimeProvider time, CancellationToken cancellationToken)
+    public static async Task<IResult> HandleOverviewAsync(
+        IWorkerAdminClient client, ConsoleResponseCache cache, CancellationToken cancellationToken, int maxQueues = MaxOverviewQueues)
     {
-        if (prometheus == null)
-        {
-            return Results.Problem(title: "Metrics not configured", detail: "Set PROMETHEUS_URL on the operator.",
-                statusCode: StatusCodes.Status501NotImplemented);
-        }
-
-        range ??= "1h";
-        if (!ConsoleMetricQueries.Ranges.TryGetValue(range, out var span))
-        {
-            return Results.BadRequest($"range must be one of: {string.Join(", ", ConsoleMetricQueries.Ranges.Keys)}");
-        }
-
-        var idList = (ids ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries);
-        if (idList.Length > ConsoleMetricQueries.MaxIds)
-        {
-            return Results.BadRequest($"At most {ConsoleMetricQueries.MaxIds} ids");
-        }
-
-        var step = TimeSpan.FromSeconds(Math.Max(15, span.TotalSeconds / ConsoleMetricQueries.PointsPerRange));
-        var window = $"{(int)Math.Max(120, step.TotalSeconds)}s";
-        var queries = ConsoleMetricQueries.Build(name, string.IsNullOrEmpty(id) ? null : id, idList, window);
-        if (queries == null)
-        {
-            return Results.BadRequest($"Unknown metrics '{name}', or it needs an id");
-        }
-
         try
         {
-            var key = CacheKey($"metrics/{name}", [new("id", id ?? string.Empty), new("ids", ids ?? string.Empty), new("range", range)]);
-            var reply = await cache.GetOrAddAsync(key, async () =>
-            {
-                var end = time.GetUtcNow();
-                var results = await Task.WhenAll(queries.Select(async q =>
-                {
-                    var series = q.Instant
-                        ? await prometheus.QueryAsync(q.PromQl, end, CancellationToken.None)
-                        : await prometheus.QueryRangeAsync(q.PromQl, end - span, end, step, CancellationToken.None);
-                    return series.Select(s => new MetricSeries { Name = q.Series, Labels = s.Labels, Points = s.Points });
-                }));
-                var response = new ConsoleMetricsResponse { Series = results.SelectMany(r => r).ToList() };
-                return new WorkerReply(StatusCodes.Status200OK, JsonSerializer.Serialize(response, JsonOptions));
-            }, cancellationToken);
+            var reply = await cache.GetOrAddAsync("overview", () => ReadOverviewAsync(client, maxQueues), cancellationToken);
             return ToResult(reply);
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
-            return Results.Problem(title: "Prometheus unavailable", detail: ex.Message, statusCode: StatusCodes.Status503ServiceUnavailable);
+            return Unavailable(ex.Message);
         }
+    }
+
+    private static async Task<WorkerReply> ReadOverviewAsync(IWorkerAdminClient client, int maxQueues)
+    {
+        var queueIds = new List<string>();
+        Dictionary<CatalogEntryKind, int> totals = [];
+        string? cursor = null;
+        do
+        {
+            var query = new List<KeyValuePair<string, string>>
+            {
+                new("kind", CatalogEntryKind.Queue.ToString()),
+                new("limit", Math.Min(MaxCatalogPage, maxQueues - queueIds.Count).ToString())
+            };
+            if (cursor != null)
+            {
+                query.Add(new("cursor", cursor));
+            }
+
+            var reply = await client.GetAsync($"{WorkerPrefix}/catalog", query, CancellationToken.None);
+            if (reply.StatusCode != StatusCodes.Status200OK)
+            {
+                return reply;
+            }
+
+            var page = JsonSerializer.Deserialize<CatalogPage>(reply.Body, JsonOptions)!;
+            totals = page.Totals;
+            queueIds.AddRange(page.Entries.Select(e => e.Id));
+            cursor = page.NextCursor;
+        }
+        while (cursor != null && queueIds.Count < maxQueues);
+
+        // Two queries per queue (it and its DLQ), split to the depth endpoint's limit; the worker
+        // client's concurrency limit bounds how many run at once.
+        var responses = await Task.WhenAll(queueIds
+            .Chunk(QueueDepthEndpointMaxQueries / 2)
+            .Select(chunk => client.GetDepthsAsync(new QueueDepthRequest
+            {
+                Queries = chunk.SelectMany(id => new[] { id, id + DeadLetterSuffix }).Select(id => new QueueDepthQuery { QueueId = id }).ToList()
+            }, CancellationToken.None)));
+        var depths = responses.SelectMany(r => r.Results).ToDictionary(r => r.QueueId);
+
+        var errors = 0;
+        ConsoleQueueDepth DepthOf(string id, string rowId)
+        {
+            var depth = depths.GetValueOrDefault(id);
+            if (depth == null || depth.Error != null)
+            {
+                errors++;
+                return new ConsoleQueueDepth { Id = rowId };
+            }
+
+            return new ConsoleQueueDepth { Id = rowId, Ready = depth.Ready, Locked = depth.Locked };
+        }
+
+        var queues = queueIds.Select(id => (Queue: DepthOf(id, id), DeadLetter: DepthOf(id + DeadLetterSuffix, id))).ToList();
+        var deadLetters = queues.Select(q => q.DeadLetter).Where(d => d.Ready + d.Locked > 0).ToList();
+        static List<ConsoleQueueDepth> Top(IEnumerable<ConsoleQueueDepth> rows, int count) => rows
+            .Where(r => r.Ready + r.Locked > 0)
+            .OrderByDescending(r => r.Ready + r.Locked)
+            .ThenBy(r => r.Id, StringComparer.Ordinal)
+            .Take(count)
+            .ToList();
+
+        var overview = new ConsoleOverview
+        {
+            Totals = totals,
+            Ready = queues.Sum(q => q.Queue.Ready),
+            Locked = queues.Sum(q => q.Queue.Locked),
+            DeadLettered = deadLetters.Sum(d => d.Ready + d.Locked),
+            DeadLetterQueuesWithMessages = deadLetters.Count,
+            TopQueues = Top(queues.Select(q => q.Queue), OverviewTopQueues),
+            DeadLetterQueues = Top(deadLetters, OverviewDeadLetterQueues),
+            QueuesRead = queueIds.Count,
+            Truncated = cursor != null,
+            Errors = errors
+        };
+
+        return new WorkerReply(StatusCodes.Status200OK, JsonSerializer.Serialize(overview, JsonOptions));
     }
 
     private static async Task<WorkerReply> ReadQueuePageAsync(IReadOnlyCollection<KeyValuePair<string, string>> query, IWorkerAdminClient client)

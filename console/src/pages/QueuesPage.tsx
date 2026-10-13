@@ -1,11 +1,10 @@
 import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { useMetrics, useQueuePage } from '../api/hooks'
+import { useQueuePage } from '../api/hooks'
 import { seg } from '../api/client'
-import type { MetricSeries, QueueRow } from '../api/types'
+import type { QueueRow } from '../api/types'
 import { formatCount, subscriptionTopic } from '../util/format'
 import { QueryState, ui } from '../components/ui'
-import { Sparkline } from '../components/charts'
 
 export function QueuesPage() {
   const [params, setParams] = useSearchParams()
@@ -17,10 +16,6 @@ export function QueuesPage() {
   const [hideEmpty, setHideEmpty] = useState(false)
   const [hideSubs, setHideSubs] = useState(false)
   const page = useQueuePage(kind, cursor)
-  // Rates and depth history for the rows on this page (absent without Prometheus).
-  const ids = page.data?.items.map((row) => row.id) ?? []
-  const metrics = useMetrics('queue-list', { ids }, ids.length > 0)
-  const hasMetrics = !!metrics.data
 
   const setKind = (next: string) => {
     setCursors([null])
@@ -61,13 +56,12 @@ export function QueuesPage() {
                 <th className={ui.num}>Ready</th>
                 <th className={ui.num}>Locked</th>
                 {kind === 'Queue' && <th className={ui.num}>DLQ</th>}
-                {hasMetrics && <><th className={ui.num}>In/s</th><th className={ui.num}>Out/s</th><th>Depth (1h)</th></>}
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => <Row key={row.id} row={row} metrics={hasMetrics ? metrics.data!.series : null} />)}
+              {rows.map((row) => <Row key={row.id} row={row} />)}
               {rows.length === 0 && (
-                <tr><td colSpan={8} className={ui.muted}>No queues{filter || hideEmpty || hideSubs ? ' match' : ''}.</td></tr>
+                <tr><td colSpan={5} className={ui.muted}>No queues{filter || hideEmpty || hideSubs ? ' match' : ''}.</td></tr>
               )}
             </tbody>
           </table>
@@ -82,11 +76,7 @@ export function QueuesPage() {
   )
 }
 
-const rate = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 })
-
-function Row({ row, metrics }: { row: QueueRow; metrics: MetricSeries[] | null }) {
-  const forRow = (name: string) => metrics?.find((x) => x.name === name && x.labels.queue === row.id)
-  const instant = (name: string) => rate.format(forRow(name)?.points[0]?.[1] ?? 0)
+function Row({ row }: { row: QueueRow }) {
   const topic = subscriptionTopic(row.id)
   const dlq = row.deadLetterCount ?? 0
   return (
@@ -110,13 +100,6 @@ function Row({ row, metrics }: { row: QueueRow; metrics: MetricSeries[] | null }
         <td className={ui.num}>
           {dlq > 0 ? <Link to={`/queues/${seg(row.id)}?tab=deadletter`} className={`${ui.badge} ${ui.badgeWarn}`}>{formatCount(dlq)}</Link> : '0'}
         </td>
-      )}
-      {metrics && (
-        <>
-          <td className={ui.num}>{instant('in')}</td>
-          <td className={ui.num}>{instant('out')}</td>
-          <td><Sparkline points={forRow('depth')?.points ?? []} label={`${row.id} depth over the last hour`} /></td>
-        </>
       )}
     </tr>
   )

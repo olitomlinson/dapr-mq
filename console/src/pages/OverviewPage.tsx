@@ -1,72 +1,51 @@
-import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useCatalog, useMetrics } from '../api/hooks'
+import { useOverview } from '../api/hooks'
 import { seg } from '../api/client'
-import type { MetricSeries, MetricsRange } from '../api/types'
+import type { QueueDepth } from '../api/types'
 import { formatCount } from '../util/format'
 import { QueryState, Tile, ui } from '../components/ui'
-import { MetricsState, RangePicker, TimeSeriesChart, seriesPoints } from '../components/charts'
 
 export function OverviewPage() {
-  const [range, setRange] = useState<MetricsRange>('1h')
-  const catalog = useCatalog(null, null, 1)
-  const depth = useMetrics('depth-summary', {})
-  const throughput = useMetrics('throughput', { range })
-  const totals = catalog.data?.totals ?? {}
-  const count = (n?: number) => (catalog.data ? formatCount(n ?? 0) : '–')
-  const depthTotal = (state: string) => {
-    const point = depth.data?.series.find((x) => x.name === 'total' && x.labels.state === state)?.points[0]
-    return depth.data ? formatCount(Math.round(point?.[1] ?? 0)) : '–'
-  }
-  const dlqs = depth.data?.series.filter((x) => x.name === 'dlq') ?? []
+  const overview = useOverview()
+  const o = overview.data
+  const count = (n?: number) => (o ? formatCount(n ?? 0) : '–')
+  const dlqsWithMessages = o?.deadLetterQueuesWithMessages ?? 0
 
   return (
     <div className={ui.page}>
       <h1 className={ui.title}>Overview</h1>
-      <QueryState isLoading={catalog.isLoading} error={catalog.error} />
+      <QueryState isLoading={overview.isLoading} error={overview.error} />
       <div className={ui.tiles}>
-        <Tile label="Queues" value={count(totals.Queue)} href="/queues" />
-        <Tile label="Topics" value={count(totals.Topic)} href="/topics" />
-        {!depth.error && <Tile label="Ready" value={depthTotal('ready')} />}
-        {!depth.error && <Tile label="Locked" value={depthTotal('locked')} />}
-        <Tile label={dlqs.length > 0 ? 'DLQs with messages ⚠' : 'Dead-letter queues'} value={dlqs.length > 0 ? formatCount(dlqs.length) : count(totals.DeadLetter)} href="/queues?kind=DeadLetter" />
-        <Tile label="HTTP sinks" value={count(totals.Sink)} href="/sinks" />
+        <Tile label="Queues" value={count(o?.totals.Queue)} href="/queues" />
+        <Tile label="Topics" value={count(o?.totals.Topic)} href="/topics" />
+        <Tile label="Ready" value={count(o?.ready)} />
+        <Tile label="Locked" value={count(o?.locked)} />
+        {dlqsWithMessages > 0
+          ? <Tile label="DLQs with messages ⚠" value={formatCount(dlqsWithMessages)} href="/queues?kind=DeadLetter" />
+          : <Tile label="Dead-letter queues" value={count(o?.totals.DeadLetter)} href="/queues?kind=DeadLetter" />}
+        <Tile label="HTTP sinks" value={count(o?.totals.Sink)} href="/sinks" />
       </div>
-      <div className={ui.card}>
-        <div className={ui.toolbar} style={{ marginBottom: 8 }}>
-          <span className={ui.spacer} style={{ flex: 1 }} />
-          <RangePicker value={range} onChange={setRange} />
-        </div>
-        <MetricsState error={throughput.error}>
-          <TimeSeriesChart
-            title="Throughput"
-            unit="msg/s"
-            lines={[
-              { key: 'enqueued', label: 'Enqueued', points: seriesPoints(throughput.data?.series, 'enqueued') },
-              { key: 'dequeued', label: 'Dequeued', points: seriesPoints(throughput.data?.series, 'dequeued') },
-              { key: 'deadlettered', label: 'Dead-lettered', points: seriesPoints(throughput.data?.series, 'deadlettered') },
-            ]}
-          />
-        </MetricsState>
-      </div>
-      {!depth.error && (
+      {o && (
         <div className={ui.grid2}>
-          <QueueList title="Top queues by depth" series={depth.data?.series.filter((x) => x.name === 'top') ?? []} empty="No queued messages." />
-          <QueueList title="DLQs with messages" series={dlqs} empty="No dead-lettered messages." deadLetter />
+          <QueueList title="Top queues by depth" rows={o.topQueues} empty="No queued messages." />
+          <QueueList title="DLQs with messages" rows={o.deadLetterQueues} empty="No dead-lettered messages." deadLetter />
         </div>
       )}
+      {o?.truncated && (
+        <p className={`${ui.muted} ${ui.small}`}>Depth totals cover the first {formatCount(o.queuesRead)} queues only.</p>
+      )}
+      {!!o?.errors && (
+        <p className={`${ui.muted} ${ui.small}`}>{formatCount(o.errors)} depth reads failed; those queues count as empty.</p>
+      )}
       <p className={`${ui.muted} ${ui.small}`}>
-        Queues are listed once they first activate. Everything here is read from committed state; browsing never consumes or locks a message.
+        Read from committed state across every queue, so session items aren't included. Queues are listed once they first
+        activate; browsing never consumes or locks a message.
       </p>
     </div>
   )
 }
 
-function QueueList({ title, series, empty, deadLetter }: { title: string; series: MetricSeries[]; empty: string; deadLetter?: boolean }) {
-  const rows = series
-    .map((x) => ({ queue: x.labels.queue, value: x.points[0]?.[1] ?? 0 }))
-    .filter((r) => r.queue)
-    .sort((a, b) => b.value - a.value)
+function QueueList({ title, rows, empty, deadLetter }: { title: string; rows: QueueDepth[]; empty: string; deadLetter?: boolean }) {
   return (
     <div className={ui.card}>
       <h2 className={ui.cardTitle}>{title}</h2>
@@ -74,9 +53,9 @@ function QueueList({ title, series, empty, deadLetter }: { title: string; series
         <table className={ui.table}>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.queue}>
-                <td><Link to={`/queues/${seg(r.queue)}${deadLetter ? '?tab=deadletter' : ''}`}>{deadLetter ? `${r.queue}-deadletter` : r.queue}</Link></td>
-                <td className={ui.num}>{formatCount(Math.round(r.value))}</td>
+              <tr key={r.id}>
+                <td><Link to={`/queues/${seg(r.id)}${deadLetter ? '?tab=deadletter' : ''}`}>{deadLetter ? `${r.id}-deadletter` : r.id}</Link></td>
+                <td className={ui.num}>{formatCount(r.ready + r.locked)}</td>
               </tr>
             ))}
           </tbody>

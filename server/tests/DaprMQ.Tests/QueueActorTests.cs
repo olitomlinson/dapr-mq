@@ -173,7 +173,7 @@ public partial class QueueActorTests
         return mock;
     }
 
-    private async Task<QueueActor> CreateActorAsync(Mock<IActorStateManager> mockStateManager, Mock<IBlobReaperActorInvoker>? mockBlobReaperActorInvoker = null, IdempotencyConfig? idempotencyConfig = null, LockConfig? lockConfig = null, string? actorId = null, ICatalogRegistrar? catalogRegistrar = null, QueueTelemetry? telemetry = null)
+    private async Task<QueueActor> CreateActorAsync(Mock<IActorStateManager> mockStateManager, Mock<IBlobReaperActorInvoker>? mockBlobReaperActorInvoker = null, IdempotencyConfig? idempotencyConfig = null, LockConfig? lockConfig = null, string? actorId = null, ICatalogRegistrar? catalogRegistrar = null)
     {
         // Create mock timer manager that no-ops timer registration
         var mockTimerManager = new Mock<ActorTimerManager>();
@@ -220,7 +220,7 @@ public partial class QueueActorTests
         lockConfig ??= new LockConfig { MaxDeliveryCount = 10, SweepBatchSize = 200 };
 
         var actorHost = ActorHost.CreateForTest<QueueActor>(testOptions);
-        var actor = new QueueActor(actorHost, mockInvoker.Object, mockBlobReaperActorInvoker.Object, mockSessionCoordinatorActorInvoker.Object, tokenIssuer, blobReapConfig, idempotencyConfig, lockConfig, catalogRegistrar ?? Mock.Of<ICatalogRegistrar>(), telemetry ?? TestTelemetry.Queue);
+        var actor = new QueueActor(actorHost, mockInvoker.Object, mockBlobReaperActorInvoker.Object, mockSessionCoordinatorActorInvoker.Object, tokenIssuer, blobReapConfig, idempotencyConfig, lockConfig, catalogRegistrar ?? Mock.Of<ICatalogRegistrar>());
 
         // Use reflection to set the StateManager property
         var stateManagerProperty = typeof(Actor).GetProperty("StateManager");

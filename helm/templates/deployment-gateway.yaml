@@ -22,11 +22,6 @@ spec:
         {{- if .Values.blobStore.localStorage.enabled }}
         dapr.io/volume-mounts: "blobstore:/blobstore"
         {{- end }}
-        {{- if .Values.metrics.scrapeAnnotations }}
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "{{ .Values.gateway.httpPort }}"
-        prometheus.io/path: /metrics
-        {{- end }}
         {{- with .Values.gateway.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -51,12 +46,6 @@ spec:
           containerPort: {{ .Values.gateway.grpcPort }}
           protocol: TCP
         env:
-        - name: DAPRMQ_METRICS_QUEUE_LABEL
-          value: {{ .Values.metrics.queueLabel | quote }}
-        {{- with .Values.metrics.queueAllowlist }}
-        - name: DAPRMQ_METRICS_QUEUE_ALLOWLIST
-          value: {{ join "," . | quote }}
-        {{- end }}
         - name: ASPNETCORE_URLS
           value: "http://+:{{ .Values.gateway.httpPort }}"
         - name: ASPNETCORE_ENVIRONMENT

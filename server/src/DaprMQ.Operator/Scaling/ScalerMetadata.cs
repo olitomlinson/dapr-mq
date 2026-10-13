@@ -24,12 +24,6 @@ public sealed partial record ScalerMetadata
     public bool IncludeDeadLetter { get; init; }
 
     /// <summary>
-    /// The HPA KEDA created, when the ScaledObject overrides its name
-    /// (advanced.horizontalPodAutoscalerConfig.name). Only used to chart replicas in the console.
-    /// </summary>
-    public string? HpaName { get; init; }
-
-    /// <summary>
     /// Stable per (mode, queue) so GetMetricSpec and GetMetrics agree; lowercased with anything outside
     /// [a-z0-9-] replaced, since it becomes part of an external-metric name.
     /// </summary>
@@ -51,8 +45,7 @@ public sealed partial record ScalerMetadata
             Mode = metadata.TryGetValue("mode", out var mode) ? ParseMode(mode) : QueueDepthMode.Messages,
             TargetValue = ParseDouble(metadata, "targetValue", 10),
             ActivationValue = ParseDouble(metadata, "activationValue", 0),
-            IncludeDeadLetter = ParseBool(metadata, "includeDeadLetter", false),
-            HpaName = metadata.TryGetValue("hpaName", out var hpaName) && !string.IsNullOrWhiteSpace(hpaName) ? hpaName : null
+            IncludeDeadLetter = ParseBool(metadata, "includeDeadLetter", false)
         };
 
         if (result.TargetValue <= 0)

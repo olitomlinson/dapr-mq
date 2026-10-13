@@ -17,8 +17,7 @@ Don't expose it publicly.
 
 ## Running it
 
-**docker compose:** `docker compose up` starts the operator with the console at <http://localhost:9100>, and
-Prometheus at <http://localhost:9090>. For traffic to look at, `docker compose --profile load up -d loadgen` starts the
+**docker compose:** `docker compose up` starts the operator with the console at <http://localhost:9100>. For traffic to look at, `docker compose --profile load up -d loadgen` starts the
 [load generator](../tools/loadgen/README.md).
 
 **Helm:** set `operator.enabled=true` and `console.enabled=true`, then
@@ -32,14 +31,14 @@ tests against MSW fixtures.
 
 | Page | Contents | Refresh |
 |---|---|---|
-| Overview | Counts of queues, topics and sinks; total ready and locked; throughput; top queues by depth; DLQs with messages | Every 5 s |
-| Queues | Paged list with ready, locked and DLQ counts, in/out rates and a 1h depth sparkline | Every 5 s |
-| Queue → Overview | Config, ready by priority, lease, corrupt state, HTTP sink; then produced vs consumed, ack/nack/expired/dead-lettered rates, depth over 15m-24h, and the KEDA consumers chart | Every 5 s |
+| Overview | Counts of queues, topics and sinks; total ready and locked; top queues by depth; DLQs with messages | Every 5 s |
+| Queues | Paged list with ready, locked and DLQ counts | Every 5 s |
+| Queue → Overview | Config, ready by priority, lease, corrupt state, HTTP sink | Every 5 s |
 | Queue → Messages / Dead-letter | Ready messages in queue order, 100 per page, with 1 KB previews | Manual |
 | Queue → Locked | Locks with live countdowns, delivery counts and mode | Manual |
 | Queue → Sessions | Sessions with depth and lease | Manual |
 | Message drawer | The full message (up to 1 MB) as JSON, raw or hex; blob payloads load on request | On open |
-| Topics → topic | Subscribers with lag, dispatch rate and circuit-breaker state; publish vs dispatch chart | Every 5 s |
+| Topics → topic | Subscribers with lag and circuit-breaker state | Every 5 s |
 | Sinks | URL, max concurrency, lock TTL and polling interval | Every 5 s |
 
 Polling can be paused from the header. Browse views are never polled, because each page loads whole queue segments on
@@ -53,29 +52,17 @@ state: a message can be consumed between listing and opening it, which the drawe
 which a queue joins the first time it activates on a worker. Queues that existed before upgrading appear the next time
 they are used.
 
-## Charts
+## Overview
 
-Charts need Prometheus scraping the workers' `/metrics` ([ARCHITECTURE.md](ARCHITECTURE.md#metrics)) and
-`PROMETHEUS_URL` on the operator (Helm `console.prometheusUrl`; docker compose includes Prometheus). Without it, the
-console says "metrics not configured" and everything else still works.
+The overview reads every catalogued queue's depth, and its DLQ's, from committed state through the same depth read as
+the Queues list, then sums and ranks them. It has no metrics or history: there are no rates or charts.
 
-The operator runs only a fixed set of named PromQL queries (`/api/console/metrics/{name}`); it never accepts PromQL
-from the browser. Ranges are 15m, 1h, 6h or 24h at 120 points.
-
-## KEDA scaling overlay
-
-On a queue scaled by KEDA through the DaprMQ scaler, the queue's Overview tab adds a **Consumers** chart for each ScaledObject:
-desired replicas (KEDA/HPA) against actual replicas, with the HPA's min and max. A ScaledJob shows active Jobs instead.
-
-- **No Kubernetes API access.** KEDA's calls to the scaler carry the ScaledObject's name, namespace and trigger
-  metadata, so the operator learns which ScaledObjects scale on which queue as KEDA polls. It exports them on its own
-  `/metrics` as `daprmq_scaler_binding` and `daprmq_scaler_metric_value`. A link drops out 5 minutes after the last
-  call, so deleted ScaledObjects disappear.
-- **Replica counts come from kube-state-metrics** (part of kube-prometheus-stack), joined through the HPA KEDA creates
-  (`keda-hpa-<name>`, or the trigger's `hpaName` if you renamed it). Actual replicas are read from the Deployment or
-  StatefulSet, because an HPA's `current_replicas` never shows 0 while KEDA holds the workload there.
-- **Without kube-state-metrics** the chart shows only an estimated target, `ceil(metric ÷ targetValue)`.
-- Prometheus must scrape the operator pods too (Helm's scrape annotations and PodMonitor cover them).
+- **Cost grows with the number of queues:** one catalog read per 1,000 queues and one worker depth call per 50, within
+  the console's worker-call limit. The result is cached like other list reads, so it costs the same however many people
+  have it open.
+- **Capped at 10,000 queues.** Past that, it says the totals cover the first 10,000 only.
+- **Session items aren't counted**, as in the Queues list. A session queue's sessions are on its Sessions tab.
+- A failed depth read counts that queue as empty and is reported under the tiles.
 
 ## How it works
 
@@ -89,14 +76,13 @@ browser ─► operator  /api/console/*  (also serves the app)
   admin endpoints, as it does for KEDA's depth reads.
 - At most `CONSOLE_MAX_WORKER_CALLS` (default 8) worker calls are in flight per operator pod, however many people are
   browsing.
-- List and detail reads are cached for `CONSOLE_CACHE_TTL_MS` (default 10 s), shared by every user. Browse pages are not
+- List, detail and overview reads are cached for `CONSOLE_CACHE_TTL_MS` (default 10 s), shared by every user. Browse pages are not
   cached.
 - A worker's 400, 404 or 410 passes through unchanged. A transport failure or worker error is a 503.
 
 | Operator setting | Default | |
 |---|---|---|
 | `CONSOLE_ENABLED` | `false` | Serve `/api/console/*` and the app. With it off, the operator is unchanged. |
-| `CONSOLE_CACHE_TTL_MS` | `10000` | Shared cache for list and detail reads. `0` disables it. |
+| `CONSOLE_CACHE_TTL_MS` | `10000` | Shared cache for list, detail and overview reads. `0` disables it. |
 | `CONSOLE_MAX_WORKER_CALLS` | `8` | Concurrent worker calls per operator pod. |
-| `PROMETHEUS_URL` | unset | Prometheus HTTP API for the charts. Unset, `/api/console/metrics/*` returns 501. |
 | `SCALER_ENABLED` | `true` | `false` on a console-only Deployment (Helm `console.separateDeployment`). |
