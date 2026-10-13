@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 2,
+  "runId": "20261013T111453Z_python_ci-ubuntu-latest_queue-drain-slow",
+  "timestampUtc": "2026-10-13T11:14:53.319622+00:00",
+  "sdk": {
+    "name": "python",
+    "version": "0.0.0a0",
+    "runtime": "CPython 3.12.15"
+  },
+  "environment": {
+    "label": "ci-ubuntu-latest",
+    "gitSha": "7e83ac7575ad30d136b4a547c6ca6b997ec2f8c3",
+    "gitBranch": "main",
+    "gitDirty": false,
+    "os": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+    "cpuCount": 4
+  },
+  "topology": {
+    "apiReplicas": 1,
+    "schedulerReplicas": 3,
+    "loadBalancer": false,
+    "server": "testcontainers daprmq-api:test"
+  },
+  "scale": "pr",
+  "scenario": {
+    "id": "P-05",
+    "name": "queue-drain",
+    "profile": "queue-drain-slow",
+    "key": "queue:3000@100ms/active100",
+    "params": {
+      "messages": 3000,
+      "settleMs": 100,
+      "maxActiveMessages": 100,
+      "maxConcurrentHandlers": 0,
+      "strictOrder": false,
+      "publishIntervalMs": 0,
+      "publishJitterMs": 0,
+      "tailEvery": 0,
+      "tailMs": 0
+    }
+  },
+  "metrics": {
+    "seedSeconds": 0.10941241899990928,
+    "wallClockSeconds": 5.043526540000016,
+    "messagesPerSecond": 594.8218922230536,
+    "idealSeconds": 3.0,
+    "efficiency": 0.5948218922230536,
+    "timeToFirstMessageSeconds": 0.015826650000008158,
+    "peakConcurrentHandlers": 100,
+    "deliveryLatencyMs": {
+      "count": 3000,
+      "mean": 2497.0956666666666,
+      "p50": 2503,
+      "p95": 4644,
+      "p99": 4833,
+      "max": 4985
+    },
+    "messagesHandled": 3000,
+    "duplicates": 0,
+    "missing": 0,
+    "orderViolations": 14
+  },
+  "checks": {
+    "passed": true,
+    "failures": []
+  },
+  "timeline": {
+    "bucketMs": 1000,
+    "series": {
+      "messagesPerSecond": [
+        600,
+        500,
+        687,
+        600,
+        600,
+        13
+      ],
+      "busyHandlers": [
+        60.684,
+        56.553,
+        68.768,
+        57.655,
+        56.405,
+        0.565
+      ]
+    }
+  }
+}
