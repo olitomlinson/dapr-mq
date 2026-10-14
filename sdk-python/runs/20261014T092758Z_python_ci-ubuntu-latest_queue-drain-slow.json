@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 2,
+  "runId": "20261014T092758Z_python_ci-ubuntu-latest_queue-drain-slow",
+  "timestampUtc": "2026-10-14T09:27:58.617406+00:00",
+  "sdk": {
+    "name": "python",
+    "version": "0.0.0a0",
+    "runtime": "CPython 3.12.15"
+  },
+  "environment": {
+    "label": "ci-ubuntu-latest",
+    "gitSha": "25a9158082c69e3a1b4d08849e65c2e5b7247cfa",
+    "gitBranch": "main",
+    "gitDirty": false,
+    "os": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+    "cpuCount": 4
+  },
+  "topology": {
+    "apiReplicas": 1,
+    "schedulerReplicas": 3,
+    "loadBalancer": false,
+    "server": "testcontainers daprmq-api:test"
+  },
+  "scale": "pr",
+  "scenario": {
+    "id": "P-05",
+    "name": "queue-drain",
+    "profile": "queue-drain-slow",
+    "key": "queue:3000@100ms/active100",
+    "params": {
+      "messages": 3000,
+      "settleMs": 100,
+      "maxActiveMessages": 100,
+      "maxConcurrentHandlers": 0,
+      "strictOrder": false,
+      "publishIntervalMs": 0,
+      "publishJitterMs": 0,
+      "tailEvery": 0,
+      "tailMs": 0
+    }
+  },
+  "metrics": {
+    "seedSeconds": 0.14192034800004194,
+    "wallClockSeconds": 5.059628708000047,
+    "messagesPerSecond": 592.928883349986,
+    "idealSeconds": 3.0,
+    "efficiency": 0.592928883349986,
+    "timeToFirstMessageSeconds": 0.02470385700001998,
+    "peakConcurrentHandlers": 100,
+    "deliveryLatencyMs": {
+      "count": 3000,
+      "mean": 2594.9326666666666,
+      "p50": 2640,
+      "p95": 4877,
+      "p99": 5090,
+      "max": 5094
+    },
+    "messagesHandled": 3000,
+    "duplicates": 0,
+    "missing": 0,
+    "orderViolations": 13
+  },
+  "checks": {
+    "passed": true,
+    "failures": []
+  },
+  "timeline": {
+    "bucketMs": 1000,
+    "series": {
+      "messagesPerSecond": [
+        574,
+        572,
+        628,
+        572,
+        600,
+        54
+      ],
+      "busyHandlers": [
+        57.53,
+        60.026,
+        60.566,
+        61.286,
+        58.319,
+        3.029
+      ]
+    }
+  }
+}
