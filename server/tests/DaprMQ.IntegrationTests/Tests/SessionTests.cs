@@ -175,6 +175,48 @@ public class SessionTests(DaprTestFixture fixture)
     }
 
     [Fact]
+    public async Task AcceptSession_AnyAvailable_SkipsDrainedSessions_AndReturns204WhenNoneHaveWork()
+    {
+        var queueId = NewQueueId();
+        await EnqueueAsync(queueId, "drained", new { seq = 1 });
+        var drainLease = await AcceptSessionSuccessfullyAsync(queueId, "drained");
+        Assert.Equal(HttpStatusCode.OK, (await DequeueAsync(queueId, "drained", drainLease.LeaseId)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await ReleaseAsync(queueId, "drained", drainLease.LeaseId)).StatusCode);
+        await EnqueueAsync(queueId, "has-work", new { seq = 1 });
+
+        var lease = await AcceptSessionSuccessfullyAsync(queueId, sessionId: null);
+        var none = await AcceptSessionAsync(queueId, sessionId: null);
+
+        Assert.Equal("has-work", lease.SessionId);
+        Assert.Equal(HttpStatusCode.NoContent, none.StatusCode);
+    }
+
+    [Fact]
+    public async Task AcceptSession_AnyAvailable_SessionRevivedWhileStillInMemory_BecomesClaimableAgain()
+    {
+        var queueId = NewQueueId();
+        var sessionId = "revived";
+        await EnqueueAsync(queueId, sessionId, new { seq = 1 });
+        var drainLease = await AcceptSessionSuccessfullyAsync(queueId, sessionId);
+        Assert.Equal(HttpStatusCode.OK, (await DequeueAsync(queueId, sessionId, drainLease.LeaseId)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await ReleaseAsync(queueId, sessionId, drainLease.LeaseId)).StatusCode);
+
+        // The session actor is still in memory, so it doesn't register again: its worker's reporter
+        // sends the change on its next tick.
+        await EnqueueAsync(queueId, sessionId, new { seq = 2 });
+
+        var deadline = DateTime.UtcNow.AddSeconds(20);
+        HttpResponseMessage claim;
+        while ((claim = await AcceptSessionAsync(queueId, sessionId: null)).StatusCode == HttpStatusCode.NoContent && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(500);
+        }
+
+        Assert.Equal(HttpStatusCode.OK, claim.StatusCode);
+        Assert.Equal(sessionId, (await claim.Content.ReadFromJsonAsync<ApiAcceptSessionResponse>())!.SessionId);
+    }
+
+    [Fact]
     public async Task Dequeue_OnLeasedSession_WithoutLeaseId_Returns400()
     {
         var queueId = NewQueueId();
@@ -419,10 +461,8 @@ public class SessionTests(DaprTestFixture fixture)
         var queueId = NewQueueId();
         var sessionId = "swept-then-leased";
 
-        // First enqueue activates this queue's SessionCoordinatorActor via RegisterSession. Its
-        // directory-sweep reminder is registered with dueTime 0 and the new directory entry is due
-        // immediately, so the sweep (a reminder - default state tracker) reads
-        // session-lock_{sessionId} while it doesn't exist yet, caching "not found".
+        // First enqueue activates this queue's SessionCoordinatorActor via RegisterSession, which
+        // reads session-lock_{sessionId} while it doesn't exist yet, caching "not found".
         await EnqueueAsync(queueId, sessionId, new { seq = 1 });
         await Task.Delay(TimeSpan.FromSeconds(3));
 

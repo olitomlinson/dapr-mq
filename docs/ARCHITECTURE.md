@@ -357,8 +357,9 @@ activates the actor - polling doesn't keep idle queues alive. The workers expose
 **Metric.** Messages mode: ready + locked items (+ `{queueId}-deadletter` with `includeDeadLetter: "true"`), summed
 across priorities. Locked items always count: they are out of the queue's `Count`, and lock expiry is swept lazily by
 the next dequeue, so scaling consumers to zero over a fully locked queue would strand any lock a scaled-in pod left
-behind. Sessions mode: number of `{queueId}-session-{id}` actors in the queue's SessionCoordinatorActor directory
-holding any ready or locked items.
+behind. Sessions mode: the number of the queue's sessions holding any ready or locked items, read as one key
+(`dir_summary.activeCount`) that the SessionCoordinatorActor keeps up to date from worker reports
+([proposals/session-directory.md](../proposals/session-directory.md)); no session is read.
 
 **Failure.** A failed read is gRPC `Unavailable`, never 0 - reporting 0 would scale consumers to zero during a DaprMQ
 outage. Configure the ScaledObject's `fallback` for what should happen instead.

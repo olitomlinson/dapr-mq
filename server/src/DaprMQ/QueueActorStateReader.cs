@@ -13,7 +13,7 @@ public readonly record struct SessionActorState(int ItemCount, int LockCount, do
     /// <summary>
     /// A session is only finished once it holds neither queued nor locked items. Locked items count:
     /// under session-scoped locking they outlive individual messages, so ignoring them would let the
-    /// directory sweep evict a session that still owns work.
+    /// eviction pass evict a session that still owns work.
     /// </summary>
     public bool IsEmpty => ItemCount == 0 && LockCount == 0;
 }
@@ -27,7 +27,7 @@ public readonly record struct QueueDepth(long Ready, long Locked);
 /// <summary>
 /// Reads a QueueActor's persisted state directly from the state store via Dapr's actor-state
 /// data-plane API, bypassing actor placement/activation entirely - used by
-/// SessionCoordinatorActor's directory sweep so checking a candidate for liveness never risks
+/// SessionCoordinatorActor's eviction pass and lease-expiry check so reading a session never risks
 /// activating it if it's currently cold, and by the queue-depth read the KEDA scaler relies on.
 ///
 /// Dapr keys actor state by the *calling* sidecar's app-id ({appId}||{type}||{id}||{key}), so this
@@ -54,6 +54,12 @@ public interface IQueueActorStateReader
     /// metadata key means no sessions; a failed request throws.
     /// </summary>
     Task<IReadOnlyCollection<string>> ReadSessionDirectoryAsync(string queueId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reads <paramref name="queueId"/>'s SessionCoordinatorActor counts ("dir_summary"). A missing
+    /// key means no session has ever had work; a failed request throws.
+    /// </summary>
+    Task<DirectorySummary> ReadDirectorySummaryAsync(string queueId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Reads one state key of any actor. Returns null when the key doesn't exist; throws on a failed
@@ -112,6 +118,11 @@ public class QueueActorStateReader : IQueueActorStateReader
         var metadata = await ReadStateAsync<SessionCoordinatorMetadata>(_sessionCoordinatorActorType, queueId, "metadata", cancellationToken);
         return metadata?.SessionDirectory.Keys.ToArray() ?? [];
     }
+
+    /// <inheritdoc />
+    public async Task<DirectorySummary> ReadDirectorySummaryAsync(string queueId, CancellationToken cancellationToken = default) =>
+        await ReadStateAsync<DirectorySummary>(_sessionCoordinatorActorType, queueId, SessionCoordinatorActor.SummaryKey, cancellationToken)
+            ?? new DirectorySummary();
 
     /// <inheritdoc />
     public async Task<T?> ReadStateAsync<T>(string actorType, string actorId, string key, CancellationToken cancellationToken = default) where T : class

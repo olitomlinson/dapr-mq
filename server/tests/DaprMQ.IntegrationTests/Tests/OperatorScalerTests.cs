@@ -84,7 +84,7 @@ public class OperatorScalerTests(OperatorTestFixture fixture)
         await EnqueueAsync(queueId, 2, "a");
         await EnqueueAsync(queueId, 3, "b");
 
-        // Session actors register with their coordinator as part of activation; allow for that.
+        // Each session registers with its coordinator on its first enqueue; allow for the operator's depth cache.
         var deadline = DateTime.UtcNow.AddSeconds(15);
         double sessions;
         while ((sessions = await GetMetricAsync(Ref(queueId, ("mode", "sessions")))) < 2 && DateTime.UtcNow < deadline)
@@ -93,5 +93,39 @@ public class OperatorScalerTests(OperatorTestFixture fixture)
         }
 
         Assert.Equal(2, sessions);
+    }
+
+    [Fact]
+    public async Task GetMetrics_SessionsMode_DropsAsSoonAsADrainedSessionIsReleased()
+    {
+        var queueId = $"keda-{Guid.NewGuid():N}";
+        var sessions = Ref(queueId, ("mode", "sessions"));
+        await EnqueueAsync(queueId, 1, "a");
+        await EnqueueAsync(queueId, 1, "b");
+        Assert.Equal(2, await WaitForMetricAsync(sessions, 2));
+
+        // Drain "a" under a lease, then release it: the release sees nothing left.
+        var accept = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/sessions/accept", new { sessionId = "a", leaseSeconds = 30 });
+        accept.EnsureSuccessStatusCode();
+        var leaseId = (await accept.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>()).GetProperty("leaseId").GetString()!;
+        using var dequeue = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}-session-a/dequeue");
+        dequeue.Headers.Add("lease-id", leaseId);
+        dequeue.Headers.Add("require-ack", "false");
+        (await fixture.ApiClient.SendAsync(dequeue)).EnsureSuccessStatusCode();
+        (await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/sessions/a/release", new { leaseId })).EnsureSuccessStatusCode();
+
+        // Only the operator's 1s depth cache stands between the release and the metric.
+        Assert.Equal(1, await WaitForMetricAsync(sessions, 1));
+    }
+
+    private async Task<double> WaitForMetricAsync(ScaledObjectRef scaledObject, double expected)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        double value;
+        while ((value = await GetMetricAsync(scaledObject)) != expected && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(250);
+        }
+        return value;
     }
 }

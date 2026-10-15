@@ -33,6 +33,9 @@ public class AdminReadServiceTests
                     ? ((SessionCoordinatorMetadata)value).SessionDirectory.Keys.ToArray()
                     : []);
 
+        public Task<DirectorySummary> ReadDirectorySummaryAsync(string queueId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new DirectorySummary());
+
         public Task<SessionActorState> ReadSessionStateAsync(ActorId actorId, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
     }
@@ -106,7 +109,7 @@ public class AdminReadServiceTests
     {
         _reader.State[("SessionCoordinatorActor", "orders", "metadata")] = new SessionCoordinatorMetadata
         {
-            SessionDirectory = new() { ["a"] = new SweepCandidate(), ["b"] = new SweepCandidate() }
+            SessionDirectory = new() { ["a"] = new SessionEntry(), ["b"] = new SessionEntry() }
         };
 
         var result = await CreateService().GetQueueAsync("orders");
@@ -360,7 +363,7 @@ public class AdminReadServiceTests
     {
         _reader.State[("SessionCoordinatorActor", "orders", "metadata")] = new SessionCoordinatorMetadata
         {
-            SessionDirectory = new() { ["c"] = new SweepCandidate(), ["a"] = new SweepCandidate(), ["b"] = new SweepCandidate() }
+            SessionDirectory = new() { ["c"] = new SessionEntry(), ["a"] = new SessionEntry(), ["b"] = new SessionEntry() }
         };
         Queue("orders-session-a", Meta((1, 0, 0, 2)) with { LockCount = 1, ActiveSessionLeaseExpiresAt = 50 });
 

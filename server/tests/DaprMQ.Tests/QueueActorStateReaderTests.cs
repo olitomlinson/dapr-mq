@@ -165,10 +165,10 @@ public class QueueActorStateReaderTests
     {
         var coordinator = new SessionCoordinatorMetadata
         {
-            SessionDirectory = new Dictionary<string, SweepCandidate>
+            SessionDirectory = new Dictionary<string, SessionEntry>
             {
-                ["a"] = new SweepCandidate(),
-                ["b"] = new SweepCandidate()
+                ["a"] = new SessionEntry(),
+                ["b"] = new SessionEntry()
             }
         };
         var json = System.Text.Json.JsonSerializer.Serialize(coordinator);
@@ -196,6 +196,36 @@ public class QueueActorStateReaderTests
         var sessions = await reader.ReadSessionDirectoryAsync("orders");
 
         Assert.Empty(sessions);
+    }
+
+    [Fact]
+    public async Task ReadDirectorySummaryAsync_ReadsTheCoordinatorsSummaryKey()
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(
+            new DirectorySummary { TotalCount = 8, ActiveCount = 5 },
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+        var reader = CreateReader(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
+        }, out var mockHandler);
+
+        var summary = await reader.ReadDirectorySummaryAsync("orders");
+
+        Assert.Equal(new DirectorySummary { TotalCount = 8, ActiveCount = 5 }, summary);
+        mockHandler.Protected().Verify(
+            "SendAsync",
+            Times.Once(),
+            ItExpr.Is<HttpRequestMessage>(r =>
+                r.RequestUri!.ToString() == "http://localhost:3500/v1.0/actors/SessionCoordinatorActor/orders/state/dir_summary"),
+            ItExpr.IsAny<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ReadDirectorySummaryAsync_NoContent_ReturnsZeroes()
+    {
+        var reader = CreateReader(new HttpResponseMessage(HttpStatusCode.NoContent), out _);
+
+        Assert.Equal(new DirectorySummary(), await reader.ReadDirectorySummaryAsync("orders"));
     }
 
     [Fact]

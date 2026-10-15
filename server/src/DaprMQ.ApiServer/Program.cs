@@ -147,10 +147,10 @@ builder.Services.AddSingleton<ICatalogActorInvoker>(sp =>
         sp.GetRequiredService<Dapr.Actors.Client.IActorProxyFactory>(),
         actorConfig.CatalogActorTypeName));
 
-// Register QueueActorStateReader (used by SessionCoordinatorActor's directory sweep to check a
-// session's item count via Dapr's actor-state data-plane API directly, bypassing actor
-// activation - see QueueActorStateReader for why that matters for a sweep that specifically
-// targets idle, likely-cold candidates)
+// Register QueueActorStateReader (used by SessionCoordinatorActor's eviction pass and lease-expiry
+// check to read a session's item count via Dapr's actor-state data-plane API directly, bypassing
+// actor activation - see QueueActorStateReader for why that matters for reads that specifically
+// target idle, likely-cold sessions)
 var daprHttpEndpoint = builder.Configuration.GetValue("DAPR_HTTP_ENDPOINT", "http://localhost:3500") ?? "http://localhost:3500";
 builder.Services.AddSingleton<DaprMQ.IQueueActorStateReader>(sp =>
     new DaprMQ.QueueActorStateReader(
@@ -229,6 +229,18 @@ var lockConfig = new LockConfig
 };
 builder.Services.AddSingleton(lockConfig);
 
+// Session directory timings (proposals/session-directory.md). Overridable mainly so tests can run
+// the report/defer/evict cycle in seconds rather than minutes.
+var sessionDirectoryConfig = new SessionDirectoryConfig
+{
+    ReportTick = TimeSpan.FromMilliseconds(builder.Configuration.GetValue("DAPRMQ_SESSION_REPORT_TICK_MS", 10_000)),
+    EmptyDebounce = TimeSpan.FromMilliseconds(builder.Configuration.GetValue("DAPRMQ_SESSION_EMPTY_DEBOUNCE_MS", 30_000)),
+    DeferralWindow = TimeSpan.FromMilliseconds(builder.Configuration.GetValue("DAPRMQ_SESSION_DEFERRAL_WINDOW_MS", 30_000)),
+    Grace = TimeSpan.FromSeconds(builder.Configuration.GetValue("DAPRMQ_SESSION_EVICTION_GRACE_SECONDS", 600)),
+    EvictionPeriod = TimeSpan.FromSeconds(builder.Configuration.GetValue("DAPRMQ_SESSION_EVICTION_PERIOD_SECONDS", 30))
+};
+builder.Services.AddSingleton(sessionDirectoryConfig);
+
 // Add Swagger/OpenAPI
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
@@ -293,6 +305,16 @@ if (registerActors)
         sp.GetRequiredService<ILogger<CatalogRegistrar>>()));
     builder.Services.AddSingleton<ICatalogRegistrar>(sp => sp.GetRequiredService<CatalogRegistrar>());
     builder.Services.AddHostedService(sp => sp.GetRequiredService<CatalogRegistrar>());
+
+    // Session actors tell this worker-local reporter whether they have work; it sends each
+    // SessionCoordinatorActor only the lasting changes, in the background (see SessionActivityReporter).
+    builder.Services.AddSingleton<SessionActivityReporter>(sp => new SessionActivityReporter(
+        sp.GetRequiredService<ISessionCoordinatorActorInvoker>(),
+        sp.GetRequiredService<SessionDirectoryConfig>(),
+        TimeProvider.System,
+        sp.GetRequiredService<ILogger<SessionActivityReporter>>()));
+    builder.Services.AddSingleton<ISessionActivityReporter>(sp => sp.GetRequiredService<SessionActivityReporter>());
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<SessionActivityReporter>());
 }
 // No else needed - Dapr Client (from AddDapr) is sufficient for actor invocation
 

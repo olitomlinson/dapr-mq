@@ -150,6 +150,15 @@ public class QueueActor : Actor, IQueueActor
     private readonly IdempotencyConfig _idempotencyConfig;
     private readonly LockConfig _lockConfig;
     private readonly ICatalogRegistrar _catalogRegistrar;
+    private readonly ISessionActivityReporter _sessionActivityReporter;
+    private readonly SessionDirectoryConfig _sessionDirectoryConfig;
+
+    // Session actors only: RegisterSession has been sent on this activation's first non-empty save.
+    // Memory only, so every activation registers again once it has work.
+    private bool _registeredThisActivation;
+
+    // The lapsed lease this activation has already told the reporter about (see AfterActorMethodAsync).
+    private string? _expiredLeaseReported;
 
     private const int MaxSegmentSize = 100;
     private const int MinLockTtlSeconds = 1;
@@ -329,7 +338,9 @@ public class QueueActor : Actor, IQueueActor
         BlobReapConfig blobReapConfig,
         IdempotencyConfig idempotencyConfig,
         LockConfig lockConfig,
-        ICatalogRegistrar catalogRegistrar) : base(host)
+        ICatalogRegistrar catalogRegistrar,
+        ISessionActivityReporter sessionActivityReporter,
+        SessionDirectoryConfig sessionDirectoryConfig) : base(host)
     {
         _actorInvoker = queueActorInvoker ?? throw new ArgumentNullException(nameof(queueActorInvoker));
         _blobReaperActorInvoker = blobReaperActorInvoker ?? throw new ArgumentNullException(nameof(blobReaperActorInvoker));
@@ -339,6 +350,8 @@ public class QueueActor : Actor, IQueueActor
         _idempotencyConfig = idempotencyConfig ?? throw new ArgumentNullException(nameof(idempotencyConfig));
         _lockConfig = lockConfig ?? throw new ArgumentNullException(nameof(lockConfig));
         _catalogRegistrar = catalogRegistrar ?? throw new ArgumentNullException(nameof(catalogRegistrar));
+        _sessionActivityReporter = sessionActivityReporter ?? throw new ArgumentNullException(nameof(sessionActivityReporter));
+        _sessionDirectoryConfig = sessionDirectoryConfig ?? throw new ArgumentNullException(nameof(sessionDirectoryConfig));
     }
 
     /// <summary>
@@ -396,9 +409,10 @@ public class QueueActor : Actor, IQueueActor
     }
 
     /// <summary>
-    /// Called when the actor is activated. Initializes metadata structure if it doesn't exist,
-    /// then - if this actor is acting as a per-session queue actor and hasn't yet done so -
-    /// self-registers with the queue-level actor's session directory.
+    /// Called when the actor is activated. Initializes metadata structure if it doesn't exist. A
+    /// session actor registers with its SessionCoordinatorActor later, on its first non-empty save
+    /// (see AfterActorMethodAsync), not here: activation runs before the triggering method, so
+    /// there is no work yet, and not every activation is caused by an enqueue.
     /// </summary>
     protected override async Task OnActivateAsync()
     {
@@ -428,8 +442,6 @@ public class QueueActor : Actor, IQueueActor
             Logger.LogDebug("Actor activated with existing metadata");
         }
 
-        await RegisterAsSessionActorIfNeededAsync();
-
         // Non-blocking hand-off to the worker's CatalogRegistrar; per-session actors are skipped.
         var catalogEntry = CatalogEntry.ForQueueActorId(Id.GetId(), DateTimeOffset.UtcNow);
         if (catalogEntry != null)
@@ -438,69 +450,125 @@ public class QueueActor : Actor, IQueueActor
         }
     }
 
-    /// <summary>
-    /// If this actor's own id identifies it as a per-session queue actor
-    /// ("{queueId}-session-{sessionId}"), tells the SessionCoordinatorActor for this queue about
-    /// this session via RegisterSession - on every activation, not just the first, so a session
-    /// whose directory entry was ever pruned (e.g. by the coordinator's TTL sweep) self-heals the
-    /// next time it activates, unconditionally. RegisterSession itself is idempotent (a no-op if
-    /// already present), so this is safe and cheap to repeat. Best-effort: a failure is logged and
-    /// left for the next activation to retry, it never fails activation itself.
-    ///
-    /// Because this runs (and calls out) on every activation rather than once ever, it can
-    /// trigger a reentrancy deadlock - SessionCoordinatorActor calling SetSessionLease/
-    /// ClearSessionLease on a cold session actor, whose activation calls back into the
-    /// coordinator via this method while the coordinator's own turn is still outstanding
-    /// (A -> B -> A). Fixed by enabling Dapr actor reentrancy - see the note on
-    /// options.ReentrancyConfig in Program.cs, and SessionReentrancyTests for a test that forces
-    /// this exact cold-reactivation path.
-    /// </summary>
-    private async Task RegisterAsSessionActorIfNeededAsync()
-    {
-        string ownId = Id.GetId();
-        int markerIndex = ownId.IndexOf(SessionActorIdMarker, StringComparison.Ordinal);
-        if (markerIndex <= 0)
-        {
-            return; // not a session actor
-        }
+    protected override Task OnPostActorMethodAsync(ActorMethodContext actorMethodContext) =>
+        AfterActorMethodAsync(actorMethodContext.MethodName);
 
-        if (ownId.EndsWith(DeadLetterActorIdSuffix, StringComparison.Ordinal))
+    /// <summary>
+    /// Session actors only, after every successful method: tells the worker's reporter whether the
+    /// session has work (in-process), and on this activation's first non-empty save registers
+    /// directly with the SessionCoordinatorActor, so a new or reactivated session is claimable as
+    /// soon as the call returns. Best-effort: a failed registration is left to the reporter, which
+    /// still has the session as unsent.
+    ///
+    /// Skipped for SetSessionLease/ClearSessionLease: those come from the coordinator itself, which
+    /// learns the session's state from them, and calling back into it mid-turn would be an
+    /// A -> B -> A chain.
+    ///
+    /// A lease end changes what the coordinator believes without a report from this worker, so the
+    /// reporter's record has to follow it. On release, the coordinator marks the session Idle exactly
+    /// when ClearSessionLease finds nothing left, so that is what it now believes. A lease expiry is
+    /// decided without calling the session at all, so the first call that sees the lapsed lease
+    /// makes the reporter resend the session's current state.
+    /// </summary>
+    internal async Task AfterActorMethodAsync(string methodName)
+    {
+        if (!TryGetSessionIdentity(out var queueId, out var sessionId))
         {
-            // This is a session queue's dead-letter actor, not the session itself. Registering it
-            // would put a phantom "{sessionId}-deadletter" entry in the coordinator directory,
-            // which an any-available claim could then hand to a consumer - redelivering items that
-            // were deliberately dead-lettered.
             return;
         }
 
-        string queueId = ownId[..markerIndex];
-        string sessionId = ownId[(markerIndex + SessionActorIdMarker.Length)..];
-        if (string.IsNullOrEmpty(queueId) || string.IsNullOrEmpty(sessionId))
+        var metadata = await GetMetadataAsync();
+        bool hasWork = RemainingItems(metadata) > 0;
+        _sessionActivityReporter.Observe(queueId, sessionId, hasWork);
+
+        if (methodName == nameof(ClearSessionLease))
+        {
+            _sessionActivityReporter.MarkReported(queueId, sessionId, hasWork);
+        }
+        else if (metadata.ActiveSessionLeaseId is { } leaseId
+            && metadata.ActiveSessionLeaseExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+            && leaseId != _expiredLeaseReported)
+        {
+            _expiredLeaseReported = leaseId;
+            _sessionActivityReporter.ResetReported(queueId, sessionId);
+        }
+
+        if (!hasWork || _registeredThisActivation
+            || methodName is nameof(SetSessionLease) or nameof(ClearSessionLease))
+        {
+            return;
+        }
+
+        _registeredThisActivation = true;
+        try
+        {
+            // Bounded: this turn holds the session's lock, and a coordinator turn waiting on this
+            // session (SetSessionLease, ClearSessionLease) can't answer until it ends. The timeout
+            // breaks that cycle; the reporter still has the session as unsent.
+            using var timeout = new CancellationTokenSource(_sessionDirectoryConfig.RegisterSessionTimeout);
+            var result = await _sessionCoordinatorActorInvoker.InvokeMethodAsync<RegisterSessionRequest, RegisterSessionResponse>(
+                new ActorId(queueId),
+                "RegisterSession",
+                new RegisterSessionRequest { SessionId = sessionId },
+                timeout.Token);
+
+            if (result.Success)
+            {
+                _sessionActivityReporter.MarkReported(queueId, sessionId, hasWork: true);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "RegisterSession failed for session {SessionId} of queue {QueueId}; the reporter will send it", sessionId, queueId);
+        }
+    }
+
+    /// <summary>
+    /// Hands the session's final state to the reporter before this worker stops hosting it. Not
+    /// guaranteed to run (a crash skips it), so nothing depends on it for correctness.
+    /// </summary>
+    protected override async Task OnDeactivateAsync()
+    {
+        if (!TryGetSessionIdentity(out var queueId, out var sessionId))
         {
             return;
         }
 
         try
         {
-            var result = await _sessionCoordinatorActorInvoker.InvokeMethodAsync<RegisterSessionRequest, RegisterSessionResponse>(
-                new ActorId(queueId),
-                "RegisterSession",
-                new RegisterSessionRequest { SessionId = sessionId });
-
-            if (result.Success)
-            {
-                Logger.LogDebug("Session actor {OwnId} registered with SessionCoordinatorActor {QueueId}", ownId, queueId);
-            }
-            else
-            {
-                Logger.LogWarning("RegisterSession rejected for session actor {OwnId} against SessionCoordinatorActor {QueueId}", ownId, queueId);
-            }
+            _sessionActivityReporter.Observe(queueId, sessionId, await HasWorkAsync(), deactivating: true);
         }
         catch (Exception ex)
         {
-            Logger.LogWarning(ex, "Failed to self-register session actor {OwnId} with SessionCoordinatorActor {QueueId}; will retry on next activation", ownId, queueId);
+            Logger.LogDebug(ex, "Could not report session {SessionId} state on deactivation", sessionId);
         }
     }
+
+    /// <summary>
+    /// Splits a per-session actor id ("{queueId}-session-{sessionId}") into its parts. False for a
+    /// plain queue, and for a session's dead-letter queue: a DLQ is not a claimable session, and
+    /// registering it would let an any-available claim redeliver deliberately dead-lettered items.
+    /// </summary>
+    private bool TryGetSessionIdentity(out string queueId, out string sessionId)
+    {
+        queueId = sessionId = string.Empty;
+        string ownId = Id.GetId();
+        int markerIndex = ownId.IndexOf(SessionActorIdMarker, StringComparison.Ordinal);
+        if (markerIndex <= 0 || ownId.EndsWith(DeadLetterActorIdSuffix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        queueId = ownId[..markerIndex];
+        sessionId = ownId[(markerIndex + SessionActorIdMarker.Length)..];
+        return sessionId.Length > 0;
+    }
+
+    /// <summary>Queued or locked items: a session abandoned mid-consumption still has work.</summary>
+    private async Task<bool> HasWorkAsync() => RemainingItems(await GetMetadataAsync()) > 0;
+
+    private static long RemainingItems(ActorMetadata metadata) =>
+        metadata.Queues.Values.Sum(q => (long)q.Count) + metadata.LockCount;
 
     /// <summary>
     /// Called by this actor's SessionCoordinatorActor to sync the enforcement cache used to gate
@@ -525,7 +593,8 @@ public class QueueActor : Actor, IQueueActor
 
     /// <summary>
     /// Called by this actor's SessionCoordinatorActor, best-effort, when a lease on this session
-    /// is explicitly released.
+    /// is explicitly released. Reports what is left, so the coordinator can tell whether the
+    /// session goes back on its ReadyQueue or becomes Idle.
     /// </summary>
     public async Task<ClearSessionLeaseResponse> ClearSessionLease()
     {
@@ -537,7 +606,7 @@ public class QueueActor : Actor, IQueueActor
         };
         await SetMetadataAsync(metadata);
         await StateManager.SaveStateAsync();
-        return new ClearSessionLeaseResponse { Success = true };
+        return new ClearSessionLeaseResponse { Success = true, Remaining = RemainingItems(metadata) };
     }
 
     /// <summary>

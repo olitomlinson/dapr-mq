@@ -581,8 +581,8 @@ public class SessionQueueConsumerTests(DaprTestFixture fixture) : IntegrationTes
     // never reached any session beyond its first MaxConcurrentSessions. An untargeted AcceptSession
     // returned the first unleased directory entry in insertion order, and a drained session stays
     // in the directory long enough (eviction needs two confirmed-empty sweeps 300s apart) to keep
-    // winning. Unblocked by SweepCandidate.LastClaimedAt, which orders the any-available branch
-    // least-recently-claimed first, so a just-serviced session goes to the back of the line.
+    // winning. Unblocked first by least-recently-claimed ordering; since the session directory
+    // rework, a drained session released empty isn't in the claim queue at all.
     [Fact]
     public async Task K11_SessionIdleTimeout_LetsTheConsumerMoveOnToAnotherSession()
     {
