@@ -69,19 +69,19 @@
           <div class="code-card glass">
             <div class="code-head"><span>Dapr, Postgres and daprMQ</span><button class="copy-btn">Copy</button></div>
             <pre>echo "▶ [1/4] Installing Dapr 1.18 (1–2 min)…"; S=$SECONDS
-helm repo add dapr https://dapr.github.io/helm-charts/ &gt;/dev/null
-helm install dapr dapr/dapr --version 1.18.7 -n dapr-system --create-namespace --wait &gt;/dev/null \
+<strong class="code-cmd">helm repo add dapr</strong> https://dapr.github.io/helm-charts/ &gt;/dev/null
+<strong class="code-cmd">helm install dapr</strong> dapr/dapr --version 1.18.7 -n dapr-system --create-namespace --wait &gt;/dev/null \
   &amp;&amp; echo "✓ Dapr ready ($((SECONDS - S))s)" || echo "✗ Dapr failed to install, see the error above"
 
 echo "▶ [2/4] Installing Postgres (1–2 min)…"; S=$SECONDS
-helm repo add bitnami https://charts.bitnami.com/bitnami &gt;/dev/null
-helm install postgres bitnami/postgresql -n daprmq --create-namespace \
+<strong class="code-cmd">helm repo add bitnami</strong> https://charts.bitnami.com/bitnami &gt;/dev/null
+<strong class="code-cmd">helm install postgres</strong> bitnami/postgresql -n daprmq --create-namespace \
   --set auth.postgresPassword=daprmq_secret_123 \
   --set auth.database=actor_state --wait &gt;/dev/null \
   &amp;&amp; echo "✓ Postgres ready ($((SECONDS - S))s)" || echo "✗ Postgres failed to install, see the error above"
 
 echo "▶ [3/4] Creating the Dapr state store component…"
-kubectl apply -n daprmq -f - &gt;/dev/null &lt;&lt;EOF \
+<strong class="code-cmd">kubectl apply</strong> -n daprmq -f - &gt;/dev/null &lt;&lt;EOF \
   &amp;&amp; echo "✓ State store created" || echo "✗ State store failed, see the error above"
 apiVersion: dapr.io/v1alpha1
 kind: Component
@@ -99,7 +99,7 @@ spec:
 EOF
 
 echo "▶ [4/4] Installing daprMQ (1–2 min)…"; S=$SECONDS
-helm install daprmq oci://ghcr.io/olitomlinson/charts/daprmq \
+<strong class="code-cmd">helm install daprmq</strong> oci://ghcr.io/olitomlinson/charts/daprmq \
   --devel --wait -n daprmq \
   --set dapr.stateStoreName=statestore &gt;/dev/null \
   &amp;&amp; echo "✓ daprMQ ready ($((SECONDS - S))s)" &amp;&amp; echo "✅ All done. Run the smoke test below." \
@@ -133,7 +133,7 @@ helm install daprmq oci://ghcr.io/olitomlinson/charts/daprmq \
           </div>
           <div class="code-card glass">
             <div class="code-head"><span>Install DaprMQ with helm</span><button class="copy-btn">Copy</button></div>
-            <pre>helm install daprmq oci://ghcr.io/olitomlinson/charts/daprmq \
+            <pre><strong class="code-cmd">helm install daprmq</strong> oci://ghcr.io/olitomlinson/charts/daprmq \
   --devel --wait -n <span class="code-var ns-out">daprmq</span> \
   --set dapr.stateStoreName=<span id="statestore-name-out" class="code-var">{your-dapr-state-store-name}</span></pre>
           </div>
@@ -141,16 +141,16 @@ helm install daprmq oci://ghcr.io/olitomlinson/charts/daprmq \
       </div>
       <div class="code-card glass install-step">
         <div class="code-head"><span>Smoke test</span><button class="copy-btn">Copy</button></div>
-        <pre>kubectl port-forward -n <span class="ns-out">daprmq</span> svc/daprmq-gateway 8080:8080 &gt;/dev/null &amp;
+        <pre><strong class="code-cmd">kubectl port-forward</strong> -n <span class="ns-out">daprmq</span> svc/daprmq-gateway 8080:8080 &gt;/dev/null &amp;
 sleep 2
 
 echo "Enqueue:"
-curl -s -X POST localhost:8080/queue/hello/enqueue -w '\n' \
+<strong class="code-cmd">curl</strong> -s -X POST localhost:8080/queue/hello/enqueue -w '\n' \
   -H 'Content-Type: application/json' \
   -d '{"items":[{"item":{"hello":"daprMQ"}}]}'
 
 echo "Dequeue:"
-RESPONSE=$(curl -s -X POST localhost:8080/queue/hello/dequeue -H 'require-ack: false')
+RESPONSE=$(<strong class="code-cmd">curl</strong> -s -X POST localhost:8080/queue/hello/dequeue -H 'require-ack: false')
 echo "$RESPONSE"
 
 echo "$RESPONSE" | grep -q '"hello":"daprMQ"' \
@@ -552,7 +552,7 @@ kill %1</pre>
       <div class="code-grid">
         <div class="code-card glass">
           <div class="code-head"><span>Enqueue</span><button class="copy-btn">Copy</button></div>
-          <pre>curl -X POST http://localhost:8002/queue/my-queue/enqueue \
+          <pre><strong class="code-cmd">curl</strong> -X POST http://localhost:8002/queue/my-queue/enqueue \
   -H "Content-Type: application/json" \
   -d '{
     "items": [
@@ -565,7 +565,7 @@ kill %1</pre>
         </div>
         <div class="code-card glass">
           <div class="code-head"><span>Dequeue</span><button class="copy-btn">Copy</button></div>
-          <pre>curl -X POST "http://localhost:8002/queue/my-queue/dequeue"
+          <pre><strong class="code-cmd">curl</strong> -X POST "http://localhost:8002/queue/my-queue/dequeue"
 # {
 #   "items": [
 #     { "item": { "task": "first" }, "priority": 1 }
@@ -641,12 +641,12 @@ kill %1</pre>
       <p>With the Dapr CLI, list the control plane services and their versions:</p>
       <div class="code-card glass">
         <div class="code-head"><span>Dapr CLI</span><button class="copy-btn">Copy</button></div>
-        <pre>dapr status -k</pre>
+        <pre><strong class="code-cmd">dapr status</strong> -k</pre>
       </div>
       <p>Without the CLI, read the image tag of the operator:</p>
       <div class="code-card glass">
         <div class="code-head"><span>kubectl</span><button class="copy-btn">Copy</button></div>
-        <pre>kubectl get deploy dapr-operator -n dapr-system \
+        <pre><strong class="code-cmd">kubectl get</strong> deploy dapr-operator -n dapr-system \
   -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
 # ghcr.io/dapr/operator:1.18.7</pre>
       </div>
@@ -664,7 +664,7 @@ kill %1</pre>
       <p>List every Dapr state store Component in the cluster, and whether it is an actor state store:</p>
       <div class="code-card glass">
         <div class="code-head"><span>kubectl</span><button class="copy-btn">Copy</button></div>
-        <pre>kubectl get components.dapr.io -A -o go-template='
+        <pre><strong class="code-cmd">kubectl get</strong> components.dapr.io -A -o go-template='
 {{- printf "NAMESPACE\tNAME\tTYPE\tACTOR STATE STORE\n"}}
 {{- range .items}}{{if eq (printf "%.6s" .spec.type) "state."}}
   {{- $actor := "no"}}
