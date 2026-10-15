@@ -32,6 +32,13 @@ document.addEventListener('DOMContentLoaded', () => {
     storeOut.textContent = storeInput.value.trim() || storePlaceholder;
     const ns = (!existingPanel.hidden && nsInput.value.trim()) || 'daprmq';
     document.querySelectorAll('.ns-out').forEach(el => { el.textContent = ns; });
+    [storeInput, nsInput].forEach(input => input.closest('.statestore-field').classList.toggle('is-filled', !!input.value.trim()));
+    // On the existing-cluster path the commands are only right once both boxes are filled in.
+    const locked = !existingPanel.hidden && !(storeInput.value.trim() && nsInput.value.trim());
+    document.querySelectorAll('#panel-existing .code-card, .install-step').forEach(card => {
+      card.classList.toggle('is-locked', locked);
+      card.querySelector('.copy-btn').disabled = locked;
+    });
   };
   [storeInput, nsInput].forEach(input => input && input.addEventListener('input', renderInstall));
 

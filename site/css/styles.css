@@ -301,15 +301,23 @@ section { padding: 80px 0; }
 .help-close { background: none; border: 1px solid var(--glass-border); border-radius: var(--radius-sm); color: var(--color-text-secondary); font-size: 1.2rem; line-height: 1; width: 32px; height: 32px; cursor: pointer; }
 .help-close:hover { color: var(--color-text); }
 .install-step { margin-top: var(--spacing-2xl); }
+.code-card { position: relative; }
+.code-card pre { transition: filter 0.2s ease; }
+.code-card.is-locked pre { filter: blur(5px); user-select: none; pointer-events: none; }
+.code-card.is-locked::after { content: "Fill in your state store name and namespace above"; position: absolute; left: 50%; top: calc(50% + 20px); transform: translate(-50%, -50%); max-width: calc(100% - 32px); padding: 8px 14px; background: var(--color-bg-medium); border: 1px solid var(--glass-border); border-radius: var(--radius-sm); color: var(--color-text); font-size: 0.85rem; text-align: center; }
+.code-card .copy-btn:disabled { opacity: 0.4; cursor: not-allowed; animation: none; }
 .code-card pre .code-cmd { color: #fff; font-weight: 700; }
 .code-card pre .code-var { color: #a3b1ff; font-weight: 600; }
 .statestore-fields { display: grid; gap: var(--spacing-md); margin-bottom: var(--spacing-2xl); }
 .statestore-field { display: flex; align-items: center; gap: var(--spacing-lg); font-size: 0.95rem; color: var(--color-text-secondary); }
 .statestore-field > span { flex: 0 0 200px; }
-.statestore-field input { flex: 0 1 360px; min-width: 0; padding: 10px 14px; border-radius: var(--radius-sm); color: var(--color-text); font-family: var(--font-mono); font-size: 0.9rem; transition: border-color 0.2s ease, box-shadow 0.2s ease; }
+.statestore-field .field-control { flex: 0 1 400px; display: flex; align-items: center; gap: var(--spacing-md); min-width: 0; }
+.statestore-field input { flex: 1; min-width: 0; padding: 10px 14px; border-radius: var(--radius-sm); color: var(--color-text); font-family: var(--font-mono); font-size: 0.9rem; transition: border-color 0.2s ease, box-shadow 0.2s ease; }
 .statestore-field input::placeholder { color: var(--color-text-secondary); opacity: 0.6; }
 .statestore-field input:focus { outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.3); }
-@media (max-width: 780px) { .statestore-field { flex-direction: column; align-items: stretch; gap: var(--spacing-sm); } .statestore-field > span { flex: none; } .statestore-field input { flex: none; } }
+.field-check { flex: none; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--color-success); color: #fff; font-size: 0.8rem; font-weight: 700; visibility: hidden; opacity: 0; transform: scale(0.6); transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s; }
+.statestore-field.is-filled .field-check { visibility: visible; opacity: 1; transform: none; }
+@media (max-width: 780px) { .statestore-field { flex-direction: column; align-items: stretch; gap: var(--spacing-sm); } .statestore-field > span { flex: none; } .statestore-field .field-control { flex: none; } }
 @media (max-width: 780px) { .code-grid { grid-template-columns: 1fr; } }
 
 /* Why Dapr */
