@@ -114,8 +114,12 @@ echo "▶ [4/4] Installing daprMQ (1–2 min)…"; S=$SECONDS
               <button type="button" class="help-link" data-dialog="dapr-version-help">Help me find out</button>
             </li>
             <li>
-              <label><input type="checkbox"> An actor state store Component (<code>actorStateStore: "true"</code>) is in
-                the namespace you install into</label>
+              <label><input type="checkbox"> A <span class="tip-wrap"><a class="tip-link"
+                    href="https://docs.dapr.io/reference/components-reference/supported-state-stores/"
+                    target="_blank" rel="noopener" aria-describedby="tip-suitable">suitable</a><span class="tip"
+                    id="tip-suitable" role="tooltip">A state store that supports transactions, with
+                    <code>actorStateStore: "true"</code> set in the component's metadata. Click to see which stores
+                    qualify.</span></span> Dapr state store component installed in the cluster</label>
               <button type="button" class="help-link" data-dialog="statestore-help">Help me find out</button>
             </li>
           </ul>
@@ -661,7 +665,7 @@ kill %1</pre>
         <h3 id="statestore-help-title">Which state stores can daprMQ use?</h3>
         <button type="button" class="help-close" aria-label="Close">&times;</button>
       </div>
-      <p>List every Dapr state store Component in the cluster, and whether it is an actor state store:</p>
+      <p><strong>Step 1:</strong> run this script to list all state store components on my cluster</p>
       <div class="code-card glass">
         <div class="code-head"><span>kubectl</span><button class="copy-btn">Copy</button></div>
         <pre><strong class="code-cmd">kubectl get</strong> components.dapr.io -A -o go-template='
@@ -678,11 +682,12 @@ kill %1</pre>
 # daprmq     statestore  state.postgresql  yes
 # team-a     cache       state.redis       no</pre>
       </div>
-      <p>Paste the output here, then pick a state store marked <strong>yes</strong>. daprMQ installs into the
-        same namespace as the state store it uses.</p>
+      <p><strong>Step 2:</strong> paste the output here</p>
       <textarea id="statestore-paste" class="paste-box" rows="5" spellcheck="false"
         aria-label="Output of the state store command"
         placeholder="NAMESPACE  NAME        TYPE              ACTOR STATE STORE"></textarea>
+      <p id="statestore-step3" hidden><strong>Step 3:</strong> choose your preferred state store. daprMQ installs into
+        the same namespace as the state store it uses.</p>
       <div id="statestore-picks" class="picks" aria-live="polite"></div>
     </div>
   </dialog>
