@@ -35,9 +35,9 @@ public record EnqueueItem
 }
 
 /// <summary>
-/// Sent by a per-session queue actor to its SessionCoordinatorActor, once, on its first
-/// activation, to announce itself into the SessionDirectory. Internal, actor-to-actor only -
-/// never exposed via QueueController/gRPC.
+/// Sent by a per-session queue actor to its SessionCoordinatorActor, directly, on its first
+/// non-empty save after each activation: the session has work, so mark it Active and claimable.
+/// Internal, actor-to-actor only - never exposed via QueueController/gRPC.
 /// </summary>
 public record RegisterSessionRequest
 {
@@ -73,6 +73,42 @@ public record SetSessionLeaseResponse
 public record ClearSessionLeaseResponse
 {
     public bool Success { get; init; }
+
+    /// <summary>
+    /// Queued plus locked items left in the session once the lease is cleared. The coordinator uses
+    /// it to decide whether the session goes back on its ReadyQueue or becomes Idle.
+    /// </summary>
+    public long Remaining { get; init; }
+}
+
+/// <summary>
+/// One session's lasting state change, as a worker's SessionActivityReporter saw it.
+/// </summary>
+public record SessionChange
+{
+    public required string SessionId { get; init; }
+    public bool HasWork { get; init; }
+}
+
+/// <summary>
+/// Sent by a worker's SessionActivityReporter to a SessionCoordinatorActor: the sessions hosted on
+/// that worker whose has-work state changed since the reporter last told the coordinator.
+/// Internal, worker-to-actor only.
+/// </summary>
+public record ReportSessionChangesRequest
+{
+    public List<SessionChange> Changes { get; init; } = new();
+}
+
+public record ReportSessionChangesResponse
+{
+    public bool Success { get; init; }
+
+    /// <summary>
+    /// Sessions whose Empty change arrived too soon after they were last marked Active to trust its
+    /// ordering. The reporter treats them as unsent and sends their current state on its next tick.
+    /// </summary>
+    public List<string> Deferred { get; init; } = new();
 }
 
 /// <summary>

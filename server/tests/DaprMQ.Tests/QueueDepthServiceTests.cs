@@ -41,20 +41,30 @@ public class QueueDepthServiceTests
     }
 
     [Fact]
-    public async Task Sessions_CountsNonEmptySessionsAndSumsDepth()
+    public async Task Sessions_ReadsOnlyTheCoordinatorsActiveCount()
     {
-        _reader.Setup(r => r.ReadSessionDirectoryAsync("orders", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new[] { "a", "b", "c" });
-        SetupDepth("orders-session-a", 3, 0);
-        SetupDepth("orders-session-b", 0, 0);
-        SetupDepth("orders-session-c", 0, 1); // only locked items - still owns work
+        _reader.Setup(r => r.ReadDirectorySummaryAsync("orders", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DirectorySummary { TotalCount = 8, ActiveCount = 5 });
         var service = new QueueDepthService(_reader.Object);
 
         var result = await service.GetDepthAsync(new QueueDepthQuery { QueueId = "orders", Mode = QueueDepthMode.Sessions });
 
-        Assert.Equal(2, result.NonEmptySessions);
-        Assert.Equal(3, result.Ready);
-        Assert.Equal(1, result.Locked);
+        Assert.Equal(5, result.NonEmptySessions);
+        Assert.Equal(0, result.Ready);
+        Assert.Equal(0, result.Locked);
+        _reader.Verify(r => r.ReadQueueDepthAsync(It.IsAny<ActorId>(), It.IsAny<CancellationToken>()), Times.Never);
+        _reader.Verify(r => r.ReadSessionDirectoryAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Sessions_SummaryReadFailure_Propagates()
+    {
+        _reader.Setup(r => r.ReadDirectorySummaryAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("HTTP 500"));
+        var service = new QueueDepthService(_reader.Object);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.GetDepthAsync(
+            new QueueDepthQuery { QueueId = "orders", Mode = QueueDepthMode.Sessions }));
     }
 
     [Fact]

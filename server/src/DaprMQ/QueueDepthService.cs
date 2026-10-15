@@ -17,16 +17,13 @@ public interface IQueueDepthService
 /// <inheritdoc cref="IQueueDepthService" />
 public class QueueDepthService : IQueueDepthService
 {
-    private const string SessionActorIdMarker = "-session-";
     private const string DeadLetterActorIdSuffix = "-deadletter";
 
     private readonly IQueueActorStateReader _reader;
-    private readonly int _maxSessionReadParallelism;
 
-    public QueueDepthService(IQueueActorStateReader reader, int maxSessionReadParallelism = 16)
+    public QueueDepthService(IQueueActorStateReader reader)
     {
         _reader = reader ?? throw new ArgumentNullException(nameof(reader));
-        _maxSessionReadParallelism = maxSessionReadParallelism;
     }
 
     /// <inheritdoc />
@@ -56,23 +53,13 @@ public class QueueDepthService : IQueueDepthService
         return new QueueDepthResult { QueueId = query.QueueId, Ready = depth.Ready, Locked = depth.Locked };
     }
 
+    /// <summary>
+    /// One small read: the SessionCoordinatorActor keeps the count of sessions with work as workers
+    /// report changes, so no session is read here. Ready and Locked aren't filled in for this mode.
+    /// </summary>
     private async Task<QueueDepthResult> GetSessionsDepthAsync(string queueId, CancellationToken cancellationToken)
     {
-        var sessionIds = await _reader.ReadSessionDirectoryAsync(queueId, cancellationToken);
-        var depths = new QueueDepth[sessionIds.Count];
-
-        await Parallel.ForEachAsync(
-            sessionIds.Select((sessionId, index) => (sessionId, index)),
-            new ParallelOptions { MaxDegreeOfParallelism = _maxSessionReadParallelism, CancellationToken = cancellationToken },
-            async (session, ct) => depths[session.index] = await _reader.ReadQueueDepthAsync(
-                new ActorId(queueId + SessionActorIdMarker + session.sessionId), ct));
-
-        return new QueueDepthResult
-        {
-            QueueId = queueId,
-            Ready = depths.Sum(d => d.Ready),
-            Locked = depths.Sum(d => d.Locked),
-            NonEmptySessions = depths.Count(d => d.Ready + d.Locked > 0)
-        };
+        var summary = await _reader.ReadDirectorySummaryAsync(queueId, cancellationToken);
+        return new QueueDepthResult { QueueId = queueId, NonEmptySessions = summary.ActiveCount };
     }
 }
