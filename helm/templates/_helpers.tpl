@@ -206,3 +206,30 @@ Get gateway port based on protocol
 {{- .Values.gateway.httpPort }}
 {{- end }}
 {{- end }}
+
+{{/*
+Fail the install if dapr.stateStoreName is not an actor state store Component in
+the release namespace. Without one the sidecars start healthy but every queue
+call returns 503. Skipped when rendering offline (helm template, client dry-run),
+where lookup returns nothing; detected by kube-system also being invisible.
+*/}}
+{{- define "daprmq.validateStateStore" -}}
+{{- if not .Values.dapr.skipStateStoreCheck }}
+{{- $name := .Values.dapr.stateStoreName }}
+{{- $ns := .Release.Namespace }}
+{{- $component := lookup "dapr.io/v1alpha1" "Component" $ns $name }}
+{{- if $component }}
+{{- $actorStore := false }}
+{{- range (($component.spec).metadata | default list) }}
+{{- if and (eq .name "actorStateStore") (eq (toString .value) "true") }}
+{{- $actorStore = true }}
+{{- end }}
+{{- end }}
+{{- if not $actorStore }}
+{{- fail (printf "Dapr Component %q in namespace %q is not an actor state store. Add metadata actorStateStore: \"true\" to it, or set dapr.skipStateStoreCheck=true to skip this check." $name $ns) }}
+{{- end }}
+{{- else if (lookup "v1" "Namespace" "" "kube-system") }}
+{{- fail (printf "Dapr state store Component %q was not found in namespace %q. Dapr Components are namespace-scoped: apply it to %q before installing, or set dapr.skipStateStoreCheck=true to skip this check." $name $ns $ns) }}
+{{- end }}
+{{- end }}
+{{- end }}

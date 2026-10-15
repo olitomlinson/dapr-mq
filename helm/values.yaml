@@ -28,6 +28,11 @@ dapr:
   # No default value - must be explicitly set during installation
   stateStoreName: ""
 
+  # The install fails unless stateStoreName is an actor state store Component
+  # (actorStateStore: "true") in the release namespace. Set true to skip the check,
+  # e.g. when the Component is applied after the chart or the installer can't read Components.
+  skipStateStoreCheck: false
+
 # Worker configuration (REGISTER_ACTORS=true)
 worker:
   enabled: true

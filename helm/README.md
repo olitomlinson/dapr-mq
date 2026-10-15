@@ -172,6 +172,7 @@ helm install daprmq-app2 ./helm \
 | `dapr.protocol` | Dapr sidecar protocol (`http` or `grpc`) | `http` |
 | `dapr.logLevel` | Dapr sidecar log level | `info` |
 | `dapr.stateStoreName` | **REQUIRED:** Name of Dapr state store Component | `""` (must be set) |
+| `dapr.skipStateStoreCheck` | Skip the install-time check that `dapr.stateStoreName` is an actor state store Component in the release namespace | `false` |
 
 **Important:** The `dapr.protocol` setting controls which protocol the **gateway** uses:
 - `http`: Gateway uses REST API on port 8080 for external communication
