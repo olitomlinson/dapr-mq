@@ -12,6 +12,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const code = btn.closest('.code-card').querySelector('pre').textContent
         .split('\n').filter(line => !line.trimStart().startsWith('#')).join('\n')
         .replace(/\n{3,}/g, '\n\n').trim();
+      btn.classList.add('used');
       navigator.clipboard.writeText(code).then(() => {
         const original = btn.textContent;
         btn.textContent = 'Copied!';
@@ -31,32 +32,53 @@ document.addEventListener('DOMContentLoaded', () => {
     storeOut.textContent = storeInput.value.trim() || storePlaceholder;
     const ns = (!existingPanel.hidden && nsInput.value.trim()) || 'daprmq';
     document.querySelectorAll('.ns-out').forEach(el => { el.textContent = ns; });
+    [storeInput, nsInput].forEach(input => input.closest('.statestore-field').classList.toggle('is-filled', !!input.value.trim()));
+    // On the existing-cluster path the commands are only right once both boxes are filled in.
+    const locked = !existingPanel.hidden && !(storeInput.value.trim() && nsInput.value.trim());
+    document.querySelectorAll('#panel-existing .code-card, .install-step').forEach(card => {
+      card.classList.toggle('is-locked', locked);
+      card.querySelector('.copy-btn').disabled = locked;
+    });
   };
   [storeInput, nsInput].forEach(input => input && input.addEventListener('input', renderInstall));
 
   const paste = document.getElementById('statestore-paste');
   const picks = document.getElementById('statestore-picks');
-  if (paste && picks) {
+  const step3 = document.getElementById('statestore-step3');
+  if (paste && picks && step3) {
     paste.addEventListener('input', () => {
       picks.replaceChildren();
+      paste.classList.remove('is-valid', 'is-invalid');
+      step3.hidden = true;
       if (!paste.value.trim()) return;
-      const stores = paste.value.split('\n')
+      const rows = paste.value.split('\n')
         .map(line => line.trim().split(/\s+/))
-        .filter(cols => cols.length >= 4 && cols[0] !== 'NAMESPACE' && cols[0] !== '#' && cols.at(-1) === 'yes');
+        .filter(cols => cols.length >= 4 && cols[0] !== '#' && ['yes', 'no'].includes(cols.at(-1)));
+      const stores = rows.filter(cols => cols.at(-1) === 'yes');
+      const unsuitable = rows.filter(cols => cols.at(-1) === 'no');
+      paste.classList.add(stores.length ? 'is-valid' : 'is-invalid');
+      step3.hidden = !stores.length;
       if (!stores.length) {
         const none = document.createElement('p');
         none.textContent = 'No actor state stores in that output. daprMQ needs one marked yes.';
         picks.append(none);
-        return;
       }
-      stores.forEach(([ns, name, type]) => {
+      const row = (ns, name, type) => {
         const pick = document.createElement('div');
         pick.className = 'pick';
-        pick.innerHTML = '<span></span><small></small><button type="button" class="pick-use">Use this</button>';
+        pick.innerHTML = '<span></span><small></small>';
         pick.children[0].textContent = `${ns} / ${name}`;
         pick.children[1].textContent = type;
-        pick.children[2].setAttribute('aria-label', `Use ${name} in namespace ${ns}`);
-        pick.children[2].addEventListener('click', () => {
+        picks.append(pick);
+        return pick;
+      };
+      stores.forEach(([ns, name, type]) => {
+        const use = document.createElement('button');
+        use.type = 'button';
+        use.className = 'pick-use';
+        use.textContent = 'Use this';
+        use.setAttribute('aria-label', `Use ${name} in namespace ${ns}`);
+        use.addEventListener('click', () => {
           storeInput.value = name;
           nsInput.value = ns;
           renderInstall();
@@ -64,7 +86,16 @@ document.addEventListener('DOMContentLoaded', () => {
           item.querySelector('input[type="checkbox"]').checked = true;
           paste.closest('dialog').close();
         });
-        picks.append(pick);
+        row(ns, name, type).append(use);
+      });
+      unsuitable.forEach(([ns, name, type]) => {
+        const pill = document.createElement('span');
+        pill.className = 'pick-pill';
+        pill.textContent = 'Unsuitable';
+        pill.title = 'Not an actor state store (actorStateStore is not "true")';
+        const pick = row(ns, name, type);
+        pick.classList.add('is-unsuitable');
+        pick.append(pill);
       });
     });
   }
