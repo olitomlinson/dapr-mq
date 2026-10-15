@@ -51,6 +51,68 @@
     </div>
   </header>
 
+  <section id="get-started">
+    <div class="container">
+      <div class="section-label">Get Started</div>
+      <h2 class="section-title">Install in two steps</h2>
+      <p class="section-sub" style="max-width: none;">Install the server into a cluster running Dapr 1.18+ with a
+        Dapr state store, then add an SDK. Everything is a pre-release until 1.0.</p>
+      <div class="code-grid">
+        <div class="code-card glass">
+          <div class="code-head"><span>Installing on an existing k8s cluster with Dapr</span><button class="copy-btn">Copy</button></div>
+          <pre>helm install daprmq oci://ghcr.io/olitomlinson/charts/daprmq \
+  --devel -n daprmq \
+  --set dapr.stateStoreName={your-dapr-state-store-name}</pre>
+        </div>
+        <div class="code-card glass">
+          <div class="code-head"><span>SDK</span><button class="copy-btn">Copy</button></div>
+          <pre>dotnet add package DaprMQ.Client --prerelease
+pip install daprmq-client
+npm install @daprmq/client
+go get github.com/olitomlinson/dapr-mq/sdks/go</pre>
+        </div>
+        <div class="code-card glass" style="grid-column: 1 / -1;">
+          <div class="code-head"><span>Installing from an empty k8s cluster</span><button class="copy-btn">Copy</button></div>
+          <pre># 1. Dapr
+helm repo add dapr https://dapr.github.io/helm-charts/
+helm install dapr dapr/dapr --version 1.18 -n dapr-system --create-namespace --wait
+
+# 2. Postgres
+helm repo add bitnami https://charts.bitnami.com/bitnami
+helm install postgres bitnami/postgresql -n daprmq --create-namespace \
+  --set auth.postgresPassword=daprmq_secret_123 \
+  --set auth.database=actor_state --wait
+
+# 3. Dapr state store component
+kubectl apply -n daprmq -f - &lt;&lt;EOF
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: statestore
+spec:
+  type: state.postgresql
+  version: v2
+  initTimeout: 60s
+  metadata:
+    - name: connectionString
+      value: "host=postgres-postgresql.daprmq.svc.cluster.local user=postgres password=daprmq_secret_123 port=5432 database=actor_state"
+    - name: actorStateStore
+      value: "true"
+EOF
+
+# 4. daprMQ
+helm install daprmq oci://ghcr.io/olitomlinson/charts/daprmq \
+  --devel -n daprmq \
+  --set dapr.stateStoreName=statestore</pre>
+        </div>
+      </div>
+      <p class="section-sub" style="margin-top: var(--spacing-2xl); margin-bottom: 0;"><a
+          href="https://github.com/olitomlinson/dapr-mq/blob/main/helm/README.md" target="_blank" rel="noopener"
+          style="color: var(--color-lock); text-decoration: underline;">Full install guide, including the state store,
+          on GitHub.</a></p>
+    </div>
+  </section>
+
   <section id="features">
     <div class="container">
       <div class="section-label">Features</div>
@@ -61,7 +123,7 @@
         <div class="feature-card glass" role="button" tabindex="0" aria-expanded="false">
           <div class="icon">&#8644;</div>
           <h3>It Just Works</h3>
-          <p>Enqueue and Dequeue — that's the whole API surface. Queues are created on-demand, no provisioning step.</p>
+          <p>Enqueue and Dequeue are all you need to get going. Queues are created on demand, with no provisioning step.</p>
           <div class="feature-more">
             <p>There is no create-queue call. The first Enqueue or Dequeue against a queue name brings it into
             existence, and a queue nobody uses costs nothing. Send any JSON payload and get it back exactly as you sent
@@ -78,6 +140,17 @@
             by the same gateway. gRPC adds two streams, Consume and ConsumeSession, that push messages to you instead of
             you polling for them.</p>
             <a href="https://github.com/olitomlinson/dapr-mq/blob/main/docs/API_REFERENCE.md" target="_blank" rel="noopener">API reference &rarr;</a>
+          </div>
+        </div>
+        <div class="feature-card glass" role="button" tabindex="0" aria-expanded="false">
+          <div class="icon">&#128295;</div>
+          <h3>Client SDKs</h3>
+          <p>Typed clients for .NET, Java, Go, Python and TypeScript.</p>
+          <div class="feature-more">
+            <p>All five SDKs share one proto contract, so behaviour is the same in every
+            language. Each wraps the full API over HTTP or gRPC, with managed consumers for plain queues and sessions
+            that handle locks, acknowledgements and nacks for you. None of them depend on Dapr.</p>
+            <a href="#sdks">See the SDKs &rarr;</a>
           </div>
         </div>
         <div class="feature-card glass" role="button" tabindex="0" aria-expanded="false">
@@ -325,6 +398,32 @@
     </div>
   </section>
 
+  <section id="no-dapr-required">
+    <div class="container">
+      <div class="section-label">FAQ</div>
+      <h2 class="section-title">Does my product have to use Dapr in any way to use daprMQ?</h2>
+      <p class="section-sub" style="max-width: none;"><strong>Absolutely not.</strong> Dapr is how daprMQ is built, not
+        something your apps need to adopt. daprMQ runs as its own service, and your apps talk to it like they would talk
+        to any other queue:</p>
+      <ul class="why-dapr">
+        <li><strong>Plain HTTP and gRPC</strong> — daprMQ exposes a standard REST and gRPC API. Anything that can make a
+          web request can enqueue and dequeue, even <code>curl</code>.</li>
+        <li><strong>No sidecar next to your app</strong> — only the daprMQ server runs with a Dapr sidecar. Your
+          producers and consumers don't need one, and don't need Dapr installed.</li>
+        <li><strong>No Dapr SDK</strong> — the .NET, Java, Go, Python and TypeScript clients are thin HTTP/gRPC clients
+          with no dependency on Dapr's libraries.</li>
+        <li><strong>Run your apps anywhere</strong> — your apps can sit on Kubernetes, VMs, serverless functions, or a
+          developer laptop, as long as they can reach the daprMQ endpoint.</li>
+        <li><strong>Push delivery to any endpoint</strong> — the built-in HTTP Sink delivers messages to any HTTP URL,
+          so a consumer can be an ordinary web service that never knows Dapr exists.</li>
+        <li><strong>Already on Dapr? That works too</strong> — if your apps do run Dapr, nothing changes: they use the
+          same HTTP/gRPC API and SDKs as everyone else.</li>
+      </ul>
+      <p class="section-sub" style="margin-bottom: 0;">Think of Dapr as daprMQ's storage and scaling engine. You run it
+        once, alongside daprMQ, or let a managed service run it for you.</p>
+    </div>
+  </section>
+
   <section id="managed-dapr">
     <div class="container">
       <h2 class="section-title">Don't want to run Dapr yourself?</h2>
@@ -384,34 +483,6 @@
         monorepo, and every one but Java is published as a pre-release. <a
           href="https://github.com/olitomlinson/dapr-mq/tree/main/sdks" target="_blank" rel="noopener"
           style="color: var(--color-lock); text-decoration: underline;">Browse the SDKs on GitHub.</a></p>
-    </div>
-  </section>
-
-  <section id="get-started">
-    <div class="container">
-      <div class="section-label">Get Started</div>
-      <h2 class="section-title">Install in two steps</h2>
-      <p class="section-sub" style="max-width: none;">Install the server into a cluster running Dapr 1.18+ with a
-        Dapr state store, then add an SDK. Everything is a pre-release until 1.0.</p>
-      <div class="code-grid">
-        <div class="code-card glass">
-          <div class="code-head"><span>Server (Helm)</span><button class="copy-btn">Copy</button></div>
-          <pre>helm install daprmq oci://ghcr.io/olitomlinson/charts/daprmq \
-  --devel -n daprmq \
-  --set dapr.stateStoreName=statestore</pre>
-        </div>
-        <div class="code-card glass">
-          <div class="code-head"><span>SDK</span><button class="copy-btn">Copy</button></div>
-          <pre>dotnet add package DaprMQ.Client --prerelease
-pip install daprmq-client
-npm install @daprmq/client
-go get github.com/olitomlinson/dapr-mq/sdks/go</pre>
-        </div>
-      </div>
-      <p class="section-sub" style="margin-top: var(--spacing-2xl); margin-bottom: 0;"><a
-          href="https://github.com/olitomlinson/dapr-mq/blob/main/helm/README.md" target="_blank" rel="noopener"
-          style="color: var(--color-lock); text-decoration: underline;">Full install guide, including the state store,
-          on GitHub.</a></p>
     </div>
   </section>
 
