@@ -55,36 +55,34 @@
     <div class="container">
       <div class="section-label">Get Started</div>
       <h2 class="section-title">Install in two steps</h2>
-      <p class="section-sub" style="max-width: none;">Install the server into a cluster running Dapr 1.18+ with a
-        Dapr state store, then add an SDK. Everything is a pre-release until 1.0.</p>
-      <div class="code-grid">
-        <div class="code-card glass">
-          <div class="code-head"><span>Installing on an existing k8s cluster with Dapr</span><button class="copy-btn">Copy</button></div>
-          <pre>helm install daprmq oci://ghcr.io/olitomlinson/charts/daprmq \
-  --devel -n daprmq \
-  --set dapr.stateStoreName={your-dapr-state-store-name}</pre>
+      <p class="section-sub" style="max-width: none;">Install the server, then check it works. Everything is a
+        pre-release until 1.0.</p>
+      <div class="install-tabs">
+        <div class="tab-list" role="tablist" aria-label="Server install">
+          <button type="button" class="tab" role="tab" id="tab-empty" aria-controls="panel-empty"
+            aria-selected="true">Empty cluster</button>
+          <button type="button" class="tab" role="tab" id="tab-existing" aria-controls="panel-existing"
+            aria-selected="false" tabindex="-1">Existing cluster with Dapr</button>
         </div>
-        <div class="code-card glass">
-          <div class="code-head"><span>SDK</span><button class="copy-btn">Copy</button></div>
-          <pre>dotnet add package DaprMQ.Client --prerelease
-pip install daprmq-client
-npm install @daprmq/client
-go get github.com/olitomlinson/dapr-mq/sdks/go</pre>
-        </div>
-        <div class="code-card glass" style="grid-column: 1 / -1;">
-          <div class="code-head"><span>Installing from an empty k8s cluster</span><button class="copy-btn">Copy</button></div>
-          <pre># 1. Dapr
-helm repo add dapr https://dapr.github.io/helm-charts/
-helm install dapr dapr/dapr --version 1.18 -n dapr-system --create-namespace --wait
+        <div class="tab-panel" role="tabpanel" id="panel-empty" aria-labelledby="tab-empty">
+          <p class="tab-note">Installs Dapr, Postgres, a state store Component and daprMQ, in that order.</p>
+          <div class="code-card glass">
+            <div class="code-head"><span>Dapr, Postgres and daprMQ</span><button class="copy-btn">Copy</button></div>
+            <pre>echo "▶ [1/4] Installing Dapr 1.18 (1–2 min)…"; S=$SECONDS
+helm repo add dapr https://dapr.github.io/helm-charts/ &gt;/dev/null
+helm install dapr dapr/dapr --version 1.18.7 -n dapr-system --create-namespace --wait &gt;/dev/null \
+  &amp;&amp; echo "✓ Dapr ready ($((SECONDS - S))s)" || echo "✗ Dapr failed to install, see the error above"
 
-# 2. Postgres
-helm repo add bitnami https://charts.bitnami.com/bitnami
+echo "▶ [2/4] Installing Postgres (1–2 min)…"; S=$SECONDS
+helm repo add bitnami https://charts.bitnami.com/bitnami &gt;/dev/null
 helm install postgres bitnami/postgresql -n daprmq --create-namespace \
   --set auth.postgresPassword=daprmq_secret_123 \
-  --set auth.database=actor_state --wait
+  --set auth.database=actor_state --wait &gt;/dev/null \
+  &amp;&amp; echo "✓ Postgres ready ($((SECONDS - S))s)" || echo "✗ Postgres failed to install, see the error above"
 
-# 3. Dapr state store component
-kubectl apply -n daprmq -f - &lt;&lt;EOF
+echo "▶ [3/4] Creating the Dapr state store component…"
+kubectl apply -n daprmq -f - &gt;/dev/null &lt;&lt;EOF \
+  &amp;&amp; echo "✓ State store created" || echo "✗ State store failed, see the error above"
 apiVersion: dapr.io/v1alpha1
 kind: Component
 metadata:
@@ -100,11 +98,66 @@ spec:
       value: "true"
 EOF
 
-# 4. daprMQ
+echo "▶ [4/4] Installing daprMQ (1–2 min)…"; S=$SECONDS
 helm install daprmq oci://ghcr.io/olitomlinson/charts/daprmq \
-  --devel -n daprmq \
-  --set dapr.stateStoreName=statestore</pre>
+  --devel --wait -n daprmq \
+  --set dapr.stateStoreName=statestore &gt;/dev/null \
+  &amp;&amp; echo "✓ daprMQ ready ($((SECONDS - S))s)" &amp;&amp; echo "✅ All done. Run the smoke test below." \
+  || echo "✗ daprMQ failed to install, see the error above"</pre>
+          </div>
         </div>
+        <div class="tab-panel" role="tabpanel" id="panel-existing" aria-labelledby="tab-existing" hidden>
+          <h3 class="panel-heading">Pre-requisite checklist</h3>
+          <ul class="checklist">
+            <li>
+              <label><input type="checkbox"> Dapr 1.18+ is installed on the cluster</label>
+              <button type="button" class="help-link" data-dialog="dapr-version-help">Help me find out</button>
+            </li>
+            <li>
+              <label><input type="checkbox"> An actor state store Component (<code>actorStateStore: "true"</code>) is in
+                the namespace you install into</label>
+              <button type="button" class="help-link" data-dialog="statestore-help">Help me find out</button>
+            </li>
+          </ul>
+          <div class="statestore-fields">
+            <label class="statestore-field">
+              <span>Your Dapr state store name</span>
+              <input type="text" id="statestore-name" class="glass" placeholder="your-dapr-state-store-name"
+                spellcheck="false" autocomplete="off">
+            </label>
+            <label class="statestore-field">
+              <span>Its namespace</span>
+              <input type="text" id="statestore-namespace" class="glass" placeholder="daprmq" spellcheck="false"
+                autocomplete="off">
+            </label>
+          </div>
+          <div class="code-card glass">
+            <div class="code-head"><span>Install DaprMQ with helm</span><button class="copy-btn">Copy</button></div>
+            <pre>helm install daprmq oci://ghcr.io/olitomlinson/charts/daprmq \
+  --devel --wait -n <span class="code-var ns-out">daprmq</span> \
+  --set dapr.stateStoreName=<span id="statestore-name-out" class="code-var">{your-dapr-state-store-name}</span></pre>
+          </div>
+        </div>
+      </div>
+      <div class="code-card glass install-step">
+        <div class="code-head"><span>Smoke test</span><button class="copy-btn">Copy</button></div>
+        <pre>kubectl port-forward -n <span class="ns-out">daprmq</span> svc/daprmq-gateway 8080:8080 &gt;/dev/null &amp;
+sleep 2
+
+echo "Enqueue:"
+curl -s -X POST localhost:8080/queue/hello/enqueue -w '\n' \
+  -H 'Content-Type: application/json' \
+  -d '{"items":[{"item":{"hello":"daprMQ"}}]}'
+
+echo "Dequeue:"
+RESPONSE=$(curl -s -X POST localhost:8080/queue/hello/dequeue -H 'require-ack: false')
+echo "$RESPONSE"
+
+echo "$RESPONSE" | grep -q '"hello":"daprMQ"' \
+  &amp;&amp; echo "✅ Smoke test passed: the message went in and came back out" \
+  || echo "❌ Smoke test failed: the message did not come back"
+
+kill %1</pre>
       </div>
       <p class="section-sub" style="margin-top: var(--spacing-2xl); margin-bottom: 0;"><a
           href="https://github.com/olitomlinson/dapr-mq/blob/main/helm/README.md" target="_blank" rel="noopener"
@@ -451,6 +504,7 @@ helm install daprmq oci://ghcr.io/olitomlinson/charts/daprmq \
           <h3>.NET</h3>
           <p>DaprMQClient over HTTP/gRPC, plus a managed SessionQueueConsumer for multi-session consume loops. Targets
             net10.0.</p>
+          <code class="sdk-install">dotnet add package DaprMQ.Client <span class="nowrap">--prerelease</span></code>
           <a class="sdk-status sdk-link" href="https://www.nuget.org/packages/DaprMQ.Client" target="_blank" rel="noopener">NuGet &middot; DaprMQ.Client &rarr;</a>
         </div>
         <div class="sdk-card glass">
@@ -464,18 +518,21 @@ helm install daprmq oci://ghcr.io/olitomlinson/charts/daprmq \
           <div class="icon">Go</div>
           <h3>Go</h3>
           <p>A context-first client on net/http and grpc-go, with the same session consume loop.</p>
+          <code class="sdk-install">go get github.com/olitomlinson/dapr-mq/sdks/go</code>
           <a class="sdk-status sdk-link" href="https://pkg.go.dev/github.com/olitomlinson/dapr-mq/sdks/go" target="_blank" rel="noopener">Go &middot; pkg.go.dev &rarr;</a>
         </div>
         <div class="sdk-card glass">
           <div class="icon">&#128013;</div>
           <h3>Python</h3>
           <p>A fully async client built on httpx and grpc.aio &mdash; every public method is a coroutine.</p>
+          <code class="sdk-install">pip install daprmq-client</code>
           <a class="sdk-status sdk-link" href="https://pypi.org/project/daprmq-client/" target="_blank" rel="noopener">PyPI &middot; daprmq-client &rarr;</a>
         </div>
         <div class="sdk-card glass">
           <div class="icon">TS</div>
           <h3>TypeScript</h3>
           <p>A Node client over fetch and gRPC, with types generated straight from the shared proto contract.</p>
+          <code class="sdk-install">npm install @daprmq/client</code>
           <a class="sdk-status sdk-link" href="https://www.npmjs.com/package/@daprmq/client" target="_blank" rel="noopener">npm &middot; @daprmq/client &rarr;</a>
         </div>
       </div>
@@ -574,6 +631,61 @@ helm install daprmq oci://ghcr.io/olitomlinson/charts/daprmq \
         2.0 (ELv2); the client SDKs under Apache-2.0.</div>
     </div>
   </footer>
+
+  <dialog id="dapr-version-help" class="help-dialog glass" aria-labelledby="dapr-version-help-title">
+    <div class="help-dialog-body">
+      <div class="help-dialog-head">
+        <h3 id="dapr-version-help-title">Which Dapr version is installed?</h3>
+        <button type="button" class="help-close" aria-label="Close">&times;</button>
+      </div>
+      <p>With the Dapr CLI, list the control plane services and their versions:</p>
+      <div class="code-card glass">
+        <div class="code-head"><span>Dapr CLI</span><button class="copy-btn">Copy</button></div>
+        <pre>dapr status -k</pre>
+      </div>
+      <p>Without the CLI, read the image tag of the operator:</p>
+      <div class="code-card glass">
+        <div class="code-head"><span>kubectl</span><button class="copy-btn">Copy</button></div>
+        <pre>kubectl get deploy dapr-operator -n dapr-system \
+  -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+# ghcr.io/dapr/operator:1.18.7</pre>
+      </div>
+      <p>Installed with Helm? The APP VERSION column of <code>helm list -n dapr-system</code> shows it too. Sidecars run
+        the control plane's version unless a pod overrides its sidecar image.</p>
+    </div>
+  </dialog>
+
+  <dialog id="statestore-help" class="help-dialog glass" aria-labelledby="statestore-help-title">
+    <div class="help-dialog-body">
+      <div class="help-dialog-head">
+        <h3 id="statestore-help-title">Which state stores can daprMQ use?</h3>
+        <button type="button" class="help-close" aria-label="Close">&times;</button>
+      </div>
+      <p>List every Dapr state store Component in the cluster, and whether it is an actor state store:</p>
+      <div class="code-card glass">
+        <div class="code-head"><span>kubectl</span><button class="copy-btn">Copy</button></div>
+        <pre>kubectl get components.dapr.io -A -o go-template='
+{{- printf "NAMESPACE\tNAME\tTYPE\tACTOR STATE STORE\n"}}
+{{- range .items}}{{if eq (printf "%.6s" .spec.type) "state."}}
+  {{- $actor := "no"}}
+  {{- range .spec.metadata}}
+    {{- if and (eq .name "actorStateStore") (eq (printf "%v" .value) "true")}}{{$actor = "yes"}}{{end}}
+  {{- end}}
+  {{- printf "%s\t%s\t%s\t%s\n" .metadata.namespace .metadata.name .spec.type $actor}}
+{{- end}}{{end}}' | column -t -s $'\t'
+
+# NAMESPACE  NAME        TYPE              ACTOR STATE STORE
+# daprmq     statestore  state.postgresql  yes
+# team-a     cache       state.redis       no</pre>
+      </div>
+      <p>Paste the output here, then pick a state store marked <strong>yes</strong>. daprMQ installs into the
+        same namespace as the state store it uses.</p>
+      <textarea id="statestore-paste" class="paste-box" rows="5" spellcheck="false"
+        aria-label="Output of the state store command"
+        placeholder="NAMESPACE  NAME        TYPE              ACTOR STATE STORE"></textarea>
+      <div id="statestore-picks" class="picks" aria-live="polite"></div>
+    </div>
+  </dialog>
 
   <script src="js/main.js"></script>
 </body>
