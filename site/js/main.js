@@ -30,17 +30,29 @@ document.addEventListener('DOMContentLoaded', () => {
   const renderInstall = () => {
     if (!storeInput || !nsInput || !storeOut) return;
     storeOut.textContent = storeInput.value.trim() || storePlaceholder;
+    document.querySelectorAll('.store-out').forEach(el => { el.textContent = storeInput.value.trim() || storePlaceholder; });
+    document.getElementById('ns-warnings').hidden = !nsInput.value.trim();
     const ns = (!existingPanel.hidden && nsInput.value.trim()) || 'daprmq';
     document.querySelectorAll('.ns-out').forEach(el => { el.textContent = ns; });
     [storeInput, nsInput].forEach(input => input.closest('.statestore-field').classList.toggle('is-filled', !!input.value.trim()));
     // On the existing-cluster path the commands are only right once both boxes are filled in.
-    const locked = !existingPanel.hidden && !(storeInput.value.trim() && nsInput.value.trim());
+    const filled = storeInput.value.trim() && nsInput.value.trim();
+    const acknowledged = document.getElementById('ns-warning').classList.contains('is-acknowledged');
+    const locked = !existingPanel.hidden && !(filled && acknowledged);
     document.querySelectorAll('#panel-existing .code-card, .install-step').forEach(card => {
       card.classList.toggle('is-locked', locked);
+      card.dataset.lockMsg = filled ? 'Confirm the namespace warning above' : 'Fill in your state store name and namespace above';
       card.querySelector('.copy-btn').disabled = locked;
     });
   };
   [storeInput, nsInput].forEach(input => input && input.addEventListener('input', renderInstall));
+  const ackButton = document.getElementById('ns-warning-ack');
+  ackButton.addEventListener('click', () => {
+    document.getElementById('ns-warning').classList.add('is-acknowledged');
+    ackButton.disabled = true;
+    ackButton.textContent = 'Understood ✓';
+    renderInstall();
+  });
 
   const paste = document.getElementById('statestore-paste');
   const picks = document.getElementById('statestore-picks');
@@ -82,8 +94,6 @@ document.addEventListener('DOMContentLoaded', () => {
           storeInput.value = name;
           nsInput.value = ns;
           renderInstall();
-          const item = document.querySelector('[data-dialog="statestore-help"]').closest('li');
-          item.querySelector('input[type="checkbox"]').checked = true;
           paste.closest('dialog').close();
         });
         row(ns, name, type).append(use);

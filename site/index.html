@@ -46,7 +46,7 @@
       <div class="hero-ctas">
         <a href="https://github.com/olitomlinson/dapr-mq" target="_blank" rel="noopener" class="btn btn-outline">View on
           GitHub</a>
-        <a href="#get-started" class="btn btn-primary">k8s Install Quick Start</a>
+        <a href="#get-started" class="btn btn-primary">Quick Start: k8s install</a>
       </div>
     </div>
   </header>
@@ -54,15 +54,15 @@
   <section id="get-started">
     <div class="container">
       <div class="section-label">Get Started</div>
-      <h2 class="section-title">k8s install and validate in two steps</h2>
-      <p class="section-sub" style="max-width: none;">Install the server, then check it works. Everything is a
-        pre-release until 1.0.</p>
+      <h2 class="section-title">Quick Start: k8s install</h2>
+      <p class="section-sub" style="max-width: none;">Install daprMQ, then check it works with a simple smoke
+        test. Everything is a pre-release until 1.0.</p>
       <div class="install-tabs">
         <div class="tab-list" role="tablist" aria-label="Server install">
           <button type="button" class="tab" role="tab" id="tab-empty" aria-controls="panel-empty"
-            aria-selected="true">Empty cluster</button>
+            aria-selected="true">Empty k8s cluster</button>
           <button type="button" class="tab" role="tab" id="tab-existing" aria-controls="panel-existing"
-            aria-selected="false" tabindex="-1">Existing cluster with Dapr</button>
+            aria-selected="false" tabindex="-1">Existing k8s cluster with Dapr</button>
         </div>
         <div class="tab-panel" role="tabpanel" id="panel-empty" aria-labelledby="tab-empty">
           <p class="tab-note">Installs Dapr, Postgres, a state store Component and daprMQ, in that order.</p>
@@ -71,18 +71,18 @@
             <pre>echo "▶ [1/4] Installing Dapr 1.18 (1–2 min)…"; S=$SECONDS
 <strong class="code-cmd">helm repo add dapr</strong> https://dapr.github.io/helm-charts/ &gt;/dev/null
 <strong class="code-cmd">helm install dapr</strong> dapr/dapr --version 1.18.7 -n dapr-system --create-namespace --wait &gt;/dev/null \
-  &amp;&amp; echo "✓ Dapr ready ($((SECONDS - S))s)" || echo "✗ Dapr failed to install, see the error above"
+  &amp;&amp; echo "✅ Dapr ready ($((SECONDS - S))s)" || echo "❌ Dapr failed to install, see the error above"
 
 echo "▶ [2/4] Installing Postgres (1–2 min)…"; S=$SECONDS
 <strong class="code-cmd">helm repo add bitnami</strong> https://charts.bitnami.com/bitnami &gt;/dev/null
 <strong class="code-cmd">helm install postgres</strong> bitnami/postgresql -n daprmq --create-namespace \
   --set auth.postgresPassword=daprmq_secret_123 \
   --set auth.database=actor_state --wait &gt;/dev/null \
-  &amp;&amp; echo "✓ Postgres ready ($((SECONDS - S))s)" || echo "✗ Postgres failed to install, see the error above"
+  &amp;&amp; echo "✅ Postgres ready ($((SECONDS - S))s)" || echo "❌ Postgres failed to install, see the error above"
 
 echo "▶ [3/4] Creating the Dapr state store component…"
 <strong class="code-cmd">kubectl apply</strong> -n daprmq -f - &gt;/dev/null &lt;&lt;EOF \
-  &amp;&amp; echo "✓ State store created" || echo "✗ State store failed, see the error above"
+  &amp;&amp; echo "✅ State store created" || echo "❌ State store failed, see the error above"
 apiVersion: dapr.io/v1alpha1
 kind: Component
 metadata:
@@ -102,50 +102,77 @@ echo "▶ [4/4] Installing daprMQ (1–2 min)…"; S=$SECONDS
 <strong class="code-cmd">helm install daprmq</strong> oci://ghcr.io/olitomlinson/charts/daprmq \
   --devel --wait -n daprmq \
   --set dapr.stateStoreName=statestore &gt;/dev/null \
-  &amp;&amp; echo "✓ daprMQ ready ($((SECONDS - S))s)" &amp;&amp; echo "✅ All done. Run the smoke test below." \
-  || echo "✗ daprMQ failed to install, see the error above"</pre>
+  &amp;&amp; echo "✅ daprMQ ready ($((SECONDS - S))s)" &amp;&amp; echo "✅ All done. Run the smoke test below." \
+  || echo "❌ daprMQ failed to install, see the error above"</pre>
           </div>
         </div>
         <div class="tab-panel" role="tabpanel" id="panel-existing" aria-labelledby="tab-existing" hidden>
           <h3 class="panel-heading">Pre-requisite checklist</h3>
-          <ul class="checklist">
+          <ol class="checklist">
             <li>
-              <label><input type="checkbox"> Dapr 1.18+ is installed on the cluster</label>
-              <button type="button" class="help-link" data-dialog="dapr-version-help">Help me find out</button>
+              <div class="step-body">Dapr 1.18+ is installed on the cluster
+                <button type="button" class="help-link" data-dialog="dapr-version-help">Help me find out</button></div>
             </li>
             <li>
-              <label><input type="checkbox"> A <span class="tip-wrap"><a class="tip-link"
+              <div class="step-body">A <span class="tip-wrap"><a class="tip-link"
                     href="https://docs.dapr.io/reference/components-reference/supported-state-stores/"
                     target="_blank" rel="noopener" aria-describedby="tip-suitable">suitable</a><span class="tip"
                     id="tip-suitable" role="tooltip">A state store that supports transactions, with
                     <code>actorStateStore: "true"</code> set in the component's metadata. Click to see which stores
-                    qualify.</span></span> Dapr state store component installed in the cluster</label>
-              <button type="button" class="help-link" data-dialog="statestore-help">Help me find out</button>
+                    qualify.</span></span> Dapr state store component installed in the cluster
+                <button type="button" class="help-link" data-dialog="statestore-help">Help me find out</button></div>
             </li>
-          </ul>
-          <div class="statestore-fields">
-            <label class="statestore-field">
-              <span>Your Dapr state store name</span>
-              <span class="field-control">
-                <input type="text" id="statestore-name" class="glass" placeholder="your-dapr-state-store-name"
-                  spellcheck="false" autocomplete="off">
-                <span class="field-check" aria-hidden="true">&#10003;</span>
-              </span>
-            </label>
-            <label class="statestore-field">
-              <span>Its namespace</span>
-              <span class="field-control">
-                <input type="text" id="statestore-namespace" class="glass" placeholder="daprmq" spellcheck="false"
-                  autocomplete="off">
-                <span class="field-check" aria-hidden="true">&#10003;</span>
-              </span>
-            </label>
+            <li>
+              <label class="statestore-field">
+                <span>Your Dapr state store name</span>
+                <span class="field-control">
+                  <input type="text" id="statestore-name" class="glass" placeholder="your-dapr-state-store-name"
+                    spellcheck="false" autocomplete="off">
+                  <span class="field-check" aria-hidden="true">&#10003;</span>
+                </span>
+              </label>
+            </li>
+            <li>
+              <label class="statestore-field">
+                <span>Its namespace</span>
+                <span class="field-control">
+                  <input type="text" id="statestore-namespace" class="glass" placeholder="daprmq" spellcheck="false"
+                    autocomplete="off">
+                  <span class="field-check" aria-hidden="true">&#10003;</span>
+                </span>
+              </label>
+            </li>
+          </ol>
+          <div class="ns-warnings" id="ns-warnings" hidden>
+            <div class="warning-box" id="ns-warning" role="note">
+              <span class="warning-icon" aria-hidden="true">!</span>
+              <p>This will install daprMQ into the same namespace as your state store component. For production use
+                cases, we recommend cloning the state store component into a namespace that daprMQ can use
+                exclusively.</p>
+              <button type="button" class="warning-ack" id="ns-warning-ack">Understood</button>
+            </div>
+          </div>
+          <div class="code-card glass">
+            <div class="code-head"><span>Give daprMQ access to the state store</span><button class="copy-btn">Copy</button></div>
+            <pre>if ! SCOPES=$(<strong class="code-cmd">kubectl get</strong> component <span class="code-var store-out">{your-dapr-state-store-name}</span> -n <span class="code-var ns-out">daprmq</span> -o jsonpath='{.scopes}'); then
+  echo "❌ Couldn't read the state store component, see the error above"
+elif [ -z "$SCOPES" ]; then
+  echo "✅ The state store has no scopes, so daprMQ already has access"
+elif echo "$SCOPES" | grep -q '"daprmq-daprmq-worker"'; then
+  echo "✅ daprMQ is already in the state store's scopes"
+else
+  <strong class="code-cmd">kubectl patch</strong> component <span class="code-var store-out">{your-dapr-state-store-name}</span> -n <span class="code-var ns-out">daprmq</span> --type json \
+    -p '[{"op":"add","path":"/scopes/-","value":"daprmq-daprmq-worker"}]' &gt;/dev/null \
+    &amp;&amp; echo "✅ Added daprmq-daprmq-worker to the state store's scopes"
+fi</pre>
           </div>
           <div class="code-card glass">
             <div class="code-head"><span>Install DaprMQ with helm</span><button class="copy-btn">Copy</button></div>
             <pre><strong class="code-cmd">helm install daprmq</strong> oci://ghcr.io/olitomlinson/charts/daprmq \
   --devel --wait -n <span class="code-var ns-out">daprmq</span> \
-  --set dapr.stateStoreName=<span id="statestore-name-out" class="code-var">{your-dapr-state-store-name}</span></pre>
+  --set dapr.stateStoreName=<span id="statestore-name-out" class="code-var">{your-dapr-state-store-name}</span> &gt;/dev/null \
+  &amp;&amp; echo "✅ daprMQ is now installed. Run the smoke test below." \
+  || echo "❌ daprMQ failed to install, see the error above"</pre>
           </div>
         </div>
       </div>
