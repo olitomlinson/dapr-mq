@@ -30,6 +30,16 @@ public sealed partial record ScalerMetadata
     public string MetricName =>
         $"daprmq-{Mode.ToString().ToLowerInvariant()}-{UnsafeMetricChars().Replace(QueueId.ToLowerInvariant(), "-")}";
 
+    /// <summary>
+    /// The metric KEDA scales on, from a successful depth read. Locked items always count: they're out
+    /// of the queue's Count, and lock expiry is only swept by the next dequeue - scaling consumers to
+    /// zero over a fully locked queue would strand them.
+    /// </summary>
+    public double MetricValue(QueueDepthResult result) => MetricValue(Mode, result);
+
+    public static double MetricValue(QueueDepthMode mode, QueueDepthResult result) =>
+        mode == QueueDepthMode.Sessions ? result.NonEmptySessions : result.Ready + result.Locked;
+
     public QueueDepthQuery ToQuery() => new() { QueueId = QueueId, Mode = Mode, IncludeDeadLetter = IncludeDeadLetter };
 
     public static ScalerMetadata Parse(IDictionary<string, string> metadata)

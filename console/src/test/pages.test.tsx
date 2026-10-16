@@ -193,7 +193,7 @@ describe('Topics', () => {
     const search = (await screen.findByText('search')).closest('tr')!
     expect(within(search).getByText('120')).toBeInTheDocument()
     expect(within(search).getByText(/open \(5 errors/)).toBeInTheDocument()
-    expect(within(search).getByRole('link')).toHaveAttribute('href', '/queues/news-sub-search')
+    expect(within(search).getByRole('link', { name: /news-sub-search/ })).toHaveAttribute('href', '/queues/news-sub-search')
     const audit = screen.getByText('audit').closest('tr')!
     expect(within(audit).getByText('● closed')).toBeInTheDocument()
   })

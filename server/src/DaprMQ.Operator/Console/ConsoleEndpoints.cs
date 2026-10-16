@@ -51,6 +51,8 @@ public static class ConsoleEndpoints
         group.MapGet("/overview", (IWorkerAdminClient client, ConsoleResponseCache cache, CancellationToken ct) =>
             HandleOverviewAsync(client, cache, ct));
 
+        group.MapGet("/scaling", (string? queueId, ScalingSampler sampler) => HandleScaling(queueId, sampler));
+
         group.MapGet("/queues", (string? kind, string? cursor, int? limit, IWorkerAdminClient client, ConsoleResponseCache cache, CancellationToken ct) =>
             HandleQueuesAsync(kind, cursor, limit, client, cache, ct));
 
@@ -95,6 +97,10 @@ public static class ConsoleEndpoints
             return Unavailable(ex.Message);
         }
     }
+
+    /// <summary>The sampler's in-memory KEDA history: no worker call, so nothing to cache.</summary>
+    public static IResult HandleScaling(string? queueId, ScalingSampler sampler) =>
+        TypedResults.Ok(sampler.Snapshot(string.IsNullOrEmpty(queueId) ? null : queueId));
 
     public static async Task<IResult> HandleQueuesAsync(
         string? kind, string? cursor, int? limit, IWorkerAdminClient client, ConsoleResponseCache cache, CancellationToken cancellationToken)

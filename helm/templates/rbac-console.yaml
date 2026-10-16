@@ -1,0 +1,42 @@
+{{- if and .Values.console.enabled .Values.console.kubernetesRead }}
+# Read-only access for the console's Scaling page: KEDA ScaledObjects and ScaledJobs (any namespace -
+# consumers rarely run in DaprMQ's), the HPAs KEDA creates for them, and the Jobs of a ScaledJob.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "daprmq.console.serviceAccountName" . }}
+  labels:
+    {{- include "daprmq.console.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "daprmq.console.serviceAccountName" . }}-{{ .Release.Namespace }}
+  labels:
+    {{- include "daprmq.console.labels" . | nindent 4 }}
+rules:
+- apiGroups: ["keda.sh"]
+  resources: ["scaledobjects", "scaledjobs"]
+  verbs: ["get"]
+- apiGroups: ["autoscaling"]
+  resources: ["horizontalpodautoscalers"]
+  verbs: ["get"]
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "daprmq.console.serviceAccountName" . }}-{{ .Release.Namespace }}
+  labels:
+    {{- include "daprmq.console.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "daprmq.console.serviceAccountName" . }}-{{ .Release.Namespace }}
+subjects:
+- kind: ServiceAccount
+  name: {{ include "daprmq.console.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}

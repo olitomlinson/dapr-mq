@@ -34,4 +34,5 @@ public static class ActorMethodNames
     public const string ReportSessionChanges = "ReportSessionChanges";
 
     public const string RegisterCatalogBatch = "RegisterBatchAsync";
+    public const string RegisterScaledObjects = "RegisterAsync";
 }

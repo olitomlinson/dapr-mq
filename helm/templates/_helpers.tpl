@@ -119,6 +119,20 @@ Console env, on whichever pods serve it
   value: {{ .Values.console.cacheTtlMs | quote }}
 - name: CONSOLE_MAX_WORKER_CALLS
   value: {{ .Values.console.maxWorkerCalls | quote }}
+- name: SCALING_SAMPLE_INTERVAL_MS
+  value: {{ mul .Values.console.scaling.sampleIntervalSeconds 1000 | quote }}
+- name: SCALING_HISTORY_MINUTES
+  value: {{ .Values.console.scaling.historyMinutes | quote }}
+- name: KUBERNETES_READ
+  value: {{ .Values.console.kubernetesRead | quote }}
+{{- end }}
+
+{{/*
+Service account of the pods serving the console, when console.kubernetesRead grants it read access
+to ScaledObjects and HPAs.
+*/}}
+{{- define "daprmq.console.serviceAccountName" -}}
+{{ include "daprmq.fullname" . }}-console
 {{- end }}
 
 {{/*

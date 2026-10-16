@@ -261,6 +261,16 @@ console:
   # Run the console as its own Deployment of the operator image (scaler off there), so console
   # load can never delay KEDA's GetMetrics. Off = the operator pods serve it.
   separateDeployment: false
+  # The Scaling page charts KEDA ScaledObjects that use the DaprMQ scaler. The console samples
+  # them in memory (per pod, lost on restart).
+  scaling:
+    sampleIntervalSeconds: 15
+    historyMinutes: 60
+  # Give the console's pods a service account with cluster-wide read access to KEDA ScaledObjects,
+  # ScaledJobs, HPAs and Jobs, so the Scaling page shows current/desired replicas, min/max and
+  # ScaledObject health. Off = no ClusterRole, and it shows only what each queue's metric asks for,
+  # ceil(metric / target).
+  kubernetesRead: true
   replicaCount: 1
   resources:
     requests:

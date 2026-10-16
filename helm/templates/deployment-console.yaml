@@ -26,6 +26,9 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if .Values.console.kubernetesRead }}
+      serviceAccountName: {{ include "daprmq.console.serviceAccountName" . }}
+      {{- end }}
       securityContext:
         {{- toYaml .Values.operator.podSecurityContext | nindent 8 }}
       containers:

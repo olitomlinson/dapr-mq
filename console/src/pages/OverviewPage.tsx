@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { useOverview } from '../api/hooks'
+import { useOverview, useScaling } from '../api/hooks'
 import { seg } from '../api/client'
 import type { QueueDepth } from '../api/types'
 import { formatCount } from '../util/format'
@@ -7,6 +7,7 @@ import { QueryState, Tile, ui } from '../components/ui'
 
 export function OverviewPage() {
   const overview = useOverview()
+  const scaledQueues = new Set(useScaling().data?.targets.map((t) => t.queueId)).size
   const o = overview.data
   const count = (n?: number) => (o ? formatCount(n ?? 0) : '–')
   const dlqsWithMessages = o?.deadLetterQueuesWithMessages ?? 0
@@ -24,6 +25,7 @@ export function OverviewPage() {
           ? <Tile label="DLQs with messages ⚠" value={formatCount(dlqsWithMessages)} href="/queues?kind=DeadLetter" />
           : <Tile label="Dead-letter queues" value={count(o?.totals.DeadLetter)} href="/queues?kind=DeadLetter" />}
         <Tile label="HTTP sinks" value={count(o?.totals.Sink)} href="/sinks" />
+        {scaledQueues > 0 && <Tile label="KEDA-scaled" value={formatCount(scaledQueues)} href="/scaling" />}
       </div>
       {o && (
         <div className={ui.grid2}>

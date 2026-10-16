@@ -1,14 +1,16 @@
 import { Link, useParams } from 'react-router-dom'
-import { useTopic } from '../api/hooks'
+import { useScaling, useTopic } from '../api/hooks'
 import { seg } from '../api/client'
-import type { CircuitBreaker } from '../api/types'
+import type { CircuitBreaker, ScalingTarget } from '../api/types'
 import { formatCount, formatTime } from '../util/format'
+import { replicasNow } from '../util/scaling'
 import { QueryState, ui } from '../components/ui'
 
 export function TopicDetailPage() {
   const topicId = useParams().topicId!
   const topic = useTopic(topicId)
   const t = topic.data
+  const scaling = useScaling().data
 
   return (
     <div className={ui.page}>
@@ -25,7 +27,7 @@ export function TopicDetailPage() {
           <div className={ui.tableWrap}>
             <table className={ui.table}>
               <thead>
-                <tr><th>Subscriber</th><th>Queue</th><th className={ui.num}>Lag</th><th>Breaker</th></tr>
+                <tr><th>Subscriber</th><th>Queue</th><th className={ui.num}>Lag</th><th>Breaker</th><th className={ui.num}>Consumers</th></tr>
               </thead>
               <tbody>
                 {t.subscribers.map((sub) => (
@@ -34,9 +36,10 @@ export function TopicDetailPage() {
                     <td><Link to={`/queues/${seg(sub.queueId)}`}>{sub.queueId} ↗</Link></td>
                     <td className={ui.num}>{formatCount(sub.lag)}</td>
                     <td><Breaker breaker={sub.circuitBreaker} /></td>
+                    <td className={ui.num}><Consumers queueId={sub.queueId} targets={scaling?.targets} /></td>
                   </tr>
                 ))}
-                {t.subscribers.length === 0 && <tr><td colSpan={4} className={ui.muted}>No subscribers.</td></tr>}
+                {t.subscribers.length === 0 && <tr><td colSpan={5} className={ui.muted}>No subscribers.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -44,6 +47,14 @@ export function TopicDetailPage() {
       )}
     </div>
   )
+}
+
+/** Replicas a KEDA-scaled subscription runs (or its metric asks for); – when KEDA doesn't scale it. */
+function Consumers({ queueId, targets }: { queueId: string; targets?: ScalingTarget[] }) {
+  const target = targets?.find((t) => t.queueId === queueId)
+  const replicas = target ? replicasNow(target) : null
+  if (!target || replicas === null) return <span className={ui.muted}>–</span>
+  return <Link to={`/queues/${seg(queueId)}?tab=scaling`}>{formatCount(replicas)} {replicas === 1 ? 'replica' : 'replicas'}</Link>
 }
 
 function Breaker({ breaker }: { breaker?: CircuitBreaker | null }) {

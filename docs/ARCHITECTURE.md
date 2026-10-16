@@ -364,6 +364,14 @@ behind. Sessions mode: the number of the queue's sessions holding any ready or l
 **Failure.** A failed read is gRPC `Unavailable`, never 0 - reporting 0 would scale consumers to zero during a DaprMQ
 outage. Configure the ScaledObject's `fallback` for what should happen instead.
 
+**Scaling registry.** KEDA tells a scaler a ScaledObject's name, namespace and trigger metadata, never its replica
+counts. The scaler records each ScaledObject it is asked about and reports new or changed ones, plus a heartbeat once a
+minute, to the workers' `POST /internal/scaling/registrations`, which writes them to a `ScalingRegistryActor` (id
+`keda`, one `registrations` key). Every operator pod reports, since each sees only the ScaledObjects KEDA asks it about.
+An entry not reported for an hour (its ScaledObject was deleted) is dropped. The admin console's Scaling page reads the
+registry with `GET /internal/admin/scaling`, from committed state like the catalog, so its sampling never activates the
+actor ([CONSOLE.md](CONSOLE.md#scaling)).
+
 Trigger fields and a full example: [examples/keda/consumer-scaledobject.yaml](../examples/keda/consumer-scaledobject.yaml).
 
 ## Catalog

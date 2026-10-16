@@ -1,13 +1,14 @@
 import { Link, useParams, useSearchParams } from 'react-router-dom'
-import { useQueueDetail } from '../api/hooks'
+import { useQueueDetail, useScaling } from '../api/hooks'
 import { formatCount } from '../util/format'
 import { QueryState, Tabs, ui } from '../components/ui'
 import { OverviewTab } from './queue/OverviewTab'
 import { MessagesTab } from './queue/MessagesTab'
 import { LockedTab } from './queue/LockedTab'
 import { SessionsTab } from './queue/SessionsTab'
+import { ScalingTab } from './queue/ScalingTab'
 
-type Tab = 'overview' | 'messages' | 'locked' | 'deadletter' | 'sessions'
+type Tab = 'overview' | 'messages' | 'locked' | 'deadletter' | 'sessions' | 'scaling'
 
 export function QueueDetailPage() {
   const queueId = useParams().queueId!
@@ -15,6 +16,8 @@ export function QueueDetailPage() {
   const detail = useQueueDetail(queueId)
   const isDeadLetter = queueId.endsWith('-deadletter')
   const d = detail.data
+  const scaling = useScaling(queueId).data
+  const scaledBy = scaling?.targets ?? []
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'overview', label: 'Overview' },
@@ -22,6 +25,7 @@ export function QueueDetailPage() {
     { id: 'locked', label: `Locked${d ? ` ${formatCount(d.locked)}` : ''}` },
     ...(isDeadLetter ? [] : [{ id: 'deadletter' as Tab, label: `Dead-letter${d ? ` ${formatCount(d.deadLetterReady + d.deadLetterLocked)}` : ''}` }]),
     { id: 'sessions', label: `Sessions${d?.sessionCount ? ` ${formatCount(d.sessionCount)}` : ''}` },
+    ...(scaledBy.length > 0 ? [{ id: 'scaling' as Tab, label: 'Scaling' }] : []),
   ]
   const requested = params.get('tab') as Tab | null
   const tab: Tab = tabs.some((t) => t.id === requested) ? requested! : 'overview'
@@ -44,6 +48,7 @@ export function QueueDetailPage() {
           {tab === 'locked' && <LockedTab queueId={queueId} maxDeliveryCount={d.maxDeliveryCount} />}
           {tab === 'deadletter' && <MessagesTab key={`${queueId}-deadletter`} queueId={`${queueId}-deadletter`} maxDeliveryCount={d.maxDeliveryCount} />}
           {tab === 'sessions' && <SessionsTab queueId={queueId} />}
+          {tab === 'scaling' && <ScalingTab targets={scaledBy} kubernetesRead={scaling?.kubernetesRead ?? false} />}
         </>
       )}
     </div>

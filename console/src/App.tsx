@@ -10,6 +10,7 @@ import { QueueDetailPage } from './pages/QueueDetailPage'
 import { TopicsPage } from './pages/TopicsPage'
 import { TopicDetailPage } from './pages/TopicDetailPage'
 import { SinksPage } from './pages/SinksPage'
+import { ScalingPage } from './pages/ScalingPage'
 
 export function AppRoutes() {
   return (
@@ -21,6 +22,7 @@ export function AppRoutes() {
         <Route path="/topics" element={<TopicsPage />} />
         <Route path="/topics/:topicId" element={<TopicDetailPage />} />
         <Route path="/sinks" element={<SinksPage />} />
+        <Route path="/scaling" element={<ScalingPage />} />
       </Route>
     </Routes>
   )

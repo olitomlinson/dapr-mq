@@ -1,0 +1,59 @@
+using Dapr.Actors;
+using Dapr.Actors.Client;
+
+namespace DaprMQ.Interfaces;
+
+/// <summary>Dapr ActorProxy implementation of IScalingRegistryActorInvoker.</summary>
+public class ScalingRegistryActorInvoker : IScalingRegistryActorInvoker
+{
+    private readonly IActorProxyFactory _actorProxyFactory;
+    private readonly string _actorType;
+
+    public ScalingRegistryActorInvoker(IActorProxyFactory actorProxyFactory, string actorType)
+    {
+        _actorProxyFactory = actorProxyFactory;
+        _actorType = actorType;
+    }
+
+    /// <inheritdoc />
+    public async Task<TResponse> InvokeMethodAsync<TResponse>(
+        ActorId actorId,
+        string methodName,
+        CancellationToken cancellationToken = default)
+    {
+        var proxy = _actorProxyFactory.Create(actorId, _actorType);
+        return await ActorCall.RunAsync(ct => proxy.InvokeMethodAsync<TResponse>(methodName, ct), cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<TResponse> InvokeMethodAsync<TRequest, TResponse>(
+        ActorId actorId,
+        string methodName,
+        TRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var proxy = _actorProxyFactory.Create(actorId, _actorType);
+        return await ActorCall.RunAsync(ct => proxy.InvokeMethodAsync<TRequest, TResponse>(methodName, request, ct), cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task InvokeMethodAsync<TRequest>(
+        ActorId actorId,
+        string methodName,
+        TRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var proxy = _actorProxyFactory.Create(actorId, _actorType);
+        await ActorCall.RunAsync(ct => proxy.InvokeMethodAsync(methodName, request, ct), cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task InvokeMethodAsync(
+        ActorId actorId,
+        string methodName,
+        CancellationToken cancellationToken = default)
+    {
+        var proxy = _actorProxyFactory.Create(actorId, _actorType);
+        await ActorCall.RunAsync(ct => proxy.InvokeMethodAsync(methodName, ct), cancellationToken);
+    }
+}
