@@ -101,6 +101,7 @@ EOF
 echo "▶ [4/4] Installing daprMQ (1–2 min)…"; S=$SECONDS
 <strong class="code-cmd">helm install daprmq</strong> oci://ghcr.io/olitomlinson/charts/daprmq \
   --devel --wait -n daprmq \
+  --set operator.enabled=true --set console.enabled=true \
   --set dapr.stateStoreName=statestore &gt;/dev/null \
   &amp;&amp; echo "✅ daprMQ ready ($((SECONDS - S))s)" &amp;&amp; echo "✅ All done. Run the smoke test below." \
   || echo "❌ daprMQ failed to install, see the error above"</pre>
@@ -170,6 +171,7 @@ fi</pre>
             <div class="code-head"><span>Install DaprMQ with helm</span><button class="copy-btn">Copy</button></div>
             <pre><strong class="code-cmd">helm install daprmq</strong> oci://ghcr.io/olitomlinson/charts/daprmq \
   --devel --wait -n <span class="code-var ns-out">daprmq</span> \
+  --set operator.enabled=true --set console.enabled=true \
   --set dapr.stateStoreName=<span id="statestore-name-out" class="code-var">{your-dapr-state-store-name}</span> &gt;/dev/null \
   &amp;&amp; echo "✅ daprMQ is now installed. Run the smoke test below." \
   || echo "❌ daprMQ failed to install, see the error above"</pre>
@@ -196,6 +198,18 @@ echo "$RESPONSE" | grep -q '"hello":"daprMQ"' \
 
 kill %1</pre>
       </div>
+      <div class="code-card glass install-step">
+        <div class="code-head"><span>Open the admin console</span><button class="copy-btn">Copy</button></div>
+        <pre><strong class="code-cmd">kubectl port-forward</strong> -n <span class="ns-out">daprmq</span> svc/daprmq-operator-console :8080 \
+  | while read -r line; do
+      case $line in "Forwarding from 127.0.0.1:"*)
+        port=${line#*127.0.0.1:}
+        echo "🖥️  Console: http://localhost:${port%% *}  (Ctrl-C to stop)" ;;
+      esac
+    done</pre>
+      </div>
+      <p class="console-note">The console is read-only and has no login, so it is only reachable by port-forward. Leave
+        the command running while you use it.</p>
       <p class="section-sub" style="margin-top: var(--spacing-2xl); margin-bottom: 0;"><a
           href="https://github.com/olitomlinson/dapr-mq/blob/main/helm/README.md" target="_blank" rel="noopener"
           style="color: var(--color-lock); text-decoration: underline;">Full install guide, including the state store,
