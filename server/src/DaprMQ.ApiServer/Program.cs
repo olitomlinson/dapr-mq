@@ -105,7 +105,8 @@ var actorConfig = new
     BlobReaperActorTypeName = builder.Configuration.GetValue("BLOB_REAPER_ACTOR_TYPE_NAME", "BlobReaperActor"),
     TopicActorTypeName = builder.Configuration.GetValue("TOPIC_ACTOR_TYPE_NAME", "TopicActor"),
     SessionCoordinatorActorTypeName = builder.Configuration.GetValue("SESSION_COORDINATOR_ACTOR_TYPE_NAME", "SessionCoordinatorActor"),
-    CatalogActorTypeName = builder.Configuration.GetValue("CATALOG_ACTOR_TYPE_NAME", "CatalogActor")
+    CatalogActorTypeName = builder.Configuration.GetValue("CATALOG_ACTOR_TYPE_NAME", "CatalogActor"),
+    ScalingRegistryActorTypeName = builder.Configuration.GetValue("SCALING_REGISTRY_ACTOR_TYPE_NAME", ScalingRegistry.DefaultActorType)
 };
 
 // builder.Services.AddSingleton(actorConfig);
@@ -166,6 +167,13 @@ builder.Services.AddSingleton<DaprMQ.IQueueDepthService>(sp =>
 
 // Catalog and admin reads behind the worker's internal /internal/admin/* endpoints (the admin console).
 // Only meaningful on workers - see AdminReadEndpoints.
+builder.Services.AddSingleton<IScalingRegistryActorInvoker>(sp =>
+    new ScalingRegistryActorInvoker(
+        sp.GetRequiredService<Dapr.Actors.Client.IActorProxyFactory>(),
+        actorConfig.ScalingRegistryActorTypeName));
+builder.Services.AddSingleton<DaprMQ.IScalingRegistryReadService>(sp =>
+    new DaprMQ.ScalingRegistryReadService(
+        sp.GetRequiredService<DaprMQ.IQueueActorStateReader>(), actorConfig.ScalingRegistryActorTypeName, TimeProvider.System));
 builder.Services.AddSingleton<DaprMQ.ICatalogReadService>(sp =>
     new DaprMQ.CatalogReadService(sp.GetRequiredService<DaprMQ.IQueueActorStateReader>(), actorConfig.CatalogActorTypeName));
 builder.Services.AddSingleton<DaprMQ.IAdminReadService>(sp =>
@@ -264,6 +272,7 @@ if (registerActors)
         options.Actors.RegisterActor<DaprMQ.TopicActor>(actorConfig.TopicActorTypeName);
         options.Actors.RegisterActor<DaprMQ.SessionCoordinatorActor>(actorConfig.SessionCoordinatorActorTypeName);
         options.Actors.RegisterActor<DaprMQ.CatalogActor>(actorConfig.CatalogActorTypeName);
+        options.Actors.RegisterActor<DaprMQ.ScalingRegistryActor>(actorConfig.ScalingRegistryActorTypeName);
 
         // Configure actor runtime settings. Overridable for tests that need to force actors cold
         // deterministically (e.g. the reentrancy A -> B -> A hazard below only manifests when the
@@ -389,6 +398,7 @@ if (registerActors)
     app.MapActorsHandlers();
     app.MapQueueDepthEndpoint();
     app.MapAdminReadEndpoints();
+    app.MapScalingRegistryEndpoints();
 }
 
 // Readiness is mapped on every instance (workers included), not just API-serving ones

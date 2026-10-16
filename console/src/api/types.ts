@@ -167,3 +167,55 @@ export interface Payload {
   truncated: boolean
 }
 
+
+/** One sample of a KEDA trigger; replica fields need the console's Kubernetes read access. */
+export interface ScalingSample {
+  t: number
+  /** What the scaler reports; null when the depth read failed. */
+  metric?: number | null
+  /** ceil(metric ÷ target), or 0 at or below activation - before min/max and HPA smoothing. */
+  desiredByMetric?: number | null
+  currentReplicas?: number | null
+  desiredReplicas?: number | null
+  activeJobs?: number | null
+}
+
+export interface ScalingCondition {
+  type: string
+  status: string
+  reason?: string | null
+  message?: string | null
+}
+
+export interface KubernetesScalingStatus {
+  kind?: 'ScaledObject' | 'ScaledJob' | null
+  minReplicas?: number | null
+  maxReplicas?: number | null
+  currentReplicas?: number | null
+  desiredReplicas?: number | null
+  activeJobs?: number | null
+  conditions: ScalingCondition[]
+  error?: string | null
+}
+
+/** A KEDA trigger scaling on a DaprMQ queue, as the operator's scaler last saw it. */
+export interface ScalingTarget {
+  namespace: string
+  name: string
+  queueId: string
+  mode: 'Messages' | 'Sessions'
+  targetValue: number
+  activationValue: number
+  includeDeadLetter: boolean
+  lastSeenAt: number
+  kubernetes?: KubernetesScalingStatus | null
+  samples: ScalingSample[]
+}
+
+/** /api/console/scaling: the console's in-memory KEDA history. */
+export interface Scaling {
+  kubernetesRead: boolean
+  sampleIntervalSeconds: number
+  historySeconds: number
+  targets: ScalingTarget[]
+}

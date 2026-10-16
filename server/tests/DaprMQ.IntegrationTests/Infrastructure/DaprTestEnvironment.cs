@@ -509,6 +509,9 @@ public class DaprTestEnvironment : IAsyncLifetime
             .WithEnvironment("DEPTH_CACHE_TTL_MS", "0")
             .WithEnvironment("CONSOLE_ENABLED", "true")
             .WithEnvironment("CONSOLE_CACHE_TTL_MS", "0")
+            // Report ScaledObjects and sample them quickly, so the scaling page fills within a test
+            .WithEnvironment("SCALER_REGISTRATION_FLUSH_MS", "200")
+            .WithEnvironment("SCALING_SAMPLE_INTERVAL_MS", "500")
             .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(r => r.ForPort(5000).ForPath("/health")))
             .Build();
         await _operatorContainer.StartAsync();

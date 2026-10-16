@@ -3,7 +3,7 @@ import { getJson, seg } from './client'
 import { usePollInterval } from './refresh'
 import type {
   CatalogEntryKind, CatalogPage, Lock, LockPage, Message, MessagePage, Overview, Payload,
-  QueueDetail, QueuePage, SessionPage, TopicDetail,
+  QueueDetail, QueuePage, Scaling, SessionPage, TopicDetail,
 } from './types'
 
 // Browse queries are snapshots: fetched on open and on an explicit Refresh, never polled or
@@ -24,6 +24,17 @@ export function useOverview() {
   return useQuery({
     queryKey: ['overview'],
     queryFn: () => getJson<Overview>('/overview'),
+    refetchInterval,
+    placeholderData: (previous) => previous,
+  })
+}
+
+/** KEDA triggers on DaprMQ queues, with history; one queue's with queueId. */
+export function useScaling(queueId?: string) {
+  const refetchInterval = usePollInterval()
+  return useQuery({
+    queryKey: ['scaling', queueId ?? null],
+    queryFn: () => getJson<Scaling>('/scaling', { queueId }),
     refetchInterval,
     placeholderData: (previous) => previous,
   })

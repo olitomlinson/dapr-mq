@@ -252,6 +252,8 @@ kubectl port-forward svc/daprmq-operator-console 9100:8080   # http://localhost:
 | `console.cacheTtlMs` | List and detail reads are cached this long, shared by every user | `10000` |
 | `console.maxWorkerCalls` | Worker calls the console may have in flight at once, per operator pod | `8` |
 | `console.separateDeployment` | Run the console as its own Deployment (scaler off there), so it can never delay KEDA | `false` |
+| `console.kubernetesRead` | Give the console's pods a service account with cluster-wide read access to ScaledObjects, ScaledJobs, HPAs and Jobs, so the Scaling page shows replicas, min/max and health. `false` creates no ClusterRole | `true` |
+| `console.scaling.sampleIntervalSeconds` / `.historyMinutes` | Scaling page sampling, kept in memory per pod | `15` / `60` |
 | `console.replicaCount` / `.resources` | For the separate Deployment | `1` |
 | `console.ingress.*` | Optional ingress to the console Service. Add authentication in front of it | disabled |
 

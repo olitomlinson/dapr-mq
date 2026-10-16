@@ -1,6 +1,6 @@
 import { http, HttpResponse } from 'msw'
 import type {
-  CatalogPage, Lock, LockPage, Message, MessagePage, Overview, QueueDetail, QueuePage, SessionPage, TopicDetail,
+  CatalogPage, Lock, LockPage, Message, MessagePage, Overview, QueueDetail, QueuePage, Scaling, ScalingTarget, SessionPage, TopicDetail,
 } from '../api/types'
 
 // Fixtures shaped like /api/console/* replies. Tests override per case with server.use(...).
@@ -102,7 +102,59 @@ export const topic: TopicDetail = {
   pendingPublishCount: 3,
 }
 
+export const ordersScaling: ScalingTarget = {
+  namespace: 'apps',
+  name: 'orders-consumer',
+  queueId: 'orders',
+  mode: 'Messages',
+  targetValue: 10,
+  activationValue: 0,
+  includeDeadLetter: false,
+  lastSeenAt: 1_700_000_100,
+  kubernetes: null,
+  samples: [
+    { t: 1_700_000_000, metric: 40, desiredByMetric: 4 },
+    { t: 1_700_000_015, metric: 83, desiredByMetric: 9 },
+  ],
+}
+
+export const searchScaling: ScalingTarget = {
+  ...ordersScaling,
+  name: 'search-indexer',
+  queueId: 'news-sub-search',
+  targetValue: 50,
+  samples: [{ t: 1_700_000_015, metric: 120, desiredByMetric: 3 }],
+}
+
+export const scaling: Scaling = {
+  kubernetesRead: false,
+  sampleIntervalSeconds: 15,
+  historySeconds: 3600,
+  targets: [ordersScaling, searchScaling],
+}
+
+/** The same targets, read with Kubernetes access: replica counts, bounds and conditions. */
+export const scalingWithKubernetes: Scaling = {
+  ...scaling,
+  kubernetesRead: true,
+  targets: [
+    {
+      ...ordersScaling,
+      kubernetes: { kind: 'ScaledObject', minReplicas: 0, maxReplicas: 8, currentReplicas: 6, desiredReplicas: 8, conditions: [{ type: 'Ready', status: 'True' }, { type: 'Fallback', status: 'False' }] },
+      samples: ordersScaling.samples.map((sample, i) => ({ ...sample, currentReplicas: [4, 6][i], desiredReplicas: [4, 8][i] })),
+    },
+    {
+      ...searchScaling,
+      kubernetes: { kind: 'ScaledObject', minReplicas: 1, maxReplicas: 5, currentReplicas: 3, desiredReplicas: 3, conditions: [{ type: 'Ready', status: 'False', reason: 'ScaledObjectCheckFailed', message: 'bad trigger' }] },
+    },
+  ],
+}
+
 export const handlers = [
+  http.get(api('/scaling'), ({ request }) => {
+    const queueId = new URL(request.url).searchParams.get('queueId')
+    return HttpResponse.json({ ...scaling, targets: scaling.targets.filter((t) => !queueId || t.queueId === queueId) })
+  }),
   http.get(api('/catalog'), () => HttpResponse.json(catalog)),
   http.get(api('/queues'), () => HttpResponse.json(queuePage)),
   http.get(api('/queues/orders'), () => HttpResponse.json(ordersDetail)),

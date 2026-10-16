@@ -4,6 +4,8 @@ using System.Text.Json;
 using DaprMQ.Interfaces;
 using DaprMQ.IntegrationTests.Fixtures;
 using DaprMQ.Operator.Console;
+using Externalscaler;
+using Grpc.Net.Client;
 
 namespace DaprMQ.IntegrationTests.Tests;
 
@@ -90,6 +92,42 @@ public class ConsoleApiTests(OperatorTestFixture fixture)
         Assert.Contains("<div id=\"root\">", await root.Content.ReadAsStringAsync());
         Assert.Equal(HttpStatusCode.OK, deepLink.StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, unknownApi.StatusCode);
+    }
+
+    [Fact]
+    public async Task Scaling_ShowsAScaledObjectKedaAskedAbout_WithItsMetricAndDesiredReplicas()
+    {
+        var queueId = $"console-scaling-{Guid.NewGuid():N}";
+        await EnqueueAsync(queueId, 7);
+
+        // KEDA's call reaches the scaler, which reports the ScaledObject to the registry; the console's
+        // sampler then reads the queue's depth itself.
+        AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
+        var scaler = new ExternalScaler.ExternalScalerClient(GrpcChannel.ForAddress(fixture.OperatorGrpcUrl));
+        var scaledObject = new ScaledObjectRef { Name = "orders-consumer", Namespace = "apps" };
+        scaledObject.ScalerMetadata["queueId"] = queueId;
+        scaledObject.ScalerMetadata["targetValue"] = "5";
+        await scaler.IsActiveAsync(scaledObject);
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
+        while (true)
+        {
+            var scaling = await GetOkAsync<ConsoleScaling>($"/api/console/scaling?queueId={queueId}");
+            var target = scaling.Targets.SingleOrDefault();
+            var sample = target?.Samples.LastOrDefault(s => s.Metric != null);
+            if (sample != null)
+            {
+                Assert.False(scaling.KubernetesRead);
+                Assert.Equal(("apps", "orders-consumer", 5.0), (target!.Namespace, target.Name, target.TargetValue));
+                Assert.Equal(7, sample.Metric);
+                Assert.Equal(2, sample.DesiredByMetric);
+                Assert.Null(sample.CurrentReplicas);
+                return;
+            }
+
+            Assert.True(DateTime.UtcNow < deadline, $"{queueId} never got a scaling sample");
+            await Task.Delay(500);
+        }
     }
 
     private async Task<ConsoleQueueRow> WaitForQueueRowAsync(string queueId, TimeSpan timeout)

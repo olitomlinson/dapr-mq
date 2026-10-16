@@ -13,10 +13,11 @@ public class OperatorExternalScalerTests
 {
     private readonly Mock<IWorkerDepthClient> _client = new();
     private readonly Mock<ServerCallContext> _context = new();
+    private readonly Mock<IScaledObjectObserver> _observer = new();
 
     private DaprMQExternalScaler CreateScaler(TimeSpan? pollInterval = null) =>
         new(_client.Object, new ScalerOptions { StreamPollInterval = pollInterval ?? TimeSpan.FromMilliseconds(10) },
-            NullLogger<DaprMQExternalScaler>.Instance);
+            _observer.Object, NullLogger<DaprMQExternalScaler>.Instance);
 
     private static ScaledObjectRef Ref(params (string Key, string Value)[] metadata)
     {
@@ -43,6 +44,37 @@ public class OperatorExternalScalerTests
             _written.Enqueue(message);
             return Task.CompletedTask;
         }
+    }
+
+    [Fact]
+    public async Task EveryCall_ReportsTheScaledObjectToTheObserver()
+    {
+        // KEDA never tells a scaler replica counts, but each call names the ScaledObject; the console
+        // learns which ScaledObjects scale on which queues from these.
+        SetupDepth(new QueueDepthResult { QueueId = "orders", Ready = 1 });
+        var scaler = CreateScaler();
+        var scaledObject = Ref(("queueId", "orders"), ("targetValue", "25"));
+
+        await scaler.IsActive(scaledObject, _context.Object);
+        await scaler.GetMetricSpec(scaledObject, _context.Object);
+        await scaler.GetMetrics(new GetMetricsRequest { ScaledObjectRef = scaledObject }, _context.Object);
+
+        _observer.Verify(o => o.Observe(
+            It.Is<ScaledObjectRef>(r => r.Name == "consumer" && r.Namespace == "default"),
+            It.Is<ScalerMetadata>(m => m.QueueId == "orders" && m.TargetValue == 25)), Times.Exactly(3));
+    }
+
+    [Fact]
+    public async Task StreamIsActive_ReportsTheScaledObjectWhileStreaming()
+    {
+        // A ScaledObject scaled to zero is only polled through the stream; it must stay registered.
+        SetupDepth(new QueueDepthResult { QueueId = "orders" });
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+        _context.Protected().Setup<CancellationToken>("CancellationTokenCore").Returns(cts.Token);
+
+        await CreateScaler().StreamIsActive(Ref(("queueId", "orders")), new FakeServerStreamWriter<IsActiveResponse>(), _context.Object);
+
+        _observer.Verify(o => o.Observe(It.IsAny<ScaledObjectRef>(), It.IsAny<ScalerMetadata>()), Times.AtLeast(2));
     }
 
     [Fact]

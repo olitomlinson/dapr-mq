@@ -22,24 +22,26 @@ public sealed class DaprMQExternalScaler : ExternalScaler.ExternalScalerBase
 {
     private readonly IWorkerDepthClient _depthClient;
     private readonly ScalerOptions _options;
+    private readonly IScaledObjectObserver _observer;
     private readonly ILogger<DaprMQExternalScaler> _logger;
 
-    public DaprMQExternalScaler(IWorkerDepthClient depthClient, ScalerOptions options, ILogger<DaprMQExternalScaler> logger)
+    public DaprMQExternalScaler(IWorkerDepthClient depthClient, ScalerOptions options, IScaledObjectObserver observer, ILogger<DaprMQExternalScaler> logger)
     {
         _depthClient = depthClient ?? throw new ArgumentNullException(nameof(depthClient));
         _options = options ?? throw new ArgumentNullException(nameof(options));
+        _observer = observer ?? throw new ArgumentNullException(nameof(observer));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     public override async Task<IsActiveResponse> IsActive(ScaledObjectRef request, ServerCallContext context)
     {
-        var metadata = ScalerMetadata.Parse(request.ScalerMetadata);
+        var metadata = Parse(request);
         return new IsActiveResponse { Result = await GetMetricValueAsync(metadata, context.CancellationToken) > metadata.ActivationValue };
     }
 
     public override async Task StreamIsActive(ScaledObjectRef request, IServerStreamWriter<IsActiveResponse> responseStream, ServerCallContext context)
     {
-        var metadata = ScalerMetadata.Parse(request.ScalerMetadata);
+        var metadata = Parse(request);
         var cancellationToken = context.CancellationToken;
         bool? lastReported = null;
 
@@ -47,6 +49,8 @@ public sealed class DaprMQExternalScaler : ExternalScaler.ExternalScalerBase
         {
             while (!cancellationToken.IsCancellationRequested)
             {
+                // KEDA only streams for a ScaledObject (e.g. one scaled to zero), so keep it reported.
+                _observer.Observe(request, metadata);
                 try
                 {
                     var active = await GetMetricValueAsync(metadata, cancellationToken) > metadata.ActivationValue;
@@ -73,7 +77,7 @@ public sealed class DaprMQExternalScaler : ExternalScaler.ExternalScalerBase
 
     public override Task<GetMetricSpecResponse> GetMetricSpec(ScaledObjectRef request, ServerCallContext context)
     {
-        var metadata = ScalerMetadata.Parse(request.ScalerMetadata);
+        var metadata = Parse(request);
         return Task.FromResult(new GetMetricSpecResponse
         {
             MetricSpecs =
@@ -90,7 +94,7 @@ public sealed class DaprMQExternalScaler : ExternalScaler.ExternalScalerBase
 
     public override async Task<GetMetricsResponse> GetMetrics(GetMetricsRequest request, ServerCallContext context)
     {
-        var metadata = ScalerMetadata.Parse(request.ScaledObjectRef.ScalerMetadata);
+        var metadata = Parse(request.ScaledObjectRef);
         var value = await GetMetricValueAsync(metadata, context.CancellationToken);
         return new GetMetricsResponse
         {
@@ -105,6 +109,14 @@ public sealed class DaprMQExternalScaler : ExternalScaler.ExternalScalerBase
                 }
             }
         };
+    }
+
+    /// <summary>Parses the trigger, and tells the observer which ScaledObject is asking.</summary>
+    private ScalerMetadata Parse(ScaledObjectRef scaledObject)
+    {
+        var metadata = ScalerMetadata.Parse(scaledObject.ScalerMetadata);
+        _observer.Observe(scaledObject, metadata);
+        return metadata;
     }
 
     private async Task<double> GetMetricValueAsync(ScalerMetadata metadata, CancellationToken cancellationToken)
@@ -124,11 +136,7 @@ public sealed class DaprMQExternalScaler : ExternalScaler.ExternalScalerBase
             throw Unavailable(metadata, result.Error);
         }
 
-        // Locked items always count: they're out of the queue's Count, and lock expiry is only swept by
-        // the next dequeue - scaling consumers to zero over a fully locked queue would strand them.
-        return metadata.Mode == QueueDepthMode.Sessions
-            ? result.NonEmptySessions
-            : result.Ready + result.Locked;
+        return metadata.MetricValue(result);
     }
 
     private static RpcException Unavailable(ScalerMetadata metadata, string detail) =>

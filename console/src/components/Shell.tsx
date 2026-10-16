@@ -11,6 +11,7 @@ const links = [
   { to: '/queues', label: 'Queues' },
   { to: '/topics', label: 'Topics' },
   { to: '/sinks', label: 'Sinks' },
+  { to: '/scaling', label: 'Scaling' },
 ]
 
 export function Shell() {
