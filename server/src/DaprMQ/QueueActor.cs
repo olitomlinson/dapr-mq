@@ -271,6 +271,21 @@ public class QueueActor : Actor, IQueueActor
     private Task DeindexSessionLockAsync(string lockId) => DeindexSessionLocksAsync([lockId]);
 
     /// <summary>
+    /// Reads a session actor's lock index into the state manager's cache (a miss included, dotnet-sdk
+    /// #1913), so a later DeindexSessionLocksAsync in the same turn doesn't go to the store. Settling
+    /// paths call it before staging anything: Dapr saves what a turn staged even when the method turns
+    /// a failure into an error response, so a read failing after the lock row's removal was staged
+    /// would commit it without the LockCount decrement. A no-op on a plain queue, which doesn't prune.
+    /// </summary>
+    private async Task ReadSessionLockIndexAsync()
+    {
+        if (IsSessionActor())
+        {
+            await StateManager.TryGetStateAsync<List<string>>(SessionLockIndexKey);
+        }
+    }
+
+    /// <summary>
     /// Batch form of DeindexSessionLockAsync: one rewrite of the index however many locks settle.
     /// </summary>
     private async Task DeindexSessionLocksAsync(IReadOnlyCollection<string> lockIds)
@@ -2236,6 +2251,8 @@ public class QueueActor : Actor, IQueueActor
                 };
             }
 
+            // Before the DLQ enqueue too: a failure after it would leave the item for a retry to dead-letter twice.
+            await ReadSessionLockIndexAsync();
             string? dlqActorId = await MoveLockToDeadLetterAsync(lockId, lockData, metadata);
             if (dlqActorId == null)
             {
@@ -2356,6 +2373,9 @@ public class QueueActor : Actor, IQueueActor
             }
 
             int deliveryCount = lockData.DeliveryCount + 1;
+
+            // Before the restore, or the DLQ enqueue past the max - see ReadSessionLockIndexAsync.
+            await ReadSessionLockIndexAsync();
 
             if (deliveryCount > _lockConfig.MaxDeliveryCount)
             {

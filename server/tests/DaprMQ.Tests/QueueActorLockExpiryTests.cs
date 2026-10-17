@@ -873,6 +873,33 @@ public class QueueActorLockExpiryTests
         Assert.Empty(((ActorMetadata)state["metadata"]).Queues);
     }
 
+    [Theory]
+    [InlineData("Nack")]
+    [InlineData("DeadLetter")]
+    public async Task Settle_OnSessionActor_IndexReadFails_StagesNothing(string operation)
+    {
+        // Dapr saves whatever a turn staged when the method returns, even with an error response. The
+        // session's lock index used to be read only after the lock row's removal (and Nack's restore)
+        // was staged, so a failed read committed them without the LockCount decrement.
+        var (actor, state, invoker) = await CreateActorWithInvokerAsync(SessionActorId);
+        await EnqueueAsync(actor, "{\"id\":\"A\"}");
+        var lockId = (await LeaseAndLockAsync(actor, "lease-1", Now() + 60, 1)).Items[0].LockId;
+        StateManagerOf(actor).Setup(m => m.TryGetStateAsync<List<string>>(QueueActor.SessionLockIndexKey, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new TimeoutException("state store timeout"));
+        invoker.Invocations.Clear();
+
+        bool succeeded = operation == "Nack"
+            ? (await actor.Nack(new NackRequest { LockId = lockId, LeaseId = "lease-1" })).Success
+            : (await actor.DeadLetter(new DeadLetterRequest { LockId = lockId, LeaseId = "lease-1" })).Status == "SUCCESS";
+
+        Assert.False(succeeded);
+        Assert.True(state.ContainsKey($"{lockId}-lock"));
+        var metadata = (ActorMetadata)state["metadata"];
+        Assert.Equal(1, metadata.LockCount);
+        Assert.Empty(metadata.Queues); // Nack didn't put the item back while keeping its lock
+        Assert.Empty(invoker.Invocations); // DeadLetter didn't reach the DLQ, so a retry won't put it there twice
+    }
+
     public static TheoryData<List<string>> InvalidBatches => new()
     {
         new List<string>(),
