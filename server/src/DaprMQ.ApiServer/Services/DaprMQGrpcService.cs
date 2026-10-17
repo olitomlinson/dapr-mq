@@ -1348,15 +1348,16 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
             // Return what the client never settled to its position now, not when its lock lapses.
             await Task.WhenAll(outstanding.Keys.Select(async lockId =>
             {
+                using var settleCts = new CancellationTokenSource(SettleTimeout);
                 try
                 {
-                    using var settleCts = new CancellationTokenSource(SettleTimeout);
                     await _queueActorInvoker.InvokeMethodAsync<ActorModels.NackRequest, ActorModels.NackResponse>(
                         actorId, ActorMethodNames.Nack, new ActorModels.NackRequest { LockId = lockId }, settleCts.Token);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Failed to nack lock {LockId} on queue {QueueId} after Consume stream ended", lockId, start.QueueId);
+                    _logger.LogWarning(ex, "Failed to nack lock {LockId} on queue {QueueId} after Consume stream ended: {Reason}",
+                        lockId, start.QueueId, DescribeSettleFailure(ex, settleCts, $"Nack of lock {lockId}"));
                 }
             }));
         }
@@ -1384,7 +1385,10 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         }
         catch (Exception ex)
         {
-            return lockIds.Select(id => (id, "SETTLE_FAILED", (string?)ex.Message)).ToList();
+            // Once per batch, with the exception: the settler then reports each lock in it.
+            var reason = DescribeSettleFailure(ex, settleCts, $"AcknowledgeBatch of {lockIds.Count} lock(s)");
+            _logger.LogWarning(ex, "Settle failed on Consume stream for queue {QueueId}: {Reason}", actorId, reason);
+            return lockIds.Select(id => (id, "SETTLE_FAILED", (string?)reason)).ToList();
         }
     }
 
@@ -1418,9 +1422,25 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         }
         catch (Exception ex)
         {
-            return ("SETTLE_FAILED", ex.Message);
+            var lockId = req.PayloadCase switch
+            {
+                ConsumeRequest.PayloadOneofCase.Ack => req.Ack.LockId,
+                ConsumeRequest.PayloadOneofCase.Nack => req.Nack.LockId,
+                _ => req.DeadLetter.LockId
+            };
+            return ("SETTLE_FAILED", DescribeSettleFailure(ex, settleCts, $"{req.PayloadCase} of lock {lockId}"));
         }
     }
+
+    /// <summary>
+    /// Why a settle call to the queue actor failed, for the client's SettleFailed and the log. Our own
+    /// SettleTimeout expiring is named as such - its exception alone reads only "A task was canceled." -
+    /// and anything else carries its exception type.
+    /// </summary>
+    private string DescribeSettleFailure(Exception ex, CancellationTokenSource settleCts, string operation) =>
+        ex is OperationCanceledException && settleCts.IsCancellationRequested
+            ? $"{operation} timed out after {SettleTimeout.TotalSeconds:0.###}s waiting for the queue actor"
+            : $"{operation} failed: {ex.GetType().Name}: {ex.Message}";
 
     // The actor caps AcknowledgeBatch and ExtendLockBatch at 1000 locks a call.
     private const int MaxSettleBatchSize = 1000;

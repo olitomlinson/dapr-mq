@@ -276,6 +276,86 @@ public class DaprMQGrpcServiceConsumeTests
         Assert.DoesNotContain(writer.Written, r => r.PayloadCase == ConsumeResponse.PayloadOneofCase.Error);
     }
 
+    /// <summary>Runs one settle frame for lock-1 through a stream whose SettleTimeout is 100ms.</summary>
+    private async Task<ConsumeSettleFailed> SettleOneAsync(ConsumeRequest settle)
+    {
+        SetupDequeue([Item("lock-1")]);
+        var reader = new FakeAsyncStreamReader<ConsumeRequest>();
+        var writer = new FakeServerStreamWriter<ConsumeResponse>();
+        reader.Add(Start(prefetchCount: 1));
+        var service = CreateService();
+        service.SettleTimeout = TimeSpan.FromMilliseconds(100);
+
+        var task = service.Consume(reader, writer, _mockContext.Object);
+        await WaitUntilAsync(() => Delivered(writer).Count() == 1);
+        reader.Add(settle);
+        await WaitUntilAsync(() => writer.Written.Any(r => r.PayloadCase == ConsumeResponse.PayloadOneofCase.SettleFailed));
+        reader.Complete();
+        await task;
+
+        return writer.Written.First(r => r.PayloadCase == ConsumeResponse.PayloadOneofCase.SettleFailed).SettleFailed;
+    }
+
+    private void SetupAckBatchThatHangs() =>
+        _queue.Setup(i => i.InvokeMethodAsync<ActorModels.AcknowledgeBatchRequest, ActorModels.AcknowledgeBatchResponse>(
+                It.IsAny<ActorId>(), "AcknowledgeBatch", It.IsAny<ActorModels.AcknowledgeBatchRequest>(), It.IsAny<CancellationToken>()))
+            .Returns(async (ActorId _, string _, ActorModels.AcknowledgeBatchRequest _, CancellationToken ct) =>
+            {
+                await Task.Delay(Timeout.Infinite, ct);
+                return new ActorModels.AcknowledgeBatchResponse();
+            });
+
+    private void VerifyWarning(string fragment, Times times) =>
+        _mockLogger.Verify(l => l.Log(LogLevel.Warning, It.IsAny<EventId>(),
+            It.Is<It.IsAnyType>((v, _) => v.ToString()!.Contains(fragment)), It.IsNotNull<Exception>(),
+            It.IsAny<Func<It.IsAnyType, Exception?, string>>()), times);
+
+    [Fact]
+    public async Task Consume_AckBatchTimesOut_SettleFailedSaysSoAndTheBatchIsLoggedOnce()
+    {
+        // "The operation was canceled." alone can't tell the settle timeout from anything else that cancels.
+        SetupAckBatchThatHangs();
+        SetupNack();
+
+        var failed = await SettleOneAsync(new ConsumeRequest { Ack = new ConsumeAck { LockId = "lock-1" } });
+
+        Assert.Equal("SETTLE_FAILED", failed.ErrorCode);
+        Assert.Equal("AcknowledgeBatch of 1 lock(s) timed out after 0.1s waiting for the queue actor", failed.Message);
+        VerifyWarning("failed on Consume stream", Times.Once());
+    }
+
+    [Fact]
+    public async Task Consume_AckBatchThrows_SettleFailedCarriesTheExceptionType()
+    {
+        _queue.Setup(i => i.InvokeMethodAsync<ActorModels.AcknowledgeBatchRequest, ActorModels.AcknowledgeBatchResponse>(
+                It.IsAny<ActorId>(), "AcknowledgeBatch", It.IsAny<ActorModels.AcknowledgeBatchRequest>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("boom"));
+        SetupNack();
+
+        var failed = await SettleOneAsync(new ConsumeRequest { Ack = new ConsumeAck { LockId = "lock-1" } });
+
+        Assert.Equal("SETTLE_FAILED", failed.ErrorCode);
+        Assert.Equal("AcknowledgeBatch of 1 lock(s) failed: InvalidOperationException: boom", failed.Message);
+        VerifyWarning("failed on Consume stream", Times.Once());
+    }
+
+    [Fact]
+    public async Task Consume_NackTimesOut_SettleFailedSaysSo()
+    {
+        _queue.Setup(i => i.InvokeMethodAsync<ActorModels.NackRequest, ActorModels.NackResponse>(
+                It.IsAny<ActorId>(), "Nack", It.IsAny<ActorModels.NackRequest>(), It.IsAny<CancellationToken>()))
+            .Returns(async (ActorId _, string _, ActorModels.NackRequest _, CancellationToken ct) =>
+            {
+                await Task.Delay(Timeout.Infinite, ct);
+                return new ActorModels.NackResponse();
+            });
+
+        var failed = await SettleOneAsync(new ConsumeRequest { Nack = new ConsumeNack { LockId = "lock-1" } });
+
+        Assert.Equal("SETTLE_FAILED", failed.ErrorCode);
+        Assert.Equal("Nack of lock lock-1 timed out after 0.1s waiting for the queue actor", failed.Message);
+    }
+
     [Fact]
     public async Task Consume_RenewsOutstandingLocksButNotSettledOnes()
     {
