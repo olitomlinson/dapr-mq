@@ -1179,6 +1179,25 @@ public class QueueActor : Actor, IQueueActor
                 .GroupBy(item => item.Priority)
                 .OrderBy(g => g.Key);
 
+            // Read everything the batch depends on before staging any of it. Dapr saves what a turn
+            // staged even when the catch below turns a failure into an error response, so a read
+            // failing after earlier items were staged would commit them while the response says none
+            // were enqueued - and a client retrying would enqueue them twice. Once read, each marker
+            // and tail segment is served from the state manager's cache below, a miss included
+            // (dotnet-sdk #1913), so nothing after this point goes to the store.
+            if (metadata.Config.DedupEnabled)
+            {
+                foreach (var key in request.Items.Select(i => i.IdempotencyKey).Where(k => !string.IsNullOrEmpty(k)).Distinct())
+                {
+                    await StateManager.TryGetStateAsync<IdempotencyMarker>($"idem_{key}");
+                }
+            }
+            foreach (var priority in request.Items.Select(i => i.Priority).Distinct())
+            {
+                int tail = metadata.Queues.TryGetValue(priority, out var queueMeta) ? queueMeta.TailSegment : 0;
+                await StateManager.TryGetStateAsync<Queue<QueueSegmentItem>>($"queue_{priority}_seg_{tail}");
+            }
+
             int totalEnqueued = 0;
             int totalDeduplicated = 0;
             var touchedIdempotencyKeys = new List<string>();

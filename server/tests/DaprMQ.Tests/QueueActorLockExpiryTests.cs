@@ -786,6 +786,52 @@ public class QueueActorLockExpiryTests
         stateManager.Verify(m => m.SaveStateAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    [Fact]
+    public async Task Enqueue_IdempotencyReadFailsMidBatch_StagesNothing()
+    {
+        // Dapr saves whatever a turn staged when the method returns, even with an error response. A
+        // later item's marker read failing used to commit the earlier items while the response said
+        // ItemsEnqueued = 0 - so a client retrying the "failed" request enqueued them twice.
+        var (actor, state) = await CreateActorAsync();
+        StateManagerOf(actor).Setup(m => m.TryGetStateAsync<IdempotencyMarker>("idem_k2", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new TimeoutException("state store timeout"));
+
+        var result = await actor.Enqueue(new EnqueueRequest
+        {
+            Items =
+            [
+                new EnqueueItem { ItemJson = "{\"id\":\"A\"}", Priority = 1, IdempotencyKey = "k1" },
+                new EnqueueItem { ItemJson = "{\"id\":\"B\"}", Priority = 1, IdempotencyKey = "k2" }
+            ]
+        });
+
+        Assert.False(result.Success);
+        Assert.False(state.ContainsKey("idem_k1"));
+        Assert.DoesNotContain(state.Keys, k => k.StartsWith("queue_"));
+        Assert.Empty(((ActorMetadata)state["metadata"]).Queues);
+    }
+
+    [Fact]
+    public async Task Enqueue_TailReadFailsForALaterPriority_StagesNothing()
+    {
+        var (actor, state) = await CreateActorAsync();
+        StateManagerOf(actor).Setup(m => m.TryGetStateAsync<Queue<QueueSegmentItem>>("queue_1_seg_0", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new TimeoutException("state store timeout"));
+
+        var result = await actor.Enqueue(new EnqueueRequest
+        {
+            Items =
+            [
+                new EnqueueItem { ItemJson = "{\"id\":\"A\"}", Priority = 0 },
+                new EnqueueItem { ItemJson = "{\"id\":\"B\"}", Priority = 1 }
+            ]
+        });
+
+        Assert.False(result.Success);
+        Assert.DoesNotContain(state.Keys, k => k.StartsWith("queue_"));
+        Assert.Empty(((ActorMetadata)state["metadata"]).Queues);
+    }
+
     public static TheoryData<List<string>> InvalidBatches => new()
     {
         new List<string>(),
