@@ -43,6 +43,7 @@ if (!string.IsNullOrEmpty(workerQueueSuffix))
         workerQueueSuffix,
         EnvInt("WORKER_BATCH_SIZE", 5),
         TimeSpan.FromMilliseconds(EnvInt("WORKER_ITEM_DELAY_MS", 200)),
+        EnvInt("WORKER_MAX_HANDLERS", 1),
         Log));
 }
 

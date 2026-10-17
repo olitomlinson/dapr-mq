@@ -132,7 +132,7 @@ with it.
 **Worker** (`<lang>-worker` Deployment — the consumer image with `WORKER_QUEUE_SUFFIX=autoscale`): runs a
 `QueueConsumer` (the SDK's managed consumer over the `Consume` stream) with **competing consumers enabled**, so every
 replica holds its own locks instead of getting `423 Locked`. It keeps `WORKER_BATCH_SIZE` messages in flight and runs
-one handler at a time, which sleeps `WORKER_ITEM_DELAY_MS` to simulate work; success acks. It logs
+`WORKER_MAX_HANDLERS` handlers at once (1 by default), each of which sleeps `WORKER_ITEM_DELAY_MS` to simulate work; success acks. It logs
 `processed N items from <queueId> (total T)` every `WORKER_BATCH_SIZE` items. On shutdown (KEDA scaling in) the
 running handler finishes and acks, and the messages this replica held but hadn't started go straight back to the
 queue.
