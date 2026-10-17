@@ -1,0 +1,74 @@
+{
+  "schemaVersion" : 2,
+  "runId" : "20261017T145729Z_java_ci-ubuntu-latest_queue-live-publish",
+  "timestampUtc" : "2026-10-17T14:57:29.988825824Z",
+  "sdk" : {
+    "name" : "java",
+    "version" : null,
+    "runtime" : "OpenJDK 64-Bit Server VM 17.0.20.1"
+  },
+  "environment" : {
+    "label" : "ci-ubuntu-latest",
+    "gitSha" : "6d2d4eec203e1b227a7e59f1af9b71eeb15ddd4d",
+    "gitBranch" : "main",
+    "gitDirty" : false,
+    "os" : "Linux 6.17.0-1022-azure",
+    "cpuCount" : 4
+  },
+  "topology" : {
+    "apiReplicas" : 1,
+    "schedulerReplicas" : 3,
+    "loadBalancer" : false,
+    "server" : "testcontainers daprmq-api:test"
+  },
+  "scale" : "pr",
+  "scenario" : {
+    "id" : "P-05",
+    "name" : "queue-drain",
+    "profile" : "queue-live-publish",
+    "key" : "queue:50@10ms/active100+pub200ms~100ms",
+    "params" : {
+      "messages" : 50,
+      "settleMs" : 10,
+      "maxActiveMessages" : 100,
+      "maxConcurrentHandlers" : 0,
+      "strictOrder" : false,
+      "publishIntervalMs" : 200,
+      "publishJitterMs" : 100,
+      "tailEvery" : 0,
+      "tailMs" : 0
+    }
+  },
+  "metrics" : {
+    "seedSeconds" : 12.722646456,
+    "wallClockSeconds" : 12.822515820000001,
+    "messagesPerSecond" : 3.8993907827364254,
+    "idealSeconds" : 9.81,
+    "efficiency" : 0.7650604715728867,
+    "timeToFirstMessageSeconds" : 0.208191263,
+    "peakConcurrentHandlers" : 2,
+    "deliveryLatencyMs" : {
+      "count" : 50,
+      "mean" : 150.42,
+      "p50" : 95.0,
+      "p95" : 383.0,
+      "p99" : 405.0,
+      "max" : 405.0
+    },
+    "messagesHandled" : 50,
+    "duplicates" : 0,
+    "missing" : 0,
+    "orderViolations" : 1
+  },
+  "checks" : {
+    "passed" : true,
+    "failures" : [ ]
+  },
+  "timeline" : {
+    "bucketMs" : 1000,
+    "series" : {
+      "messagesPerSecond" : [ 4, 3, 3, 5, 4, 4, 4, 4, 3, 3, 6, 3, 4 ],
+      "busyHandlers" : [ 0.04, 0.03, 0.03, 0.05, 0.04, 0.04, 0.04, 0.04, 0.03, 0.03, 0.061, 0.03, 0.04 ]
+    }
+  }
+}
