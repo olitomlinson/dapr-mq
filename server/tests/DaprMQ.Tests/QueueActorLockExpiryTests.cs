@@ -786,6 +786,27 @@ public class QueueActorLockExpiryTests
         stateManager.Verify(m => m.SaveStateAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    [Fact]
+    public async Task DequeueLocked_IndexReadFails_StagesNothing()
+    {
+        // Dapr saves whatever a turn staged when the method returns, even with an error response. The
+        // expiry bucket used to be read only after every item had been taken off the queue and given a
+        // lock row, so a failed read committed locks that were neither counted nor indexed - the caller
+        // never saw their ids, the sweep could never find them, and the items were lost.
+        var (actor, state) = await CreateActorAsync();
+        await EnqueueAsync(actor, "{\"id\":\"A\"}", "{\"id\":\"B\"}");
+        StateManagerOf(actor).Setup(m => m.TryGetStateAsync<List<string>>(It.Is<string>(k => k.StartsWith("locks_exp_")), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new TimeoutException("state store timeout"));
+
+        var result = await actor.DequeueLocked(new DequeueLockedRequest { Count = 2, TtlSeconds = 30, AllowCompetingConsumers = true });
+
+        Assert.Empty(result.Items);
+        Assert.DoesNotContain(state.Keys, k => k.EndsWith("-lock"));
+        var metadata = (ActorMetadata)state["metadata"];
+        Assert.Equal(0, metadata.LockCount);
+        Assert.Equal(2, metadata.Queues[1].Count);
+    }
+
     public static TheoryData<List<string>> InvalidBatches => new()
     {
         new List<string>(),

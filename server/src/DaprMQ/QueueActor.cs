@@ -216,25 +216,35 @@ public class QueueActor : Actor, IQueueActor
     /// "locks_session" entry; otherwise ids are grouped into their expiry bucket. Ids are appended in
     /// dequeue order, which is the original FIFO order, so a bulk requeue can replay them faithfully.
     /// </summary>
-    private async Task<ActorMetadata> IndexLocksAsync(ActorMetadata metadata, IEnumerable<string> lockIds, double expiresAt)
+    private async Task<ActorMetadata> IndexLocksAsync(ActorMetadata metadata, IEnumerable<string> lockIds, double expiresAt) =>
+        await IndexLocksAsync(metadata, lockIds, expiresAt, await ReadLockIndexAsync(expiresAt));
+
+    /// <summary>
+    /// The index entry that locks expiring at expiresAt are filed under: the session's list on a session
+    /// actor, the expiry bucket's otherwise. Read on its own so DequeueLocked can read it before staging
+    /// anything - a failed read after the dequeue would otherwise commit locks nobody can find.
+    /// </summary>
+    private async Task<List<string>> ReadLockIndexAsync(double expiresAt)
     {
+        var existing = await StateManager.TryGetStateAsync<List<string>>(LockIndexKeyFor(expiresAt));
+        return existing.HasValue ? new List<string>(existing.Value) : new List<string>();
+    }
+
+    private string LockIndexKeyFor(double expiresAt) =>
+        IsSessionActor() ? SessionLockIndexKey : ExpiryBucketKey(ExpiryBucketFor(expiresAt));
+
+    /// <summary>Stages lockIds into an index entry already read with ReadLockIndexAsync.</summary>
+    private async Task<ActorMetadata> IndexLocksAsync(ActorMetadata metadata, IEnumerable<string> lockIds, double expiresAt, List<string> index)
+    {
+        index.AddRange(lockIds);
+        await StateManager.SetStateAsync(LockIndexKeyFor(expiresAt), index);
+
         if (IsSessionActor())
         {
-            var existing = await StateManager.TryGetStateAsync<List<string>>(SessionLockIndexKey);
-            var ids = existing.HasValue ? new List<string>(existing.Value) : new List<string>();
-            ids.AddRange(lockIds);
-            await StateManager.SetStateAsync(SessionLockIndexKey, ids);
             return metadata;
         }
 
         long bucket = ExpiryBucketFor(expiresAt);
-        string key = ExpiryBucketKey(bucket);
-
-        var bucketState = await StateManager.TryGetStateAsync<List<string>>(key);
-        var bucketIds = bucketState.HasValue ? new List<string>(bucketState.Value) : new List<string>();
-        bucketIds.AddRange(lockIds);
-        await StateManager.SetStateAsync(key, bucketIds);
-
         if (metadata.LockExpiryBuckets.Contains(bucket))
         {
             return metadata;
@@ -1649,7 +1659,14 @@ public class QueueActor : Actor, IQueueActor
                 ? metadata.ActiveSessionLeaseExpiresAt.Value
                 : nowUnix + ttlSeconds;
 
-            for (int i = 0; i < count; i++)
+            // Read the index entry these locks will be filed under before staging anything: Dapr saves
+            // what a turn staged even when the catch below turns a failure into an error response, so a
+            // read failing after the loop would commit items taken off the queue under locks that are
+            // neither counted nor indexed - lost. Skipped when nothing is ready, so an idle poll costs no
+            // extra read.
+            var lockIndex = metadata.Queues.Values.Any(q => q.Count > 0) ? await ReadLockIndexAsync(lockExpiresAt) : null;
+
+            for (int i = 0; lockIndex != null && i < count; i++)
             {
                 // Dequeue item (removes from queue) and store in lock
                 // Skip lock check to allow parallel locks
@@ -1718,7 +1735,7 @@ public class QueueActor : Actor, IQueueActor
             metadata = metadata with { LockCount = metadata.LockCount + lockedItems.Count };
             // Index the whole batch in one write: every lock here shares lockExpiresAt, so they share
             // a bucket. This is what makes these locks findable again without a per-lock reminder.
-            metadata = await IndexLocksAsync(metadata, newLockIds, lockExpiresAt);
+            metadata = await IndexLocksAsync(metadata, newLockIds, lockExpiresAt, lockIndex!);
             await SetMetadataAsync(metadata);
             await StateManager.SaveStateAsync();
 
