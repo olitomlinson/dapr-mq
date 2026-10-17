@@ -95,7 +95,7 @@ public final class DaprMQServer implements AutoCloseable {
         Network network = Network.newNetwork();
 
         try {
-            GenericContainer<?> postgres = container("public.ecr.aws/docker/library/postgres:16.2-alpine", network, "postgres-db")
+            GenericContainer<?> postgres = container("mirror.gcr.io/library/postgres:16.2-alpine", network, "postgres-db")
                     .withEnv("POSTGRES_DB", "actor_state")
                     .withEnv("POSTGRES_USER", "postgres")
                     .withEnv("POSTGRES_PASSWORD", POSTGRES_PASSWORD);
@@ -168,7 +168,7 @@ public final class DaprMQServer implements AutoCloseable {
             GenericContainer<?> front = apis.get(0);
             if (topology.loadBalanced()) {
                 // nginx resolves its upstreams at startup, so it goes last, once every replica's alias exists.
-                front = container("public.ecr.aws/docker/library/nginx:1.27-alpine", network, DaprTopology.LOAD_BALANCER_ALIAS)
+                front = container("mirror.gcr.io/library/nginx:1.27-alpine", network, DaprTopology.LOAD_BALANCER_ALIAS)
                         .withExposedPorts(5000, 5001)
                         .withCopyToContainer(Transferable.of(topology.nginxConfig()), "/etc/nginx/nginx.conf");
                 start(containers, front);
