@@ -105,7 +105,7 @@ func startStack(ctx context.Context, apiImage string) (stop func(), err error) {
 	componentsDir := filepath.Join(filepath.Dir(thisFile), "../../../server/tests/DaprMQ.IntegrationTests/dapr-components")
 
 	if _, err := start("postgres-db", testcontainers.ContainerRequest{
-		Image: "public.ecr.aws/docker/library/postgres:16.2-alpine",
+		Image: "mirror.gcr.io/library/postgres:16.2-alpine",
 		Env:   map[string]string{"POSTGRES_DB": "actor_state", "POSTGRES_USER": "postgres", "POSTGRES_PASSWORD": postgresPassword},
 		WaitingFor: wait.ForExec([]string{"pg_isready", "-U", "postgres", "-d", "actor_state"}).
 			WithStartupTimeout(startupTimeout),

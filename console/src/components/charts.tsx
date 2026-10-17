@@ -1,3 +1,5 @@
+import { useState } from 'react'
+import { scaleSymlog } from 'victory-vendor/d3-scale'
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis, type TooltipProps } from 'recharts'
 import s from './charts.module.css'
 
@@ -19,7 +21,8 @@ const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFra
 /**
  * One measure over time: one y-axis, 2px lines, a crosshair tooltip, and a legend that carries
  * each series' latest value (≤ 4 series, colored in fixed order). One series needs no legend box:
- * the title names it, and its latest value sits beside the title.
+ * the title names it, and its latest value sits beside the title. A toggle puts the y-axis on a
+ * symlog scale (log, but linear through 0, since replicas and backlogs often sit at 0).
  */
 export function TimeSeriesChart({ title, lines, unit, height = 200 }: { title: string; lines: ChartLine[]; unit?: string; height?: number }) {
   const times = [...new Set(lines.flatMap((l) => l.points.map(([t]) => t)))].sort((a, b) => a - b)
@@ -27,6 +30,8 @@ export function TimeSeriesChart({ title, lines, unit, height = 200 }: { title: s
   const data = times.map((t) => Object.fromEntries([['t', t], ...lines.map((l, i) => [l.key, byKey[i].get(t) ?? null])]))
   const latest = (l: ChartLine) => l.points[l.points.length - 1]?.[1] ?? undefined
   const format = (v: number | undefined) => (v === undefined ? '–' : `${number.format(v)}${unit ? ` ${unit}` : ''}`)
+  const [log, setLog] = useState(false)
+  const ticks = log ? logTicks(Math.max(0, ...lines.flatMap((l) => l.points.map(([, v]) => v ?? 0)))) : undefined
 
   return (
     <figure className={s.chart} style={{ margin: 0 }}>
@@ -43,6 +48,7 @@ export function TimeSeriesChart({ title, lines, unit, height = 200 }: { title: s
             ))}
           </span>
         )}
+        <button type="button" className={`${s.range} ${s.scaleToggle}`} aria-pressed={log} onClick={() => setLog(!log)}>Log scale</button>
       </figcaption>
       {data.length === 0 ? (
         <div className={s.empty} style={{ height }}>No samples yet.</div>
@@ -53,7 +59,7 @@ export function TimeSeriesChart({ title, lines, unit, height = 200 }: { title: s
               <CartesianGrid vertical={false} stroke="var(--grid)" strokeWidth={1} />
               <XAxis dataKey="t" type="number" domain={['dataMin', 'dataMax']} tickFormatter={clock} stroke="var(--grid)"
                 tick={{ fill: 'var(--text-muted)', fontSize: 11 }} tickLine={false} minTickGap={40} />
-              <YAxis width={44} tickFormatter={(v) => compact.format(v)} stroke="var(--grid)" axisLine={false} tickLine={false}
+              <YAxis width={44} {...(ticks && { scale: scaleSymlog(), domain: [0, ticks[ticks.length - 1]], ticks })} tickFormatter={(v) => compact.format(v)} stroke="var(--grid)" axisLine={false} tickLine={false}
                 tick={{ fill: 'var(--text-muted)', fontSize: 11 }} allowDecimals={false} />
               <Tooltip content={<ChartTooltip lines={lines} format={format} />} cursor={{ stroke: 'var(--text-muted)', strokeWidth: 1 }} />
               {lines.map((l, i) => (
@@ -87,6 +93,13 @@ function ChartTooltip({ active, payload, label, lines, format }: TooltipProps<nu
       })}
     </div>
   )
+}
+
+/** Log-scale y ticks: 0, then each power of ten up to the first at or above max. */
+export function logTicks(max: number): number[] {
+  const ticks = [0, 1]
+  while (ticks[ticks.length - 1] < max) ticks.push(ticks[ticks.length - 1] * 10)
+  return ticks
 }
 
 /** A 1-series trend for a table cell: no axes or labels; the row's numbers carry the values. */

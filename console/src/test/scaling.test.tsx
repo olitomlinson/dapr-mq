@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { server } from './server'
 import { api, scaling, scalingWithKubernetes } from './handlers'
 import { renderAt } from './render'
+import { logTicks } from '../components/charts'
 
 const withKubernetes = () => server.use(http.get(api('/scaling'), ({ request }) => {
   const queueId = new URL(request.url).searchParams.get('queueId')
@@ -85,6 +86,17 @@ describe('Queue scaling tab', () => {
     expect(screen.getByText(/min 0 · max 8/)).toBeInTheDocument()
   })
 
+  it('puts a chart\'s y axis on a log scale and back', async () => {
+    renderAt('/queues/orders?tab=scaling')
+    const metric = (await screen.findByRole('heading', { name: 'Messages (ready + locked)' })).closest('figure')!
+    const toggle = within(metric).getByRole('button', { name: 'Log scale' })
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    await userEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-pressed', 'true')
+    await userEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+  })
+
   it('is absent on a queue KEDA does not scale', async () => {
     server.use(http.get(api('/scaling'), () => HttpResponse.json({ ...scaling, targets: [] })))
     renderAt('/queues/orders')
@@ -100,5 +112,14 @@ describe('Topic subscriber consumers', () => {
     expect(await within(search).findByRole('link', { name: '3 replicas' })).toHaveAttribute('href', '/queues/news-sub-search?tab=scaling')
     const audit = screen.getByText('audit').closest('tr')!
     expect(within(audit).getByText('–')).toBeInTheDocument()
+  })
+})
+
+describe('logTicks', () => {
+  it('ticks 0 then each power of ten up to the first at or above the max', () => {
+    expect(logTicks(0)).toEqual([0, 1])
+    expect(logTicks(1)).toEqual([0, 1])
+    expect(logTicks(83)).toEqual([0, 1, 10, 100])
+    expect(logTicks(1000)).toEqual([0, 1, 10, 100, 1000])
   })
 })
