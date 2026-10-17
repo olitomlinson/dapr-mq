@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 2,
+  "runId": "20261017T191723Z_typescript_ci-ubuntu-latest_queue-drain-slow",
+  "timestampUtc": "2026-10-17T19:17:23.063Z",
+  "sdk": {
+    "name": "typescript",
+    "version": "0.0.0-alpha.0",
+    "runtime": "Node 22.23.3"
+  },
+  "environment": {
+    "label": "ci-ubuntu-latest",
+    "gitSha": "4b928921a5d65cb3a252aace5f4776a1846871a4",
+    "gitBranch": "main",
+    "gitDirty": false,
+    "os": "Linux 6.17.0-1022-azure",
+    "cpuCount": 4
+  },
+  "topology": {
+    "apiReplicas": 1,
+    "schedulerReplicas": 3,
+    "loadBalancer": false,
+    "server": "testcontainers daprmq-api:test"
+  },
+  "scale": "pr",
+  "scenario": {
+    "id": "P-05",
+    "name": "queue-drain",
+    "profile": "queue-drain-slow",
+    "key": "queue:3000@100ms/active100",
+    "params": {
+      "messages": 3000,
+      "settleMs": 100,
+      "maxActiveMessages": 100,
+      "maxConcurrentHandlers": 0,
+      "strictOrder": false,
+      "publishIntervalMs": 0,
+      "publishJitterMs": 0,
+      "tailEvery": 0,
+      "tailMs": 0
+    }
+  },
+  "metrics": {
+    "seedSeconds": 0.11233196400001179,
+    "wallClockSeconds": 4.8283533259999825,
+    "messagesPerSecond": 621.3298401020976,
+    "idealSeconds": 3,
+    "efficiency": 0.6213298401020976,
+    "timeToFirstMessageSeconds": 0.02273804999998538,
+    "peakConcurrentHandlers": 100,
+    "deliveryLatencyMs": {
+      "count": 3000,
+      "mean": 2445.5363333333335,
+      "p50": 2467,
+      "p95": 4598,
+      "p99": 4776,
+      "max": 4776
+    },
+    "messagesHandled": 3000,
+    "duplicates": 0,
+    "missing": 0,
+    "orderViolations": 5
+  },
+  "checks": {
+    "passed": true,
+    "failures": []
+  },
+  "timeline": {
+    "bucketMs": 1000,
+    "series": {
+      "messagesPerSecond": [
+        600,
+        554,
+        681,
+        600,
+        565
+      ],
+      "busyHandlers": [
+        60.908,
+        63.025,
+        68.919,
+        58.722,
+        50.403
+      ]
+    }
+  }
+}

@@ -1,0 +1,359 @@
+{
+  "schemaVersion": 1,
+  "runId": "20261017T191810Z_ci-ubuntu-latest_state-reads",
+  "timestampUtc": "2026-10-17T19:18:10.0214874+00:00",
+  "environment": {
+    "label": "ci-ubuntu-latest",
+    "gitSha": "4b928921a5d65cb3a252aace5f4776a1846871a4",
+    "gitBranch": "main",
+    "gitDirty": false,
+    "os": "Ubuntu 24.04.5 LTS",
+    "cpuCount": 4,
+    "dotnet": ".NET 10.0.13",
+    "server": "testcontainers daprmq-api:test"
+  },
+  "steps": [
+    {
+      "name": "enqueue-new-queue",
+      "operations": 20,
+      "reads": 61,
+      "writes": 61,
+      "byKey": [
+        {
+          "actorType": "QueueActor",
+          "stateName": "metadata",
+          "reads": 40,
+          "writes": 40
+        },
+        {
+          "actorType": "QueueActor",
+          "stateName": "queue_*_seg_*",
+          "reads": 20,
+          "writes": 20
+        },
+        {
+          "actorType": "CatalogActor",
+          "stateName": "entries",
+          "reads": 1,
+          "writes": 1
+        }
+      ],
+      "readsPerOp": 3.05,
+      "writesPerOp": 3.05
+    },
+    {
+      "name": "enqueue",
+      "operations": 50,
+      "reads": 112,
+      "writes": 112,
+      "byKey": [
+        {
+          "actorType": "QueueActor",
+          "stateName": "metadata",
+          "reads": 50,
+          "writes": 50
+        },
+        {
+          "actorType": "QueueActor",
+          "stateName": "queue_*_seg_*",
+          "reads": 50,
+          "writes": 50
+        },
+        {
+          "actorType": "CatalogActor",
+          "stateName": "entries",
+          "reads": 12,
+          "writes": 12
+        }
+      ],
+      "readsPerOp": 2.24,
+      "writesPerOp": 2.24
+    },
+    {
+      "name": "enqueue-batch-10",
+      "operations": 10,
+      "reads": 21,
+      "writes": 22,
+      "byKey": [
+        {
+          "actorType": "QueueActor",
+          "stateName": "queue_*_seg_*",
+          "reads": 10,
+          "writes": 11
+        },
+        {
+          "actorType": "QueueActor",
+          "stateName": "metadata",
+          "reads": 10,
+          "writes": 10
+        },
+        {
+          "actorType": "CatalogActor",
+          "stateName": "entries",
+          "reads": 1,
+          "writes": 1
+        }
+      ],
+      "readsPerOp": 2.1,
+      "writesPerOp": 2.2
+    },
+    {
+      "name": "dequeue-ack",
+      "operations": 50,
+      "reads": 251,
+      "writes": 302,
+      "byKey": [
+        {
+          "actorType": "QueueActor",
+          "stateName": "metadata",
+          "reads": 100,
+          "writes": 100
+        },
+        {
+          "actorType": "QueueActor",
+          "stateName": "*-lock",
+          "reads": 50,
+          "writes": 100
+        },
+        {
+          "actorType": "QueueActor",
+          "stateName": "locks_exp_*",
+          "reads": 50,
+          "writes": 50
+        },
+        {
+          "actorType": "QueueActor",
+          "stateName": "queue_*_seg_*",
+          "reads": 50,
+          "writes": 50
+        },
+        {
+          "actorType": "CatalogActor",
+          "stateName": "entries",
+          "reads": 1,
+          "writes": 2
+        }
+      ],
+      "readsPerOp": 5.02,
+      "writesPerOp": 6.04
+    },
+    {
+      "name": "dequeue-ack-batch-10",
+      "operations": 50,
+      "reads": 115,
+      "writes": 165,
+      "byKey": [
+        {
+          "actorType": "QueueActor",
+          "stateName": "*-lock",
+          "reads": 50,
+          "writes": 100
+        },
+        {
+          "actorType": "QueueActor",
+          "stateName": "metadata",
+          "reads": 55,
+          "writes": 55
+        },
+        {
+          "actorType": "QueueActor",
+          "stateName": "locks_exp_*",
+          "reads": 5,
+          "writes": 5
+        },
+        {
+          "actorType": "QueueActor",
+          "stateName": "queue_*_seg_*",
+          "reads": 5,
+          "writes": 5
+        }
+      ],
+      "readsPerOp": 2.3,
+      "writesPerOp": 3.3
+    },
+    {
+      "name": "session-cycle",
+      "operations": 10,
+      "reads": 250,
+      "writes": 280,
+      "byKey": [
+        {
+          "actorType": "QueueActor",
+          "stateName": "metadata",
+          "reads": 80,
+          "writes": 80
+        },
+        {
+          "actorType": "QueueActor",
+          "stateName": "locks_session",
+          "reads": 60,
+          "writes": 60
+        },
+        {
+          "actorType": "QueueActor",
+          "stateName": "*-lock",
+          "reads": 30,
+          "writes": 60
+        },
+        {
+          "actorType": "QueueActor",
+          "stateName": "queue_*_seg_*",
+          "reads": 30,
+          "writes": 30
+        },
+        {
+          "actorType": "SessionCoordinatorActor",
+          "stateName": "metadata",
+          "reads": 20,
+          "writes": 20
+        },
+        {
+          "actorType": "SessionCoordinatorActor",
+          "stateName": "session-lock_*",
+          "reads": 20,
+          "writes": 20
+        },
+        {
+          "actorType": "SessionCoordinatorActor",
+          "stateName": "dir_summary",
+          "reads": 10,
+          "writes": 10
+        }
+      ],
+      "readsPerOp": 25,
+      "writesPerOp": 28
+    },
+    {
+      "name": "consume-session",
+      "operations": 10,
+      "reads": 200,
+      "writes": 220,
+      "byKey": [
+        {
+          "actorType": "QueueActor",
+          "stateName": "metadata",
+          "reads": 70,
+          "writes": 60
+        },
+        {
+          "actorType": "QueueActor",
+          "stateName": "*-lock",
+          "reads": 30,
+          "writes": 60
+        },
+        {
+          "actorType": "QueueActor",
+          "stateName": "locks_session",
+          "reads": 40,
+          "writes": 40
+        },
+        {
+          "actorType": "SessionCoordinatorActor",
+          "stateName": "metadata",
+          "reads": 20,
+          "writes": 20
+        },
+        {
+          "actorType": "SessionCoordinatorActor",
+          "stateName": "session-lock_*",
+          "reads": 20,
+          "writes": 20
+        },
+        {
+          "actorType": "QueueActor",
+          "stateName": "queue_*_seg_*",
+          "reads": 10,
+          "writes": 10
+        },
+        {
+          "actorType": "SessionCoordinatorActor",
+          "stateName": "dir_summary",
+          "reads": 10,
+          "writes": 10
+        }
+      ],
+      "readsPerOp": 20,
+      "writesPerOp": 22
+    },
+    {
+      "name": "lock-expiry-sweep",
+      "operations": 20,
+      "reads": 24,
+      "writes": 27,
+      "byKey": [
+        {
+          "actorType": "QueueActor",
+          "stateName": "*-lock",
+          "reads": 20,
+          "writes": 21
+        },
+        {
+          "actorType": "QueueActor",
+          "stateName": "locks_exp_*",
+          "reads": 2,
+          "writes": 2
+        },
+        {
+          "actorType": "QueueActor",
+          "stateName": "metadata",
+          "reads": 1,
+          "writes": 2
+        },
+        {
+          "actorType": "QueueActor",
+          "stateName": "queue_*_seg_*",
+          "reads": 1,
+          "writes": 2
+        }
+      ],
+      "readsPerOp": 1.2,
+      "writesPerOp": 1.35
+    },
+    {
+      "name": "topic-relay",
+      "operations": 10,
+      "reads": 60,
+      "writes": 92,
+      "byKey": [
+        {
+          "actorType": "QueueActor",
+          "stateName": "metadata",
+          "reads": 20,
+          "writes": 20
+        },
+        {
+          "actorType": "QueueActor",
+          "stateName": "queue_*_seg_*",
+          "reads": 20,
+          "writes": 20
+        },
+        {
+          "actorType": "TopicActor",
+          "stateName": "metadata",
+          "reads": 10,
+          "writes": 22
+        },
+        {
+          "actorType": "TopicActor",
+          "stateName": "item_*",
+          "reads": 10,
+          "writes": 10
+        },
+        {
+          "actorType": "TopicActor",
+          "stateName": "publish_*",
+          "reads": 0,
+          "writes": 10
+        },
+        {
+          "actorType": "TopicActor",
+          "stateName": "publish-seq_*",
+          "reads": 0,
+          "writes": 10
+        }
+      ],
+      "readsPerOp": 6,
+      "writesPerOp": 9.2
+    }
+  ]
+}
