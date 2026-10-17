@@ -117,7 +117,7 @@ public class DaprTestEnvironment : IAsyncLifetime
         // enableQueryInstrumentation, not on by default for the shared fixture or high-throughput
         // tests that don't need it.
         var postgresBuilder = new PostgreSqlBuilder()
-            .WithImage("public.ecr.aws/docker/library/postgres:16.2-alpine")
+            .WithImage("mirror.gcr.io/library/postgres:16.2-alpine")
             .WithDatabase("actor_state")
             .WithUsername("postgres")
             .WithPassword("test_password")
@@ -224,7 +224,7 @@ public class DaprTestEnvironment : IAsyncLifetime
         if (topology.LoadBalanced)
         {
             _loadBalancerContainer = new ContainerBuilder()
-                .WithImage("public.ecr.aws/docker/library/nginx:1.27-alpine")
+                .WithImage("mirror.gcr.io/library/nginx:1.27-alpine")
                 .WithNetwork(_network)
                 .WithNetworkAliases(DaprTopology.LoadBalancerAlias)
                 .WithResourceMapping(System.Text.Encoding.UTF8.GetBytes(topology.NginxConfig()), "/etc/nginx/nginx.conf")

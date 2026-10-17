@@ -188,7 +188,7 @@ def start_stack(topology: DaprTopology = DaprTopology(), image: str = API_IMAGE)
     with Network() as network:
         try:
             postgres = start(
-                DockerContainer("public.ecr.aws/docker/library/postgres:16.2-alpine")
+                DockerContainer("mirror.gcr.io/library/postgres:16.2-alpine")
                 .with_env("POSTGRES_DB", "actor_state")
                 .with_env("POSTGRES_USER", "postgres")
                 .with_env("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
@@ -270,7 +270,7 @@ def start_stack(topology: DaprTopology = DaprTopology(), image: str = API_IMAGE)
                     f.write(topology.nginx_config())
                 os.chmod(nginx_conf, 0o644)
                 front = start(
-                    DockerContainer("public.ecr.aws/docker/library/nginx:1.27-alpine")
+                    DockerContainer("mirror.gcr.io/library/nginx:1.27-alpine")
                     .with_exposed_ports(5000, 5001)
                     .with_network(network)
                     .with_network_aliases(LOAD_BALANCER_ALIAS)
