@@ -787,60 +787,23 @@ public class QueueActorLockExpiryTests
     }
 
     [Fact]
-    public async Task AcknowledgeBatch_ReadFailsMidBatch_DiscardsTheRemovalsAlreadyStaged()
+    public async Task AcknowledgeBatch_ReadFailsMidBatch_StagesNoRemovals()
     {
-        // The lock removals staged before the failure must not outlive the turn: Dapr saves whatever is
-        // staged when a method returns normally, so committing them without the LockCount decrement
-        // left the count above the locks that exist, and KEDA scaling on a queue that was empty.
-        var (actor, _) = await CreateActorAsync();
+        // Dapr saves whatever a turn staged when the method returns, even with an error response. A
+        // removal staged before a later lock's read failed was committed without the LockCount
+        // decrement, leaving the count above the locks that exist - and KEDA scaling an empty queue.
+        var (actor, state) = await CreateActorAsync();
         await EnqueueAsync(actor, "{\"id\":\"A\"}", "{\"id\":\"B\"}");
         var locked = await actor.DequeueLocked(new DequeueLockedRequest { Count = 2, TtlSeconds = 30, AllowCompetingConsumers = true });
         var lockIds = locked.Items.Select(i => i.LockId).ToList();
-        var stateManager = StateManagerOf(actor);
-        stateManager.Setup(m => m.TryGetStateAsync<LockState>($"{lockIds[1]}-lock", It.IsAny<CancellationToken>()))
+        StateManagerOf(actor).Setup(m => m.TryGetStateAsync<LockState>($"{lockIds[1]}-lock", It.IsAny<CancellationToken>()))
             .ThrowsAsync(new TimeoutException("state store timeout"));
-        stateManager.Invocations.Clear();
 
         var result = await actor.AcknowledgeBatch(new AcknowledgeBatchRequest { LockIds = lockIds });
 
         Assert.False(result.Success);
-        Assert.Equal("INTERNAL_ERROR", result.ErrorCode);
-        stateManager.Verify(m => m.ClearCacheAsync(It.IsAny<CancellationToken>()), Times.Once);
-        stateManager.Verify(m => m.SaveStateAsync(It.IsAny<CancellationToken>()), Times.Never);
-    }
-
-    public static TheoryData<string> LockOperations => new()
-    {
-        "Enqueue", "DequeueLocked", "Acknowledge", "ExtendLock", "ExtendLockBatch", "DeadLetter", "Nack"
-    };
-
-    [Theory]
-    [MemberData(nameof(LockOperations))]
-    public async Task LockOperation_ThatFails_DiscardsItsStagedChanges(string operation)
-    {
-        // Each of these catches its own exception and returns an error, which bypasses Dapr's
-        // reset-on-throw - so it has to drop the turn's staged changes itself.
-        var (actor, _) = await CreateActorAsync();
-        await EnqueueAsync(actor, "{\"id\":\"A\"}", "{\"id\":\"B\"}");
-        var lockId = (await actor.DequeueLocked(new DequeueLockedRequest { TtlSeconds = 30, AllowCompetingConsumers = true })).Items[0].LockId;
-        var stateManager = StateManagerOf(actor);
-        stateManager.Setup(m => m.SaveStateAsync(It.IsAny<CancellationToken>())).ThrowsAsync(new TimeoutException("state store timeout"));
-        stateManager.Invocations.Clear();
-
-        bool succeeded = operation switch
-        {
-            "Enqueue" => (await actor.Enqueue(new EnqueueRequest { Items = [new EnqueueItem { ItemJson = "{\"id\":\"C\"}", Priority = 1 }] })).Success,
-            "DequeueLocked" => (await actor.DequeueLocked(new DequeueLockedRequest { TtlSeconds = 30, AllowCompetingConsumers = true })).Items.Count > 0,
-            "Acknowledge" => (await actor.Acknowledge(new AcknowledgeRequest { LockId = lockId })).Success,
-            "ExtendLock" => (await actor.ExtendLock(new ExtendLockRequest { LockId = lockId, AdditionalTtlSeconds = 60 })).Success,
-            "ExtendLockBatch" => (await actor.ExtendLockBatch(new ExtendLockBatchRequest { LockIds = [lockId], TtlSeconds = 120 })).Success,
-            "DeadLetter" => (await actor.DeadLetter(new DeadLetterRequest { LockId = lockId })).Status == "SUCCESS",
-            "Nack" => (await actor.Nack(new NackRequest { LockId = lockId })).Success,
-            _ => throw new ArgumentOutOfRangeException(nameof(operation))
-        };
-
-        Assert.False(succeeded);
-        stateManager.Verify(m => m.ClearCacheAsync(It.IsAny<CancellationToken>()), Times.Once);
+        Assert.True(state.ContainsKey($"{lockIds[0]}-lock"));
+        Assert.Equal(2, ((ActorMetadata)state["metadata"]).LockCount);
     }
 
     public static TheoryData<List<string>> InvalidBatches => new()

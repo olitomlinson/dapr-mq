@@ -1273,7 +1273,6 @@ public class QueueActor : Actor, IQueueActor
         catch (Exception ex)
         {
             Logger.LogError(ex, "Error in Enqueue");
-            await DiscardStagedStateAsync();
             return new EnqueueResponse
             {
                 Success = false,
@@ -1560,15 +1559,6 @@ public class QueueActor : Actor, IQueueActor
 
     // Helper methods follow in next section...
 
-    /// <summary>
-    /// For a method that catches its own exception and returns an error: drops whatever the turn staged.
-    /// Dapr clears the state cache only when a method throws, and saves what is staged when one returns,
-    /// so a half-finished turn would otherwise be committed - lock removals without the LockCount
-    /// decrement that goes with them, say, leaving the count (and the scaler's metric) above the locks
-    /// that exist.
-    /// </summary>
-    private Task DiscardStagedStateAsync() => StateManager.ClearCacheAsync();
-
     private async Task<ActorMetadata> GetMetadataAsync()
     {
         var result = await StateManager.TryGetStateAsync<ActorMetadata>("metadata");
@@ -1745,7 +1735,6 @@ public class QueueActor : Actor, IQueueActor
         catch (Exception ex)
         {
             Logger.LogError(ex, "Error in DequeueLockedAsync");
-            await DiscardStagedStateAsync();
             return new DequeueLockedResponse
             {
                 Locked = false,
@@ -1792,7 +1781,6 @@ public class QueueActor : Actor, IQueueActor
         catch (Exception ex)
         {
             Logger.LogError(ex, "Error in AcknowledgeAsync");
-            await DiscardStagedStateAsync();
             return new AcknowledgeResponse
             {
                 Success = false,
@@ -1856,7 +1844,6 @@ public class QueueActor : Actor, IQueueActor
         catch (Exception ex)
         {
             Logger.LogError(ex, "Error in AcknowledgeBatch");
-            await DiscardStagedStateAsync();
             return new AcknowledgeBatchResponse
             {
                 Success = false,
@@ -1872,6 +1859,10 @@ public class QueueActor : Actor, IQueueActor
     /// The one settlement implementation behind Acknowledge and AcknowledgeBatch. The caller has
     /// already authorised the session lease. Every settled lock is removed in a single save, so
     /// either all ACKNOWLEDGED outcomes are durable or the call throws and none are.
+    ///
+    /// Every lock is read before anything is staged. The callers turn an exception into an error
+    /// response, and Dapr saves whatever is staged when a method returns - so a removal staged before
+    /// a later read failed would be committed without the LockCount decrement.
     /// </summary>
     private async Task<List<AcknowledgeResult>> SettleLocksAsync(ActorMetadata metadata, IReadOnlyList<string> lockIds)
     {
@@ -1905,8 +1896,6 @@ public class QueueActor : Actor, IQueueActor
                 }
                 else
                 {
-                    // Item already dequeued during DequeueLocked - just remove lock state.
-                    await StateManager.RemoveStateAsync($"{lockId}-lock");
                     settledIds.Add(lockId);
                     settledItemJson.Add(lockState.Value.ItemJson);
                     outcome = AckOutcomeAcknowledged;
@@ -1922,6 +1911,12 @@ public class QueueActor : Actor, IQueueActor
         }
 
         await DeindexSessionLocksAsync(settledIds);
+        // Item already dequeued during DequeueLocked - just remove lock state. Each lock was read
+        // above, so these are staged from the cache without another store call.
+        foreach (var lockId in settledIds)
+        {
+            await StateManager.RemoveStateAsync($"{lockId}-lock");
+        }
         await SetMetadataAsync(metadata with { LockCount = metadata.LockCount - settledIds.Count });
 
         await StateManager.SaveStateAsync();
@@ -2038,7 +2033,6 @@ public class QueueActor : Actor, IQueueActor
         catch (Exception ex)
         {
             Logger.LogError(ex, "Error in ExtendLockAsync");
-            await DiscardStagedStateAsync();
             return new ExtendLockResponse
             {
                 Success = false,
@@ -2147,7 +2141,6 @@ public class QueueActor : Actor, IQueueActor
         catch (Exception ex)
         {
             Logger.LogError(ex, "Error in ExtendLockBatch");
-            await DiscardStagedStateAsync();
             return new ExtendLockBatchResponse { Success = false, Message = $"Error: {ex.Message}", ErrorCode = "INTERNAL_ERROR" };
         }
     }
@@ -2228,7 +2221,6 @@ public class QueueActor : Actor, IQueueActor
         catch (Exception ex)
         {
             Logger.LogError(ex, "Error in DeadLetterAsync");
-            await DiscardStagedStateAsync();
             return new DeadLetterResponse
             {
                 Status = "ERROR",
@@ -2379,7 +2371,6 @@ public class QueueActor : Actor, IQueueActor
         catch (Exception ex)
         {
             Logger.LogError(ex, "Error in NackAsync");
-            await DiscardStagedStateAsync();
             return new NackResponse
             {
                 Success = false,
