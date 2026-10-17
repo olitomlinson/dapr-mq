@@ -34,7 +34,7 @@ Each SDK's own Testcontainers fixture builds the perf stack. It's the integratio
   (`--app-channel-address api-server-<i>`, same `--app-id daprmq-api`). The API server's
   `DAPR_HTTP_ENDPOINT`/`DAPR_GRPC_ENDPOINT` point at its own sidecar. Dapr spreads queue actors across
   the replicas.
-- **Load balancer** (whenever replicas > 1). `public.ecr.aws/docker/library/nginx:1.27-alpine`, alias `api-lb`. Port 5000 proxies
+- **Load balancer** (whenever replicas > 1). `mirror.gcr.io/library/nginx:1.27-alpine`, alias `api-lb`. Port 5000 proxies
   REST and port 5001 (`listen 5001 http2`) uses `grpc_pass` to every replica. Read/send timeouts are
   1 h so `ConsumeSession` streams survive. The SDK connects to the LB, and waits for the stack by polling a
   probe enqueue through it.

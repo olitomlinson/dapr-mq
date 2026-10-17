@@ -14,8 +14,9 @@ runs:
       shell: bash
       run: docker load -i daprmq-api.tar
 
-    # ECR Public and GHCR throttle bursts of anonymous pulls ("toomanyrequests: Rate exceeded"),
-    # which parallel fixtures starting together trigger. Keep in step with the fixtures' images
+    # GHCR and mirror.gcr.io throttle bursts of anonymous pulls ("toomanyrequests: Rate exceeded"),
+    # which parallel fixtures starting together trigger. Postgres and nginx come from mirror.gcr.io,
+    # not ECR Public, whose anonymous data limit retries can't wait out. Keep in step with the fixtures' images
     # (sdks/testing/INTEGRATION_TESTS.md).
     - name: Pull stack images
       shell: bash
@@ -23,8 +24,8 @@ runs:
         images=(
           ghcr.io/dapr/dapr:1.18.4
           ghcr.io/dapr/daprd:1.18.4
-          public.ecr.aws/docker/library/postgres:16.2-alpine
-          public.ecr.aws/docker/library/nginx:1.27-alpine
+          mirror.gcr.io/library/postgres:16.2-alpine
+          mirror.gcr.io/library/nginx:1.27-alpine
           mirror.gcr.io/wiremock/wiremock:3.3.1
         )
         for image in "${images[@]}"; do
