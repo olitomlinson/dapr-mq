@@ -1876,6 +1876,10 @@ public class QueueActor : Actor, IQueueActor
     /// The one settlement implementation behind Acknowledge and AcknowledgeBatch. The caller has
     /// already authorised the session lease. Every settled lock is removed in a single save, so
     /// either all ACKNOWLEDGED outcomes are durable or the call throws and none are.
+    ///
+    /// Every lock is read before anything is staged. The callers turn an exception into an error
+    /// response, and Dapr saves whatever is staged when a method returns - so a removal staged before
+    /// a later read failed would be committed without the LockCount decrement.
     /// </summary>
     private async Task<List<AcknowledgeResult>> SettleLocksAsync(ActorMetadata metadata, IReadOnlyList<string> lockIds)
     {
@@ -1909,8 +1913,6 @@ public class QueueActor : Actor, IQueueActor
                 }
                 else
                 {
-                    // Item already dequeued during DequeueLocked - just remove lock state.
-                    await StateManager.RemoveStateAsync($"{lockId}-lock");
                     settledIds.Add(lockId);
                     settledItemJson.Add(lockState.Value.ItemJson);
                     outcome = AckOutcomeAcknowledged;
@@ -1926,6 +1928,12 @@ public class QueueActor : Actor, IQueueActor
         }
 
         await DeindexSessionLocksAsync(settledIds);
+        // Item already dequeued during DequeueLocked - just remove lock state. Each lock was read
+        // above, so these are staged from the cache without another store call.
+        foreach (var lockId in settledIds)
+        {
+            await StateManager.RemoveStateAsync($"{lockId}-lock");
+        }
         await SetMetadataAsync(metadata with { LockCount = metadata.LockCount - settledIds.Count });
 
         await StateManager.SaveStateAsync();

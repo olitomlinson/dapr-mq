@@ -787,6 +787,26 @@ public class QueueActorLockExpiryTests
     }
 
     [Fact]
+    public async Task AcknowledgeBatch_ReadFailsMidBatch_StagesNoRemovals()
+    {
+        // Dapr saves whatever a turn staged when the method returns, even with an error response. A
+        // removal staged before a later lock's read failed was committed without the LockCount
+        // decrement, leaving the count above the locks that exist - and KEDA scaling an empty queue.
+        var (actor, state) = await CreateActorAsync();
+        await EnqueueAsync(actor, "{\"id\":\"A\"}", "{\"id\":\"B\"}");
+        var locked = await actor.DequeueLocked(new DequeueLockedRequest { Count = 2, TtlSeconds = 30, AllowCompetingConsumers = true });
+        var lockIds = locked.Items.Select(i => i.LockId).ToList();
+        StateManagerOf(actor).Setup(m => m.TryGetStateAsync<LockState>($"{lockIds[1]}-lock", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new TimeoutException("state store timeout"));
+
+        var result = await actor.AcknowledgeBatch(new AcknowledgeBatchRequest { LockIds = lockIds });
+
+        Assert.False(result.Success);
+        Assert.True(state.ContainsKey($"{lockIds[0]}-lock"));
+        Assert.Equal(2, ((ActorMetadata)state["metadata"]).LockCount);
+    }
+
+    [Fact]
     public async Task DequeueLocked_IndexReadFails_StagesNothing()
     {
         // Dapr saves whatever a turn staged when the method returns, even with an error response. The
