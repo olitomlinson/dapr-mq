@@ -653,27 +653,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 10: KEDA autoscaling (--keda only)
-#
-# Real producer -> real consumers: the producer's `autoscale` scenario enqueues a backlog one worker
-# can't keep up with; the operator reports the queue depth to KEDA, which scales the
-# `<lang>-worker` Deployment out from 0; every replica consumes with competing consumers; once the
-# queue is drained KEDA scales it back to 0. Asserted from the Deployment's replica count and from
-# the worker pods' own logs (several distinct pods must have processed items).
+# Step 10: KEDA autoscaling (--keda only) - the examples chart's autoscale example under load,
+# driven by examples/keda/test/load.sh (producer backlog -> worker scales out from 0 and back).
 # ---------------------------------------------------------------------------
-
-worker_replicas() {
-    local replicas
-    replicas="$(kubectl get deploy "$1" -n "$EXAMPLES_NAMESPACE" -o jsonpath='{.status.replicas}' 2>/dev/null || true)"
-    echo "${replicas:-0}"
-}
-
-# Pod names that have logged a processed batch, appended to the file in $2 (pods vanish on
-# scale-in, so this is sampled while they're alive).
-record_processing_pods() {
-    kubectl logs -n "$EXAMPLES_NAMESPACE" -l "app.kubernetes.io/component=$1" --prefix --tail=-1 --max-log-requests=20 2>/dev/null \
-        | grep "processed [0-9]* items" | sed -E 's#^\[pod/([^/]+)/.*#\1#' >> "$2" || true
-}
 
 if [[ "$KEDA" == "true" && "$SKIP_E2E" != "true" && "$SKIP_EXAMPLES" != "true" ]]; then
     log_section "KEDA Autoscaling"
@@ -684,76 +666,11 @@ if [[ "$KEDA" == "true" && "$SKIP_E2E" != "true" && "$SKIP_EXAMPLES" != "true" ]
             continue
         fi
 
-        worker="daprmq-examples-${lang}-worker"
-        log_info "--- ${lang} (${worker}) ---"
-
-        # Baseline: idle queue, so KEDA should have the worker at 0 (allow for cooldown and for a
-        # previous run's leftovers to drain).
-        deadline=$((SECONDS + 180))
-        while [[ "$(worker_replicas "$worker")" != "0" && $SECONDS -lt $deadline ]]; do sleep 5; done
-        if [[ "$(worker_replicas "$worker")" == "0" ]]; then
-            record_pass "${lang} worker idle at 0 replicas before load"
+        if ./examples/keda/test/load.sh --namespace "$EXAMPLES_NAMESPACE" --language "$lang" \
+                --publishers 1 --messages 300 --publish-mode batch; then
+            record_pass "${lang} KEDA autoscale load test (examples/keda/test/load.sh)"
         else
-            record_fail "${lang} worker idle at 0 replicas before load" "still at $(worker_replicas "$worker") replicas after 180s"
-            continue
-        fi
-
-        if start_port_forward "$EXAMPLES_NAMESPACE" "daprmq-examples-${lang}-producer" 8080; then
-            if run_scenario_with_retry "$PF_PORT" autoscale 60 && echo "$RS_BODY" | grep -q '"steps"'; then
-                record_pass "${lang} producer scenario 'autoscale'"
-            else
-                record_fail "${lang} producer scenario 'autoscale'" "HTTP $RS_STATUS: $(echo "$RS_BODY" | head -c 200)"
-                stop_port_forward
-                continue
-            fi
-            stop_port_forward
-        else
-            record_fail "${lang} producer port-forward" "could not reach service"
-            continue
-        fi
-
-        pods_file="$(mktemp)"
-        scale_start=$SECONDS
-        max_replicas=0
-        scaled_out_at=""
-        deadline=$((SECONDS + 150))
-        while [[ $SECONDS -lt $deadline ]]; do
-            replicas="$(worker_replicas "$worker")"
-            (( replicas > max_replicas )) && max_replicas=$replicas
-            if [[ -z "$scaled_out_at" && $replicas -ge 2 ]]; then
-                scaled_out_at=$((SECONDS - scale_start))
-            fi
-            record_processing_pods "${lang}-worker" "$pods_file"
-            [[ -n "$scaled_out_at" && $max_replicas -ge 2 && $((SECONDS - scale_start)) -ge $((scaled_out_at + 20)) ]] && break
-            sleep 3
-        done
-        if [[ -n "$scaled_out_at" ]]; then
-            record_pass "${lang} worker scaled out from 0 (>=2 replicas after ${scaled_out_at}s, peak ${max_replicas})"
-        else
-            record_fail "${lang} worker scaled out from 0" "peak ${max_replicas} replicas within 150s"
-        fi
-
-        deadline=$((SECONDS + 300))
-        while [[ $SECONDS -lt $deadline ]]; do
-            replicas="$(worker_replicas "$worker")"
-            (( replicas > max_replicas )) && max_replicas=$replicas
-            [[ "$replicas" == "0" ]] && break
-            record_processing_pods "${lang}-worker" "$pods_file"
-            sleep 3
-        done
-
-        processing_pods="$(sort -u "$pods_file" | grep -c . || true)"
-        rm -f "$pods_file"
-        if [[ ${processing_pods:-0} -ge 2 ]]; then
-            record_pass "${lang} workers consumed in parallel (${processing_pods} pods processed items)"
-        else
-            record_fail "${lang} workers consumed in parallel" "only ${processing_pods:-0} pod(s) logged processed items"
-        fi
-
-        if [[ "$(worker_replicas "$worker")" == "0" ]]; then
-            record_pass "${lang} queue drained and worker scaled back to 0 ($((SECONDS - scale_start))s after load)"
-        else
-            record_fail "${lang} queue drained and worker scaled back to 0" "still at $(worker_replicas "$worker") replicas after 300s"
+            record_fail "${lang} KEDA autoscale load test (examples/keda/test/load.sh)" "see its summary above"
         fi
     done
 fi

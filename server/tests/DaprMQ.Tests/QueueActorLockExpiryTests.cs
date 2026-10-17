@@ -786,6 +786,93 @@ public class QueueActorLockExpiryTests
         stateManager.Verify(m => m.SaveStateAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    [Fact]
+    public async Task AcknowledgeBatch_ReadFailsMidBatch_StagesNoRemovals()
+    {
+        // Dapr saves whatever a turn staged when the method returns, even with an error response. A
+        // removal staged before a later lock's read failed was committed without the LockCount
+        // decrement, leaving the count above the locks that exist - and KEDA scaling an empty queue.
+        var (actor, state) = await CreateActorAsync();
+        await EnqueueAsync(actor, "{\"id\":\"A\"}", "{\"id\":\"B\"}");
+        var locked = await actor.DequeueLocked(new DequeueLockedRequest { Count = 2, TtlSeconds = 30, AllowCompetingConsumers = true });
+        var lockIds = locked.Items.Select(i => i.LockId).ToList();
+        StateManagerOf(actor).Setup(m => m.TryGetStateAsync<LockState>($"{lockIds[1]}-lock", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new TimeoutException("state store timeout"));
+
+        var result = await actor.AcknowledgeBatch(new AcknowledgeBatchRequest { LockIds = lockIds });
+
+        Assert.False(result.Success);
+        Assert.True(state.ContainsKey($"{lockIds[0]}-lock"));
+        Assert.Equal(2, ((ActorMetadata)state["metadata"]).LockCount);
+    }
+
+    [Fact]
+    public async Task DequeueLocked_IndexReadFails_StagesNothing()
+    {
+        // Dapr saves whatever a turn staged when the method returns, even with an error response. The
+        // expiry bucket used to be read only after every item had been taken off the queue and given a
+        // lock row, so a failed read committed locks that were neither counted nor indexed - the caller
+        // never saw their ids, the sweep could never find them, and the items were lost.
+        var (actor, state) = await CreateActorAsync();
+        await EnqueueAsync(actor, "{\"id\":\"A\"}", "{\"id\":\"B\"}");
+        StateManagerOf(actor).Setup(m => m.TryGetStateAsync<List<string>>(It.Is<string>(k => k.StartsWith("locks_exp_")), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new TimeoutException("state store timeout"));
+
+        var result = await actor.DequeueLocked(new DequeueLockedRequest { Count = 2, TtlSeconds = 30, AllowCompetingConsumers = true });
+
+        Assert.Empty(result.Items);
+        Assert.DoesNotContain(state.Keys, k => k.EndsWith("-lock"));
+        var metadata = (ActorMetadata)state["metadata"];
+        Assert.Equal(0, metadata.LockCount);
+        Assert.Equal(2, metadata.Queues[1].Count);
+    }
+
+    [Fact]
+    public async Task Enqueue_IdempotencyReadFailsMidBatch_StagesNothing()
+    {
+        // Dapr saves whatever a turn staged when the method returns, even with an error response. A
+        // later item's marker read failing used to commit the earlier items while the response said
+        // ItemsEnqueued = 0 - so a client retrying the "failed" request enqueued them twice.
+        var (actor, state) = await CreateActorAsync();
+        StateManagerOf(actor).Setup(m => m.TryGetStateAsync<IdempotencyMarker>("idem_k2", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new TimeoutException("state store timeout"));
+
+        var result = await actor.Enqueue(new EnqueueRequest
+        {
+            Items =
+            [
+                new EnqueueItem { ItemJson = "{\"id\":\"A\"}", Priority = 1, IdempotencyKey = "k1" },
+                new EnqueueItem { ItemJson = "{\"id\":\"B\"}", Priority = 1, IdempotencyKey = "k2" }
+            ]
+        });
+
+        Assert.False(result.Success);
+        Assert.False(state.ContainsKey("idem_k1"));
+        Assert.DoesNotContain(state.Keys, k => k.StartsWith("queue_"));
+        Assert.Empty(((ActorMetadata)state["metadata"]).Queues);
+    }
+
+    [Fact]
+    public async Task Enqueue_TailReadFailsForALaterPriority_StagesNothing()
+    {
+        var (actor, state) = await CreateActorAsync();
+        StateManagerOf(actor).Setup(m => m.TryGetStateAsync<Queue<QueueSegmentItem>>("queue_1_seg_0", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new TimeoutException("state store timeout"));
+
+        var result = await actor.Enqueue(new EnqueueRequest
+        {
+            Items =
+            [
+                new EnqueueItem { ItemJson = "{\"id\":\"A\"}", Priority = 0 },
+                new EnqueueItem { ItemJson = "{\"id\":\"B\"}", Priority = 1 }
+            ]
+        });
+
+        Assert.False(result.Success);
+        Assert.DoesNotContain(state.Keys, k => k.StartsWith("queue_"));
+        Assert.Empty(((ActorMetadata)state["metadata"]).Queues);
+    }
+
     [Theory]
     [InlineData("Nack")]
     [InlineData("DeadLetter")]
