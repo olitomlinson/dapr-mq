@@ -31,4 +31,12 @@ public class LockConfig
     /// budget sets no wait: the remainder is swept by the next operation. 0 sweeps on every operation.
     /// </summary>
     public int SweepIntervalMs { get; init; }
+
+    /// <summary>
+    /// Up to this percentage of a plain queue's lock TTL is added to each DequeueLocked call's lock
+    /// expiry, in whole seconds, chosen at random per call. Consumers that start together otherwise
+    /// file their locks under one expiry bucket, and the locks lapse and are redelivered together.
+    /// Never shortens a lock, and a call's locks share one expiry. 0 turns it off.
+    /// </summary>
+    public int ExpiryJitterPercent { get; init; }
 }

@@ -712,6 +712,33 @@ public class QueueActorLockExpiryTests
     }
 
     [Fact]
+    public async Task DequeueLocked_WithExpiryJitter_SpreadsCallsOverLaterExpiries_AndKeepsEachBatchTogether()
+    {
+        // Streams that all start at once lock their first batches within a second or two, so without
+        // jitter those locks share a bucket, lapse together, and are redelivered together.
+        var (actor, state) = await CreateActorAsync(
+            lockConfig: new LockConfig { MaxDeliveryCount = 10, SweepBatchSize = 200, ExpiryJitterPercent = 100 });
+        await actor.Enqueue(new EnqueueRequest
+        {
+            Items = Enumerable.Range(1, 60).Select(n => new EnqueueItem { ItemJson = $"{{\"n\":{n}}}", Priority = 1 }).ToList()
+        });
+
+        var expiries = new List<double>();
+        for (int call = 0; call < 20; call++)
+        {
+            double before = Now();
+            var result = await actor.DequeueLocked(new DequeueLockedRequest { Count = 3, TtlSeconds = 10, AllowCompetingConsumers = true });
+
+            // Never shorter than asked for; at most the TTL again on top. One expiry per call.
+            var expiresAt = Assert.Single(result.Items.Select(i => i.LockExpiresAt).Distinct());
+            Assert.InRange(expiresAt, before + 10, Now() + 20);
+            expiries.Add(expiresAt);
+        }
+
+        Assert.True(expiries.Distinct().Count() > 1);
+    }
+
+    [Fact]
     public async Task Sweep_ChunkedBucket_RewritesOnlyTheChunksItReaches_AndDropsTheBucketOnceAllAreEmpty()
     {
         var (actor, state) = await CreateActorAsync(

@@ -288,7 +288,9 @@ lock may therefore be reclaimed up to that long after it lapses. An expired item
 restored to the **position it was taken from**, not the tail: every item carries a monotonic `Sequence` stamped at
 enqueue, and the sweep merges reclaimed items back into the head segment in `Sequence` order. Each expiry increments the
 item's `DeliveryCount`; past `MaxDeliveryCount` (`DAPRMQ_MAX_DELIVERY_COUNT`, default 10) it is dead-lettered instead.
-Lock TTL is clamped to 1–300 seconds.
+Lock TTL is clamped to 1–300 seconds, and on a plain queue each `DequeueLocked` call adds up to
+`DAPRMQ_LOCK_EXPIRY_JITTER_PERCENT` (default 10) of it at random, so consumers that start together don't file every lock
+under one bucket and have them lapse at once.
 
 ### Single-consumer vs. competing consumers
 

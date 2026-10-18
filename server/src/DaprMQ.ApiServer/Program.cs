@@ -234,7 +234,8 @@ var lockConfig = new LockConfig
 {
     MaxDeliveryCount = builder.Configuration.GetValue("DAPRMQ_MAX_DELIVERY_COUNT", 10),
     SweepBatchSize = builder.Configuration.GetValue("DAPRMQ_LOCK_SWEEP_BATCH_SIZE", 200),
-    SweepIntervalMs = builder.Configuration.GetValue("DAPRMQ_LOCK_SWEEP_INTERVAL_MS", 1000)
+    SweepIntervalMs = builder.Configuration.GetValue("DAPRMQ_LOCK_SWEEP_INTERVAL_MS", 1000),
+    ExpiryJitterPercent = builder.Configuration.GetValue("DAPRMQ_LOCK_EXPIRY_JITTER_PERCENT", 10)
 };
 builder.Services.AddSingleton(lockConfig);
 

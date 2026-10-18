@@ -245,6 +245,13 @@ public class QueueActor : Actor, IQueueActor
     internal static string LockKey(string lockId) => $"{lockId}-lock";
 
     /// <summary>
+    /// Whole seconds added to a plain queue's lock expiry for one DequeueLocked call, so consumers that
+    /// lock together don't all file under one bucket and lapse together; see LockConfig.ExpiryJitterPercent.
+    /// </summary>
+    private int ExpiryJitterSeconds(int ttlSeconds) =>
+        Random.Shared.Next(0, ttlSeconds * Math.Max(0, _lockConfig.ExpiryJitterPercent) / 100 + 1);
+
+    /// <summary>
     /// Adds lock ids to the index, staged (no save). On a session actor everything goes in the single
     /// "locks_session" entry; otherwise ids are grouped into their expiry bucket. Ids are appended in
     /// dequeue order, which is the original FIFO order, so a bulk requeue can replay them faithfully.
@@ -1810,7 +1817,7 @@ public class QueueActor : Actor, IQueueActor
             // here consults it - see ReclaimLapsedSessionLocksAsync.
             double lockExpiresAt = IsSessionActor() && metadata.ActiveSessionLeaseExpiresAt.HasValue
                 ? metadata.ActiveSessionLeaseExpiresAt.Value
-                : nowUnix + ttlSeconds;
+                : nowUnix + ttlSeconds + ExpiryJitterSeconds(ttlSeconds);
 
             // Read the index entry these locks will be filed under before staging anything: Dapr saves
             // what a turn staged even when the catch below turns a failure into an error response, so a

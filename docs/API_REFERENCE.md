@@ -184,7 +184,7 @@ POST /queue/{queueId}/dequeue
 |---|---|---|
 | `require-ack` | `false` | If `true`, creates a lock instead of permanently removing the item — see [Acknowledge](#acknowledge). |
 | `count` | `1` | Number of items to dequeue (`0`–`100`). |
-| `ttl-seconds` | `30` | Lock TTL in seconds, only used when `require-ack: true` (`1`–`300`). |
+| `ttl-seconds` | `30` | Lock TTL in seconds, only used when `require-ack: true` (`1`–`300`). On a plain queue the server adds up to `DAPRMQ_LOCK_EXPIRY_JITTER_PERCENT` (default 10%) of it at random, so a lock can last slightly longer than asked; each item's `lockExpiresAt` is the real expiry. |
 | `allow-competing-consumers` | `false` | Allow multiple parallel locks instead of the legacy single-lock behavior. |
 | `lease-id` | _(none)_ | Required when `{queueId}` is a session-scoped queue (`{originalQueueId}-session-{sessionId}`) with an active lease — see [Sessions](#sessions). Missing/wrong → `400`; a lease that has since expired → `410`. Ignored (no-op) on an ordinary queue. |
 
