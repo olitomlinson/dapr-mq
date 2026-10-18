@@ -727,6 +727,14 @@ public class QueueActor : Actor, IQueueActor
                 // not lapsed yet (and locks extended into a later expiry). Check each one.
                 if (now < lockState.Value.ExpiresAt)
                 {
+                    // An extended lock: ExtendLock filed it under its new bucket and left this entry
+                    // behind, so once that bucket is indexed the entry here is only a duplicate.
+                    long ownBucket = ExpiryBucketFor(lockState.Value.ExpiresAt);
+                    if (ownBucket != bucket && metadata.LockExpiryBuckets.Contains(ownBucket))
+                    {
+                        continue;
+                    }
+
                     survivors.Add(lockId);
                     continue;
                 }
@@ -2064,9 +2072,9 @@ public class QueueActor : Actor, IQueueActor
             await StateManager.SetStateAsync($"{lockId}-lock", updatedLock);
 
             // File the id under its new expiry bucket so the sweep will still find it once the
-            // extension runs out. The old entry is left behind on purpose: the sweep checks each
-            // lock's real ExpiresAt and simply keeps a not-yet-expired id as a survivor, so a stale
-            // duplicate costs one string rather than an O(n) rewrite of a potentially huge bucket.
+            // extension runs out. The old entry is left behind on purpose, rather than rewriting a
+            // potentially huge bucket here: once the old bucket comes due, the sweep sees the lock's
+            // real ExpiresAt falls in an indexed later bucket and drops the duplicate.
             if (!IsSessionActor() && ExpiryBucketFor(newExpiresAt) != ExpiryBucketFor(lockData.ExpiresAt))
             {
                 metadata = await IndexLocksAsync(metadata, [lockId], newExpiresAt);
@@ -2173,7 +2181,7 @@ public class QueueActor : Actor, IQueueActor
             if (results.Any(r => r.Outcome == ExtendOutcomeExtended))
             {
                 // File each moved lock under its new expiry bucket, one index write per bucket. As in
-                // ExtendLock, the stale entry in the old bucket is left for the sweep to skip.
+                // ExtendLock, the stale entry in the old bucket is left for the sweep to drop.
                 foreach (var bucket in reindex.GroupBy(r => ExpiryBucketFor(r.NewExpiresAt)))
                 {
                     metadata = await IndexLocksAsync(metadata, bucket.Select(r => r.LockId).ToList(), bucket.First().NewExpiresAt);

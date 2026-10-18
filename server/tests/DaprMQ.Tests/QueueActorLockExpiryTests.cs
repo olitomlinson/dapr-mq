@@ -657,6 +657,32 @@ public class QueueActorLockExpiryTests
     }
 
     [Fact]
+    public async Task Sweep_DropsAnExtendedLocksEntryInItsOldBucket_OnceTheNewBucketHoldsIt()
+    {
+        // ExtendLock files the lock under its new bucket and leaves the old entry behind. Kept as a
+        // survivor, that entry was read again on every sweep for as long as the lock was renewed.
+        var (actor, state) = await CreateActorAsync();
+        await EnqueueAsync(actor, "{\"id\":\"A\"}");
+        var locked = await actor.DequeueLocked(new DequeueLockedRequest { TtlSeconds = 30, AllowCompetingConsumers = true });
+        var lockId = locked.Items[0].LockId;
+        var extended = await actor.ExtendLock(new ExtendLockRequest { LockId = lockId, AdditionalTtlSeconds = 60 });
+
+        // Let the original bucket come due.
+        long oldBucket = BucketFor(locked.Items[0].LockExpiresAt), lapsed = BucketFor(Now() - 10);
+        state[ExpiryBucketKey(lapsed)] = state[ExpiryBucketKey(oldBucket)];
+        state.Remove(ExpiryBucketKey(oldBucket));
+        var metadata = (ActorMetadata)state["metadata"];
+        state["metadata"] = metadata with { LockExpiryBuckets = metadata.LockExpiryBuckets.Select(b => b == oldBucket ? lapsed : b).Order().ToList() };
+
+        await actor.Dequeue(new DequeueRequest { Count = 0 });
+
+        Assert.False(state.ContainsKey(ExpiryBucketKey(lapsed)));
+        Assert.Equal([lockId], (List<string>)state[BucketKey(extended.NewExpiresAt)]);
+        Assert.Equal([BucketFor(extended.NewExpiresAt)], ((ActorMetadata)state["metadata"]).LockExpiryBuckets);
+        Assert.Equal(1, ((ActorMetadata)state["metadata"]).LockCount);
+    }
+
+    [Fact]
     public async Task Acknowledge_LeavesTheBucketedIndexAlone_AndTheSweepDiscardsTheStaleEntry()
     {
         // Settling is the hot path and a bucket can hold every lock from one bulk dequeue, so ack must
@@ -735,8 +761,8 @@ public class QueueActorLockExpiryTests
         Assert.NotEqual(originalBucketKey, newBucketKey);
         Assert.Equal([lockId], Assert.IsType<List<string>>(state[newBucketKey]));
 
-        // The old entry is left behind rather than rewritten out; the sweep keeps a not-yet-expired
-        // id as a survivor, so the duplicate is harmless and costs one string instead of an O(n) pass.
+        // The old entry is left behind rather than rewritten out; the sweep drops it once the old
+        // bucket comes due (Sweep_DropsAnExtendedLocksEntryInItsOldBucket_OnceTheNewBucketHoldsIt).
         var metadata = Assert.IsType<ActorMetadata>(state["metadata"]);
         Assert.Contains(BucketFor(extended.NewExpiresAt), metadata.LockExpiryBuckets);
     }
