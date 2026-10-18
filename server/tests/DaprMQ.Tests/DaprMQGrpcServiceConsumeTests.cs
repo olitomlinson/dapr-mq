@@ -97,8 +97,11 @@ public class DaprMQGrpcServiceConsumeTests
     private static ConsumeRequest Start(int prefetchCount = 5, int lockTtlSeconds = 30, bool competing = true) =>
         new() { Start = new ConsumeStart { QueueId = "q", PrefetchCount = prefetchCount, LockTtlSeconds = lockTtlSeconds, AllowCompetingConsumers = competing } };
 
-    private static ActorModels.DequeueLockedItem Item(string lockId, int deliveryCount = 0) =>
-        new() { ItemJson = $"{{\"id\":\"{lockId}\"}}", Priority = 1, LockId = lockId, LockExpiresAt = 999, DeliveryCount = deliveryCount };
+    private static double UnixNow() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
+
+    /// <summary>A delivered item whose lock expires <paramref name="expiresIn"/> seconds from now (default 30).</summary>
+    private static ActorModels.DequeueLockedItem Item(string lockId, int deliveryCount = 0, double expiresIn = 30) =>
+        new() { ItemJson = $"{{\"id\":\"{lockId}\"}}", Priority = 1, LockId = lockId, LockExpiresAt = UnixNow() + expiresIn, DeliveryCount = deliveryCount };
 
     /// <summary>
     /// DequeueLocked answers with the given batches in turn, then an empty queue. Records every request.
@@ -168,7 +171,7 @@ public class DaprMQGrpcServiceConsumeTests
             .ReturnsAsync((ActorId _, string _, ActorModels.ExtendLockBatchRequest req, CancellationToken _) => new ActorModels.ExtendLockBatchResponse
             {
                 Success = true,
-                Results = req.LockIds.Select(id => new ActorModels.ExtendLockResult { LockId = id, Outcome = "EXTENDED" }).ToList()
+                Results = req.LockIds.Select(id => new ActorModels.ExtendLockResult { LockId = id, Outcome = "EXTENDED", NewExpiresAt = UnixNow() + req.TtlSeconds }).ToList()
             });
         return extends;
     }
@@ -359,7 +362,7 @@ public class DaprMQGrpcServiceConsumeTests
     [Fact]
     public async Task Consume_RenewsOutstandingLocksButNotSettledOnes()
     {
-        SetupDequeue([Item("lock-1"), Item("lock-2")]);
+        SetupDequeue([Item("lock-1", expiresIn: 2), Item("lock-2", expiresIn: 2)]);
         SetupAck();
         SetupNack();
         var extends = SetupExtend();
@@ -377,6 +380,52 @@ public class DaprMQGrpcServiceConsumeTests
         Assert.True(extends.TryPeek(out var renewal));
         Assert.Equal(new[] { "lock-2" }, renewal!.LockIds);
         Assert.Equal(2, renewal.TtlSeconds);
+    }
+
+    [Fact]
+    public async Task Consume_RenewsALockHalfItsRemainingTimeBeforeExpiry_NotEveryThirdOfTheTtl()
+    {
+        // Service Bus's rule: renew min(remaining / 2, 10s) before the lock expires. With 3s left that
+        // is about 1.5s in; renewing every TTL/3 would renew at 1s.
+        SetupDequeue([Item("lock-1", expiresIn: 3)]);
+        SetupNack();
+        var extends = SetupExtend();
+        var reader = new FakeAsyncStreamReader<ConsumeRequest>();
+        var writer = new FakeServerStreamWriter<ConsumeResponse>();
+        reader.Add(Start(prefetchCount: 1, lockTtlSeconds: 3));
+
+        var task = CreateService().Consume(reader, writer, _mockContext.Object);
+        await WaitUntilAsync(() => Delivered(writer).Any());
+        var delivered = DateTime.UtcNow;
+        await WaitUntilAsync(() => !extends.IsEmpty);
+        var renewedAfter = DateTime.UtcNow - delivered;
+        reader.Complete();
+        await task;
+
+        Assert.InRange(renewedAfter.TotalSeconds, 1.2, 2.0);
+    }
+
+    [Fact]
+    public async Task Consume_LockWithLongToRun_IsRenewedTenSecondsBeforeExpiry()
+    {
+        // The buffer is capped at 10s, so a 60s lock is renewed about 50s in, not at 20s.
+        SetupDequeue([Item("lock-1", expiresIn: 11), Item("lock-2", expiresIn: 60)]);
+        SetupNack();
+        var extends = SetupExtend();
+        var reader = new FakeAsyncStreamReader<ConsumeRequest>();
+        var writer = new FakeServerStreamWriter<ConsumeResponse>();
+        reader.Add(Start(prefetchCount: 2, lockTtlSeconds: 60));
+
+        var task = CreateService().Consume(reader, writer, _mockContext.Object);
+        await WaitUntilAsync(() => Delivered(writer).Count() == 2);
+        await WaitUntilAsync(() => !extends.IsEmpty, timeoutMs: 8000);
+        reader.Complete();
+        await task;
+
+        // lock-1 has 11s left, so it's due min(5.5s, 10s) = 5.5s before expiry, 5.5s in. lock-2 has
+        // 60s left, so it isn't due until 10s before expiry, 50s in: the first renewal is lock-1 alone.
+        Assert.True(extends.TryPeek(out var renewal));
+        Assert.Equal(new[] { "lock-1" }, renewal!.LockIds);
     }
 
     [Fact]
