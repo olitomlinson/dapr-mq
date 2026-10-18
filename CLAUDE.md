@@ -46,6 +46,7 @@
 - API: [QueueController.cs](server/src/DaprMQ.ApiServer/Controllers/QueueController.cs), [DaprMQGrpcService.cs](server/src/DaprMQ.ApiServer/Services/DaprMQGrpcService.cs)
 - Tests: [QueueActorTests.cs](server/tests/DaprMQ.Tests/)
 - Dashboard: [useQueueOperations.ts](dashboard/src/hooks/useQueueOperations.ts)
+- Local k8s: `./kind-create.sh | ./k8s-base-deploy.sh | ./daprmq-deploy.sh` (see [CONTRIBUTOR_GUIDE.md](helm/CONTRIBUTOR_GUIDE.md))
 
 ## Domain Knowledge (Reference Only)
 
