@@ -9,14 +9,23 @@ public record QueueConsumerOptions
     /// Delivered but unsettled messages the server keeps in flight to this consumer: the stream's
     /// <see cref="ConsumeOptions.PrefetchCount"/> (1-1000). Messages over
     /// <see cref="MaxConcurrentHandlers"/> wait locked, and the server keeps their locks alive.
+    /// Unset, it's <see cref="MaxConcurrentHandlers"/>, so nothing waits locked - Service Bus's default
+    /// of no prefetch - or 100 when handlers are unlimited. Set it higher to prefetch: keep it under
+    /// what the consumer handles within <see cref="LockTtl"/>.
     /// </summary>
-    public int MaxActiveMessages { get; init; } = 100;
+    public int? MaxActiveMessages { get; init; }
 
-    /// <summary>Handlers running at once. 0 = unlimited, which <see cref="MaxActiveMessages"/> bounds.</summary>
-    public int MaxConcurrentHandlers { get; init; } = 0;
+    /// <summary>
+    /// Handlers running at once (default 1, as Service Bus's MaxConcurrentCalls). 0 = unlimited, which
+    /// <see cref="MaxActiveMessages"/> bounds.
+    /// </summary>
+    public int MaxConcurrentHandlers { get; init; } = 1;
 
-    /// <summary>Passed to the stream; the server renews each lock until its message is settled.</summary>
-    public TimeSpan LockTtl { get; init; } = TimeSpan.FromSeconds(30);
+    /// <summary>
+    /// Passed to the stream; the server renews each lock until its message is settled. 60s by default,
+    /// as Service Bus's default lock duration.
+    /// </summary>
+    public TimeSpan LockTtl { get; init; } = TimeSpan.FromSeconds(60);
 
     /// <summary>Lets replicas share the queue, each holding its own locks.</summary>
     public bool AllowCompetingConsumers { get; init; } = true;
@@ -146,7 +155,7 @@ public sealed class QueueConsumer : IAsyncDisposable
         var strict = _options.StrictOrder;
         var streamOptions = new ConsumeOptions
         {
-            PrefetchCount = strict ? 1 : Math.Max(_options.MaxActiveMessages, 1),
+            PrefetchCount = strict ? 1 : Math.Max(_options.MaxActiveMessages ?? (_options.MaxConcurrentHandlers > 0 ? _options.MaxConcurrentHandlers : 100), 1),
             LockTtl = _options.LockTtl,
             AllowCompetingConsumers = !strict && _options.AllowCompetingConsumers
         };
