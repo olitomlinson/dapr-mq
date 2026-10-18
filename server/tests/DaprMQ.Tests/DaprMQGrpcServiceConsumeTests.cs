@@ -94,8 +94,19 @@ public class DaprMQGrpcServiceConsumeTests
             PollInterval = TimeSpan.FromMilliseconds(20)
         };
 
-    private static ConsumeRequest Start(int prefetchCount = 5, int lockTtlSeconds = 30, bool competing = true) =>
-        new() { Start = new ConsumeStart { QueueId = "q", PrefetchCount = prefetchCount, LockTtlSeconds = lockTtlSeconds, AllowCompetingConsumers = competing } };
+    private static ConsumeRequest Start(int prefetchCount = 5, int lockTtlSeconds = 30, bool competing = true,
+        ConsumeLockRenewal renewal = ConsumeLockRenewal.RenewDelivered, int maxRenewalSeconds = 0) =>
+        new()
+        {
+            Start = new ConsumeStart
+            {
+                QueueId = "q", PrefetchCount = prefetchCount, LockTtlSeconds = lockTtlSeconds, AllowCompetingConsumers = competing,
+                LockRenewal = renewal, MaxRenewalSeconds = maxRenewalSeconds
+            }
+        };
+
+    private static ConsumeRequest Started(params string[] lockIds) =>
+        new() { Started = new ConsumeStarted { LockIds = { lockIds } } };
 
     private static double UnixNow() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
 
@@ -441,6 +452,88 @@ public class DaprMQGrpcServiceConsumeTests
         // 60s left, so it isn't due until 10s before expiry, 50s in: the first renewal is lock-1 alone.
         Assert.True(extends.TryPeek(out var renewal));
         Assert.Equal(new[] { "lock-1" }, renewal!.LockIds);
+    }
+
+    [Fact]
+    public async Task Consume_RenewStarted_DoesNotRenewALockNoHandlerStarted_AndFreesItsSlotWhenItLapses()
+    {
+        // Service Bus doesn't renew prefetched messages: an item no handler started runs out its lock.
+        var requests = SetupDequeue([Item("lock-1", expiresIn: 1)], [Item("lock-2", expiresIn: 30)]);
+        SetupNack();
+        var extends = SetupExtend();
+        var reader = new FakeAsyncStreamReader<ConsumeRequest>();
+        var writer = new FakeServerStreamWriter<ConsumeResponse>();
+        reader.Add(Start(prefetchCount: 1, lockTtlSeconds: 1, renewal: ConsumeLockRenewal.RenewStarted));
+
+        var task = CreateService().Consume(reader, writer, _mockContext.Object);
+        await WaitUntilAsync(() => Delivered(writer).Count() == 2);
+        reader.Complete();
+        await task;
+
+        Assert.Empty(extends);
+        Assert.Equal(1, requests.ElementAt(1).Count); // the lapsed lock's slot was refilled
+    }
+
+    [Fact]
+    public async Task Consume_RenewStarted_RenewsOnlyLocksAHandlerStarted()
+    {
+        SetupDequeue([Item("lock-1", expiresIn: 2), Item("lock-2", expiresIn: 2)]);
+        SetupNack();
+        var extends = SetupExtend();
+        var reader = new FakeAsyncStreamReader<ConsumeRequest>();
+        var writer = new FakeServerStreamWriter<ConsumeResponse>();
+        reader.Add(Start(prefetchCount: 2, lockTtlSeconds: 2, renewal: ConsumeLockRenewal.RenewStarted));
+
+        var task = CreateService().Consume(reader, writer, _mockContext.Object);
+        await WaitUntilAsync(() => Delivered(writer).Count() == 2);
+        reader.Add(Started("lock-2"));
+        await WaitUntilAsync(() => !extends.IsEmpty);
+        reader.Complete();
+        await task;
+
+        Assert.True(extends.TryPeek(out var renewal));
+        Assert.Equal(new[] { "lock-2" }, renewal!.LockIds);
+    }
+
+    [Fact]
+    public async Task Consume_RenewStarted_StopsRenewingAfterMaxRenewalSeconds()
+    {
+        // MaxAutoLockRenewalDuration: a handler still running past it loses its lock.
+        SetupDequeue([Item("lock-1", expiresIn: 3)]);
+        SetupNack();
+        var extends = SetupExtend();
+        var reader = new FakeAsyncStreamReader<ConsumeRequest>();
+        var writer = new FakeServerStreamWriter<ConsumeResponse>();
+        reader.Add(Start(prefetchCount: 1, lockTtlSeconds: 3, renewal: ConsumeLockRenewal.RenewStarted, maxRenewalSeconds: 1));
+
+        var task = CreateService().Consume(reader, writer, _mockContext.Object);
+        await WaitUntilAsync(() => Delivered(writer).Any());
+        reader.Add(Started("lock-1"));
+        await Task.Delay(2500); // due for renewal about 1.5s in, by when it has run past 1s
+        reader.Complete();
+        await task;
+
+        Assert.Empty(extends);
+    }
+
+    [Fact]
+    public async Task Consume_StartedForALockNoLongerHeld_ReportsLockExpired()
+    {
+        SetupDequeue();
+        SetupNack();
+        var reader = new FakeAsyncStreamReader<ConsumeRequest>();
+        var writer = new FakeServerStreamWriter<ConsumeResponse>();
+        reader.Add(Start(renewal: ConsumeLockRenewal.RenewStarted));
+        reader.Add(Started("lock-gone"));
+
+        var task = CreateService().Consume(reader, writer, _mockContext.Object);
+        await WaitUntilAsync(() => writer.Written.Any(r => r.PayloadCase == ConsumeResponse.PayloadOneofCase.SettleFailed));
+        reader.Complete();
+        await task;
+
+        var failed = writer.Written.Single(r => r.PayloadCase == ConsumeResponse.PayloadOneofCase.SettleFailed).SettleFailed;
+        Assert.Equal("lock-gone", failed.LockId);
+        Assert.Equal("LOCK_EXPIRED", failed.ErrorCode);
     }
 
     [Fact]

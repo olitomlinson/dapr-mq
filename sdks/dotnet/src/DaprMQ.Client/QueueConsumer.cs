@@ -27,6 +27,13 @@ public record QueueConsumerOptions
     /// </summary>
     public TimeSpan LockTtl { get; init; } = TimeSpan.FromSeconds(60);
 
+    /// <summary>
+    /// How long the server keeps renewing a message's lock after its handler starts (default 5 minutes,
+    /// as Service Bus's MaxAutoLockRenewalDuration). A handler still running past it loses the lock and
+    /// its settle fails. <see cref="TimeSpan.Zero"/> renews for as long as the handler runs.
+    /// </summary>
+    public TimeSpan MaxAutoLockRenewalDuration { get; init; } = TimeSpan.FromMinutes(5);
+
     /// <summary>Lets replicas share the queue, each holding its own locks.</summary>
     public bool AllowCompetingConsumers { get; init; } = true;
 
@@ -157,7 +164,11 @@ public sealed class QueueConsumer : IAsyncDisposable
         {
             PrefetchCount = strict ? 1 : Math.Max(_options.MaxActiveMessages ?? (_options.MaxConcurrentHandlers > 0 ? _options.MaxConcurrentHandlers : 100), 1),
             LockTtl = _options.LockTtl,
-            AllowCompetingConsumers = !strict && _options.AllowCompetingConsumers
+            AllowCompetingConsumers = !strict && _options.AllowCompetingConsumers,
+            // As Service Bus's processor: only messages in a handler are renewed; one still waiting
+            // for a handler runs out its lock and goes back to the queue.
+            RenewOnlyStarted = true,
+            MaxAutoLockRenewalDuration = _options.MaxAutoLockRenewalDuration
         };
         var handlerLimit = strict ? 1 : _options.MaxConcurrentHandlers;
         using var slots = handlerLimit > 0 ? new SemaphoreSlim(handlerLimit) : null;
@@ -255,6 +266,8 @@ public sealed class QueueConsumer : IAsyncDisposable
         var ct = _handlerCts.Token;
         try
         {
+            // Outside the handler's try: a stream that closed under the message isn't a handler error.
+            await delivery.StartedAsync(ct);
             try
             {
                 await _handler(new QueueMessageContext(_queueId, delivery.LockId, delivery.Item, delivery.Priority, delivery.DeliveryCount), ct);

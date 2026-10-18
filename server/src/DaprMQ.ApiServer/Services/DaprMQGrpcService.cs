@@ -1132,13 +1132,14 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
 
         var prefetchCount = Math.Clamp(start.PrefetchCount > 0 ? start.PrefetchCount : 1, 1, 1000);
         var lockTtlSeconds = Math.Clamp(start.LockTtlSeconds > 0 ? start.LockTtlSeconds : 30, 1, 300);
+        var renewal = new LockRenewalPolicy(start.LockRenewal == ConsumeLockRenewal.RenewStarted, Math.Max(start.MaxRenewalSeconds, 0));
         var actorId = new ActorId(start.QueueId);
 
         _logger.LogDebug("gRPC Consume request for queue {QueueId}, prefetch={Prefetch}", start.QueueId, prefetchCount);
 
-        // Locks delivered and not yet settled, each with when it's next due for renewal (Unix seconds):
-        // renewed while the stream is open, nacked when it ends.
-        var outstanding = new ConcurrentDictionary<string, double>();
+        // Locks delivered and not yet settled: renewed while the stream is open (see LockRenewalPolicy),
+        // nacked when it ends.
+        var outstanding = new ConcurrentDictionary<string, OutstandingLock>();
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken);
 
         // Released when settles drain the window to half full, so the poll loop refills while the
@@ -1172,6 +1173,24 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                 while (await requestStream.MoveNext(cts.Token))
                 {
                     var req = requestStream.Current;
+                    if (req.PayloadCase == ConsumeRequest.PayloadOneofCase.Started)
+                    {
+                        foreach (var startedId in req.Started.LockIds)
+                        {
+                            if (outstanding.TryGetValue(startedId, out var held))
+                            {
+                                held.MarkStarted();
+                            }
+                            else
+                            {
+                                // It lapsed in the client's buffer, or was never delivered here. As in Service
+                                // Bus the handler still runs; settling it will fail.
+                                await WriteAsync(SettleFailed(startedId, "LOCK_EXPIRED", "Lock lapsed before its handler started"));
+                            }
+                        }
+                        continue;
+                    }
+
                     var lockId = req.PayloadCase switch
                     {
                         ConsumeRequest.PayloadOneofCase.Ack => req.Ack.LockId,
@@ -1255,7 +1274,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
             {
                 cts.Token.ThrowIfCancellationRequested();
 
-                await RenewDueLocksAsync(actorId, outstanding, lockTtlSeconds, cts.Token);
+                await RenewDueLocksAsync(actorId, outstanding, renewal, lockTtlSeconds, cts.Token);
 
                 var capacity = prefetchCount - outstanding.Count;
                 if (capacity <= 0)
@@ -1296,7 +1315,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                 {
                     // Empty, or held by another consumer when competing consumers are off. Back off,
                     // but never past the next renewal of locks already delivered.
-                    var wait = outstanding.IsEmpty ? idleWait : TimeSpan.FromTicks(Math.Clamp(idleWait.Ticks, 0, Math.Max(UntilNextRenewal(outstanding).Ticks, 0)));
+                    var wait = outstanding.IsEmpty ? idleWait : TimeSpan.FromTicks(Math.Clamp(idleWait.Ticks, 0, Math.Max(UntilNextRenewal(outstanding, renewal).Ticks, 0)));
                     await Task.Delay(wait, cts.Token);
                     idleWait = TimeSpan.FromTicks(Math.Min(idleWait.Ticks * 2, Math.Max(MaxIdlePollInterval.Ticks, PollInterval.Ticks)));
                     continue;
@@ -1305,7 +1324,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                 idleWait = PollInterval;
                 foreach (var item in dequeueResult.Items)
                 {
-                    outstanding[item.LockId] = RenewAt(item.LockExpiresAt);
+                    outstanding[item.LockId] = new OutstandingLock(item.LockExpiresAt);
                     await WriteAsync(new ConsumeResponse
                     {
                         Delivered = new ConsumeDelivered
@@ -1456,19 +1475,90 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
 
     private const double MaxRenewBufferSeconds = 10;
 
-    private static TimeSpan UntilNextRenewal(ConcurrentDictionary<string, double> outstanding) =>
-        outstanding.IsEmpty ? TimeSpan.MaxValue : TimeSpan.FromSeconds(Math.Max(0, outstanding.Values.Min() - UnixNow()));
-
     /// <summary>
-    /// Renews the outstanding locks that are due (see RenewAt) to lockTtlSeconds from now, in batches of
-    /// up to 1000, and schedules each one's next renewal from its new expiry. A lock the actor no longer
-    /// has is dropped from the set: its item is already on its way back to the queue, and the client
-    /// learns that when it tries to settle it. A failed call retries those locks a second later.
+    /// Which of a Consume stream's locks get renewed. By default every delivered, unsettled one. With
+    /// RENEW_STARTED only those a handler has started (a Started frame), and each only until MaxSeconds
+    /// after it started (0 = no limit) - Service Bus's renewal of messages in a handler, up to
+    /// MaxAutoLockRenewalDuration. A lock that isn't renewed runs out, and the sweep returns its item to
+    /// the queue as a delivery attempt.
     /// </summary>
-    private async Task RenewDueLocksAsync(ActorId actorId, ConcurrentDictionary<string, double> outstanding, int lockTtlSeconds, CancellationToken cancellationToken)
+    private sealed record LockRenewalPolicy(bool StartedOnly, int MaxSeconds)
+    {
+        public bool Renews(OutstandingLock held, double now) =>
+            !StartedOnly || (held.StartedAt is { } startedAt && (MaxSeconds == 0 || now - startedAt < MaxSeconds));
+    }
+
+    /// <summary>One delivered, unsettled lock: its expiry, its next renewal (see RenewAt), and when a handler started it.</summary>
+    private sealed class OutstandingLock(double expiresAt)
+    {
+        private readonly object _gate = new();
+
+        public double ExpiresAt { get; private set; } = expiresAt;
+        public double RenewAt { get; private set; } = DaprMQGrpcService.RenewAt(expiresAt);
+        public double? StartedAt { get; private set; }
+
+        public void MarkStarted()
+        {
+            lock (_gate)
+            {
+                StartedAt ??= UnixNow();
+            }
+        }
+
+        public void Renewed(double expiresAt)
+        {
+            lock (_gate)
+            {
+                ExpiresAt = expiresAt;
+                RenewAt = DaprMQGrpcService.RenewAt(expiresAt);
+            }
+        }
+
+        public void RetryAt(double at)
+        {
+            lock (_gate)
+            {
+                RenewAt = at;
+            }
+        }
+    }
+
+    /// <summary>Time until the next lock is due for renewal, or lapses unrenewed and frees its slot.</summary>
+    private static TimeSpan UntilNextRenewal(ConcurrentDictionary<string, OutstandingLock> outstanding, LockRenewalPolicy renewal)
     {
         var now = UnixNow();
-        var due = outstanding.Where(l => l.Value <= now).Select(l => l.Key).ToList();
+        var next = outstanding.Values.Select(l => renewal.Renews(l, now) ? l.RenewAt : l.ExpiresAt).DefaultIfEmpty(double.MaxValue).Min();
+        return next == double.MaxValue ? TimeSpan.MaxValue : TimeSpan.FromSeconds(Math.Max(0, next - now));
+    }
+
+    /// <summary>
+    /// Renews the outstanding locks that are due (see RenewAt) and that the policy renews, to
+    /// lockTtlSeconds from now, in batches of up to 1000, and schedules each one's next renewal from its
+    /// new expiry. A lock the actor no longer has is dropped from the set: its item is already on its way
+    /// back to the queue, and the client learns that when it tries to settle it. So is a lock the policy
+    /// doesn't renew once it has lapsed, which frees its slot for a refill. A failed call retries those
+    /// locks a second later.
+    /// </summary>
+    private async Task RenewDueLocksAsync(
+        ActorId actorId, ConcurrentDictionary<string, OutstandingLock> outstanding, LockRenewalPolicy renewal, int lockTtlSeconds, CancellationToken cancellationToken)
+    {
+        var now = UnixNow();
+        var due = new List<string>();
+        foreach (var (lockId, held) in outstanding)
+        {
+            if (renewal.Renews(held, now))
+            {
+                if (held.RenewAt <= now)
+                {
+                    due.Add(lockId);
+                }
+            }
+            else if (held.ExpiresAt <= now && outstanding.TryRemove(lockId, out _))
+            {
+                _logger.LogDebug("Lock {LockId} lapsed unrenewed on Consume stream for queue {QueueId}", lockId, actorId);
+            }
+        }
+
         foreach (var batch in due.Chunk(MaxSettleBatchSize))
         {
             try
@@ -1484,10 +1574,9 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                     if (renewed.Outcome == "EXTENDED")
                     {
                         // Only if still outstanding: a settle may have removed it while the call ran.
-                        var expiresAt = renewed.NewExpiresAt > 0 ? renewed.NewExpiresAt : UnixNow() + lockTtlSeconds;
-                        if (outstanding.TryGetValue(renewed.LockId, out var current))
+                        if (outstanding.TryGetValue(renewed.LockId, out var held))
                         {
-                            outstanding.TryUpdate(renewed.LockId, RenewAt(expiresAt), current);
+                            held.Renewed(renewed.NewExpiresAt > 0 ? renewed.NewExpiresAt : UnixNow() + lockTtlSeconds);
                         }
                     }
                     else
@@ -1503,9 +1592,9 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                 var retryAt = UnixNow() + 1;
                 foreach (var lockId in batch)
                 {
-                    if (outstanding.TryGetValue(lockId, out var current))
+                    if (outstanding.TryGetValue(lockId, out var held))
                     {
-                        outstanding.TryUpdate(lockId, retryAt, current);
+                        held.RetryAt(retryAt);
                     }
                 }
             }

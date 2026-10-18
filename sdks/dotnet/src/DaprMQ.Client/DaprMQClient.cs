@@ -499,7 +499,11 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
                     QueueId = queueId,
                     PrefetchCount = Math.Max(options.PrefetchCount, 1),
                     LockTtlSeconds = options.LockTtl > TimeSpan.Zero ? (int)Math.Ceiling(options.LockTtl.TotalSeconds) : 30,
-                    AllowCompetingConsumers = options.AllowCompetingConsumers
+                    AllowCompetingConsumers = options.AllowCompetingConsumers,
+                    LockRenewal = options.RenewOnlyStarted
+                        ? global::DaprMQ.ApiServer.Grpc.ConsumeLockRenewal.RenewStarted
+                        : global::DaprMQ.ApiServer.Grpc.ConsumeLockRenewal.RenewDelivered,
+                    MaxRenewalSeconds = options.MaxAutoLockRenewalDuration > TimeSpan.Zero ? (int)Math.Ceiling(options.MaxAutoLockRenewalDuration.TotalSeconds) : 0
                 }
             });
 
@@ -522,6 +526,10 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
                             Priority = delivered.Priority,
                             LockExpiresAt = delivered.LockExpiresAt,
                             DeliveryCount = delivered.DeliveryCount,
+                            StartedAsync = _ => WriteAsync(new global::DaprMQ.ApiServer.Grpc.ConsumeRequest
+                            {
+                                Started = new global::DaprMQ.ApiServer.Grpc.ConsumeStarted { LockIds = { delivered.LockId } }
+                            }),
                             AckAsync = _ => WriteAsync(new global::DaprMQ.ApiServer.Grpc.ConsumeRequest
                             {
                                 Ack = new global::DaprMQ.ApiServer.Grpc.ConsumeAck { LockId = delivered.LockId }

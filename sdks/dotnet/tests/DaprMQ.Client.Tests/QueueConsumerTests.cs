@@ -21,6 +21,7 @@ public class QueueConsumerTests
         private volatile bool _closed;
 
         public readonly ConcurrentQueue<(string Action, string LockId)> Settled = new();
+        public readonly ConcurrentQueue<string> Started = new();
         public readonly TaskCompletionSource Closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public void Deliver(string lockId, int deliveryCount = 1) => _deliveries.Writer.TryWrite(new QueueDelivery
@@ -30,6 +31,11 @@ public class QueueConsumerTests
             Priority = 1,
             LockExpiresAt = 0,
             DeliveryCount = deliveryCount,
+            StartedAsync = _ =>
+            {
+                Started.Enqueue(lockId);
+                return Task.CompletedTask;
+            },
             AckAsync = _ => Settle("ack", lockId),
             NackAsync = _ => Settle("nack", lockId),
             DeadLetterAsync = _ => Settle("deadletter", lockId)
@@ -128,6 +134,30 @@ public class QueueConsumerTests
         Assert.Equal(1, opened[0].PrefetchCount);
         Assert.Equal(TimeSpan.FromSeconds(60), opened[0].LockTtl);
         Assert.True(opened[0].AllowCompetingConsumers);
+        // As Service Bus's processor, only messages in a handler are renewed, for up to 5 minutes.
+        Assert.True(opened[0].RenewOnlyStarted);
+        Assert.Equal(TimeSpan.FromMinutes(5), opened[0].MaxAutoLockRenewalDuration);
+    }
+
+    [Fact]
+    public async Task Handler_IsReportedStartedBeforeItRuns_ThenAcks()
+    {
+        var stream = new FakeStream();
+        var (client, _) = ClientOver(stream);
+        var startedBeforeHandler = new List<string>();
+        var consumer = Consumer(client.Object, new QueueConsumerOptions(), (_, _) =>
+        {
+            startedBeforeHandler.AddRange(stream.Started);
+            return Task.CompletedTask;
+        });
+
+        await consumer.StartAsync();
+        stream.Deliver("L1");
+        await WaitUntilAsync(() => stream.Settled.Any(s => s.Action == "ack"));
+        await consumer.StopAsync();
+
+        Assert.Equal(new[] { "L1" }, startedBeforeHandler);
+        Assert.Equal(new[] { ("ack", "L1") }, stream.Settled);
     }
 
     [Theory]
