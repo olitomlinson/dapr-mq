@@ -657,6 +657,88 @@ public class QueueActorLockExpiryTests
     }
 
     [Fact]
+    public async Task DequeueLocked_BatchLargerThanAChunk_FilesTheBucketInFixedSizeChunks()
+    {
+        // A burst puts thousands of ids in one bucket. Held as one list, every DequeueLocked and every
+        // sweep that changed it rewrote the whole thing; chunks bound each write to 100 ids.
+        var (actor, state) = await CreateActorAsync();
+        await actor.Enqueue(new EnqueueRequest
+        {
+            Items = Enumerable.Range(1, 250).Select(n => new EnqueueItem { ItemJson = $"{{\"n\":{n}}}", Priority = 1 }).ToList()
+        });
+
+        var result = await actor.DequeueLocked(new DequeueLockedRequest { Count = 250, TtlSeconds = 30, AllowCompetingConsumers = true });
+
+        long bucket = BucketFor(result.Items[0].LockExpiresAt);
+        var ids = result.Items.Select(i => i.LockId).ToList();
+        Assert.Equal(ids.Take(100), (List<string>)state[ExpiryBucketKey(bucket)]);
+        Assert.Equal(ids.Skip(100).Take(100), (List<string>)state[$"{ExpiryBucketKey(bucket)}_1"]);
+        Assert.Equal(ids.Skip(200), (List<string>)state[$"{ExpiryBucketKey(bucket)}_2"]);
+        var metadata = (ActorMetadata)state["metadata"];
+        Assert.Equal(new LockBucketChunks { First = 0, Last = 2 }, metadata.LockExpiryChunks[bucket]);
+    }
+
+    [Fact]
+    public async Task Sweep_ChunkedBucket_RewritesOnlyTheChunksItReaches_AndDropsTheBucketOnceAllAreEmpty()
+    {
+        var (actor, state) = await CreateActorAsync(
+            lockConfig: new LockConfig { MaxDeliveryCount = 10, SweepBatchSize = 150 });
+        long bucket = BucketFor(Now() - 10);
+        var chunks = Enumerable.Range(0, 3)
+            .Select(c => Enumerable.Range(0, c == 2 ? 50 : 100).Select(i => $"settled{c}{i:D3}").ToList())
+            .ToList();
+        state[ExpiryBucketKey(bucket)] = chunks[0];
+        state[$"{ExpiryBucketKey(bucket)}_1"] = chunks[1];
+        state[$"{ExpiryBucketKey(bucket)}_2"] = chunks[2];
+        state["metadata"] = ((ActorMetadata)state["metadata"]) with
+        {
+            LockExpiryBuckets = [bucket],
+            LockExpiryChunks = new() { [bucket] = new LockBucketChunks { First = 0, Last = 2 } }
+        };
+
+        await actor.Dequeue(new DequeueRequest { Count = 0 });
+
+        // 150 reads: all of chunk 0 and half of chunk 1. The last chunk isn't touched.
+        Assert.False(state.ContainsKey(ExpiryBucketKey(bucket)));
+        Assert.Equal(chunks[1].Skip(50), (List<string>)state[$"{ExpiryBucketKey(bucket)}_1"]);
+        Assert.Same(chunks[2], state[$"{ExpiryBucketKey(bucket)}_2"]);
+        Assert.Equal(new LockBucketChunks { First = 1, Last = 2 }, ((ActorMetadata)state["metadata"]).LockExpiryChunks[bucket]);
+
+        await actor.Dequeue(new DequeueRequest { Count = 0 });
+
+        var metadata = (ActorMetadata)state["metadata"];
+        Assert.Empty(metadata.LockExpiryBuckets);
+        Assert.Empty(metadata.LockExpiryChunks);
+        Assert.DoesNotContain(state.Keys, k => k.StartsWith("locks_exp_"));
+    }
+
+    [Fact]
+    public async Task Sweep_DropsAnExtendedLocksEntryInItsOldBucket_OnceTheNewBucketHoldsIt()
+    {
+        // ExtendLock files the lock under its new bucket and leaves the old entry behind. Kept as a
+        // survivor, that entry was read again on every sweep for as long as the lock was renewed.
+        var (actor, state) = await CreateActorAsync();
+        await EnqueueAsync(actor, "{\"id\":\"A\"}");
+        var locked = await actor.DequeueLocked(new DequeueLockedRequest { TtlSeconds = 30, AllowCompetingConsumers = true });
+        var lockId = locked.Items[0].LockId;
+        var extended = await actor.ExtendLock(new ExtendLockRequest { LockId = lockId, AdditionalTtlSeconds = 60 });
+
+        // Let the original bucket come due.
+        long oldBucket = BucketFor(locked.Items[0].LockExpiresAt), lapsed = BucketFor(Now() - 10);
+        state[ExpiryBucketKey(lapsed)] = state[ExpiryBucketKey(oldBucket)];
+        state.Remove(ExpiryBucketKey(oldBucket));
+        var metadata = (ActorMetadata)state["metadata"];
+        state["metadata"] = metadata with { LockExpiryBuckets = metadata.LockExpiryBuckets.Select(b => b == oldBucket ? lapsed : b).Order().ToList() };
+
+        await actor.Dequeue(new DequeueRequest { Count = 0 });
+
+        Assert.False(state.ContainsKey(ExpiryBucketKey(lapsed)));
+        Assert.Equal([lockId], (List<string>)state[BucketKey(extended.NewExpiresAt)]);
+        Assert.Equal([BucketFor(extended.NewExpiresAt)], ((ActorMetadata)state["metadata"]).LockExpiryBuckets);
+        Assert.Equal(1, ((ActorMetadata)state["metadata"]).LockCount);
+    }
+
+    [Fact]
     public async Task Acknowledge_LeavesTheBucketedIndexAlone_AndTheSweepDiscardsTheStaleEntry()
     {
         // Settling is the hot path and a bucket can hold every lock from one bulk dequeue, so ack must
@@ -735,8 +817,8 @@ public class QueueActorLockExpiryTests
         Assert.NotEqual(originalBucketKey, newBucketKey);
         Assert.Equal([lockId], Assert.IsType<List<string>>(state[newBucketKey]));
 
-        // The old entry is left behind rather than rewritten out; the sweep keeps a not-yet-expired
-        // id as a survivor, so the duplicate is harmless and costs one string instead of an O(n) pass.
+        // The old entry is left behind rather than rewritten out; the sweep drops it once the old
+        // bucket comes due (Sweep_DropsAnExtendedLocksEntryInItsOldBucket_OnceTheNewBucketHoldsIt).
         var metadata = Assert.IsType<ActorMetadata>(state["metadata"]);
         Assert.Contains(BucketFor(extended.NewExpiresAt), metadata.LockExpiryBuckets);
     }

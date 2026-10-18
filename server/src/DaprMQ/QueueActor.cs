@@ -41,6 +41,15 @@ public record ActorMetadata
     public List<long> LockExpiryBuckets { get; init; } = new();
 
     /// <summary>
+    /// The live chunk range of each bucket filed in more than its one first chunk. A bucket's ids are
+    /// split into lists of at most LockIndexChunkSize, so a burst that files thousands of locks under
+    /// one bucket doesn't make every DequeueLocked and every sweep rewrite them all. A bucket missing
+    /// here is the single chunk 0 - the "locks_exp_{bucket}" entry - which is every bucket on a quiet
+    /// queue, and every bucket written before chunking existed.
+    /// </summary>
+    public Dictionary<long, LockBucketChunks> LockExpiryChunks { get; init; } = new();
+
+    /// <summary>
     /// Next value to stamp on an enqueued item, incremented once per item. Actor-wide rather than
     /// per-priority: the count-desync repair in DequeueWithPriorityAsync drops a priority's
     /// QueueMetadata outright, which would reset a counter living there and reissue numbers already
@@ -48,6 +57,16 @@ public record ActorMetadata
     /// compares these, never indexes by them.
     /// </summary>
     public long NextSequence { get; init; } = 0;
+}
+
+/// <summary>
+/// The chunks of an expiry bucket still in state: First is the oldest the sweep hasn't emptied, Last
+/// is the one new ids are appended to. See ActorMetadata.LockExpiryChunks.
+/// </summary>
+public record LockBucketChunks
+{
+    public int First { get; init; }
+    public int Last { get; init; }
 }
 
 /// <summary>
@@ -207,6 +226,16 @@ public class QueueActor : Actor, IQueueActor
 
     internal static string ExpiryBucketKey(long bucket) => $"locks_exp_{bucket}";
 
+    /// <summary>Most ids one chunk of an expiry bucket holds; see ActorMetadata.LockExpiryChunks.</summary>
+    internal const int LockIndexChunkSize = 100;
+
+    /// <summary>Chunk 0 keeps the bucket's own key, so a bucket that never fills one chunk is unchanged.</summary>
+    internal static string ExpiryChunkKey(long bucket, int chunk) =>
+        chunk == 0 ? ExpiryBucketKey(bucket) : $"{ExpiryBucketKey(bucket)}_{chunk}";
+
+    internal static LockBucketChunks ChunksOf(ActorMetadata metadata, long bucket) =>
+        metadata.LockExpiryChunks.TryGetValue(bucket, out var chunks) ? chunks : new LockBucketChunks();
+
     // Key formats the admin reads walk; the actor itself builds these inline.
     internal static string SegmentKey(int priority, int segment) => $"queue_{priority}_seg_{segment}";
     internal static string LockKey(string lockId) => $"{lockId}-lock";
@@ -217,34 +246,67 @@ public class QueueActor : Actor, IQueueActor
     /// dequeue order, which is the original FIFO order, so a bulk requeue can replay them faithfully.
     /// </summary>
     private async Task<ActorMetadata> IndexLocksAsync(ActorMetadata metadata, IEnumerable<string> lockIds, double expiresAt) =>
-        await IndexLocksAsync(metadata, lockIds, expiresAt, await ReadLockIndexAsync(expiresAt));
+        await IndexLocksAsync(metadata, lockIds, expiresAt, await ReadLockIndexAsync(metadata, expiresAt));
 
     /// <summary>
-    /// The index entry that locks expiring at expiresAt are filed under: the session's list on a session
-    /// actor, the expiry bucket's otherwise. Read on its own so DequeueLocked can read it before staging
-    /// anything - a failed read after the dequeue would otherwise commit locks nobody can find.
+    /// The index entry that locks expiring at expiresAt are appended to: the session's list on a session
+    /// actor, the last chunk of the expiry bucket otherwise. Read on its own so DequeueLocked can read it
+    /// before staging anything - a failed read after the dequeue would otherwise commit locks nobody can
+    /// find.
     /// </summary>
-    private async Task<List<string>> ReadLockIndexAsync(double expiresAt)
+    private async Task<List<string>> ReadLockIndexAsync(ActorMetadata metadata, double expiresAt)
     {
-        var existing = await StateManager.TryGetStateAsync<List<string>>(LockIndexKeyFor(expiresAt));
+        var existing = await StateManager.TryGetStateAsync<List<string>>(LockIndexKeyFor(metadata, expiresAt));
         return existing.HasValue ? new List<string>(existing.Value) : new List<string>();
     }
 
-    private string LockIndexKeyFor(double expiresAt) =>
-        IsSessionActor() ? SessionLockIndexKey : ExpiryBucketKey(ExpiryBucketFor(expiresAt));
-
-    /// <summary>Stages lockIds into an index entry already read with ReadLockIndexAsync.</summary>
-    private async Task<ActorMetadata> IndexLocksAsync(ActorMetadata metadata, IEnumerable<string> lockIds, double expiresAt, List<string> index)
+    private string LockIndexKeyFor(ActorMetadata metadata, double expiresAt)
     {
-        index.AddRange(lockIds);
-        await StateManager.SetStateAsync(LockIndexKeyFor(expiresAt), index);
-
         if (IsSessionActor())
         {
+            return SessionLockIndexKey;
+        }
+
+        long bucket = ExpiryBucketFor(expiresAt);
+        return ExpiryChunkKey(bucket, ChunksOf(metadata, bucket).Last);
+    }
+
+    /// <summary>
+    /// Stages lockIds into an index entry already read with ReadLockIndexAsync. On a plain queue, ids that
+    /// don't fit in the bucket's last chunk start new ones, which need no read: no chunk past Last exists.
+    /// </summary>
+    private async Task<ActorMetadata> IndexLocksAsync(ActorMetadata metadata, IEnumerable<string> lockIds, double expiresAt, List<string> index)
+    {
+        if (IsSessionActor())
+        {
+            index.AddRange(lockIds);
+            await StateManager.SetStateAsync(SessionLockIndexKey, index);
             return metadata;
         }
 
         long bucket = ExpiryBucketFor(expiresAt);
+        var chunks = ChunksOf(metadata, bucket);
+        int last = chunks.Last;
+        foreach (var lockId in lockIds)
+        {
+            if (index.Count >= LockIndexChunkSize)
+            {
+                await StateManager.SetStateAsync(ExpiryChunkKey(bucket, last), index);
+                last++;
+                index = new List<string>();
+            }
+            index.Add(lockId);
+        }
+        await StateManager.SetStateAsync(ExpiryChunkKey(bucket, last), index);
+
+        if (last != chunks.Last)
+        {
+            metadata = metadata with
+            {
+                LockExpiryChunks = new Dictionary<long, LockBucketChunks>(metadata.LockExpiryChunks) { [bucket] = chunks with { Last = last } }
+            };
+        }
+
         if (metadata.LockExpiryBuckets.Contains(bucket))
         {
             return metadata;
@@ -681,6 +743,7 @@ public class QueueActor : Actor, IQueueActor
         var restored = new List<(QueueSegmentItem Item, int Priority)>();
         var deadLettered = new List<string>();
         var emptiedBuckets = new List<long>();
+        var advancedBuckets = new Dictionary<long, LockBucketChunks>();
 
         foreach (var bucket in dueBuckets)
         {
@@ -689,17 +752,96 @@ public class QueueActor : Actor, IQueueActor
                 break;
             }
 
-            string bucketKey = ExpiryBucketKey(bucket);
-            var bucketState = await StateManager.TryGetStateAsync<List<string>>(bucketKey);
-            if (!bucketState.HasValue)
+            // Oldest chunk first. Each chunk is rewritten only if this sweep changed it, so the write
+            // is bounded by LockIndexChunkSize however many locks the bucket holds.
+            var chunks = ChunksOf(metadata, bucket);
+            int first = chunks.First;
+            for (int chunk = chunks.First; chunk <= chunks.Last && budget > 0; chunk++)
             {
-                emptiedBuckets.Add(bucket); // index entry with no backing list - drop it
-                continue;
+                string chunkKey = ExpiryChunkKey(bucket, chunk);
+                var chunkState = await StateManager.TryGetStateAsync<List<string>>(chunkKey);
+                if (!chunkState.HasValue)
+                {
+                    // Emptied by an earlier sweep behind a chunk that still had survivors, or a bucket
+                    // index entry with no backing list.
+                    first += chunk == first ? 1 : 0;
+                    continue;
+                }
+
+                var ids = chunkState.Value;
+                var survivors = await SweepChunkAsync(ids, bucket, metadata);
+                if (survivors.Count == 0)
+                {
+                    await StateManager.RemoveStateAsync(chunkKey);
+                    first += chunk == first ? 1 : 0;
+                }
+                else if (!survivors.SequenceEqual(ids))
+                {
+                    await StateManager.SetStateAsync(chunkKey, survivors);
+                }
             }
 
+            if (first > chunks.Last)
+            {
+                emptiedBuckets.Add(bucket);
+            }
+            else if (first != chunks.First)
+            {
+                advancedBuckets[bucket] = chunks with { First = first };
+            }
+        }
+
+        // Skipped when nothing local changed - but dead-lettering below still runs.
+        if (expired > 0 || emptiedBuckets.Count > 0 || advancedBuckets.Count > 0)
+        {
+            await RestoreInOrderInternal(restored);
+
+            if (restored.Count > 0)
+            {
+                Logger.LogInformation(
+                    "Sweep expired {Expired} lock(s); restored {Restored} item(s) to their original positions",
+                    expired, restored.Count);
+            }
+
+            // Re-read: the restore staged queue/metadata updates of its own.
+            metadata = await GetMetadataAsync();
+            var buckets = metadata.LockExpiryBuckets.Where(b => !emptiedBuckets.Contains(b)).ToList();
+            var chunkRanges = new Dictionary<long, LockBucketChunks>(metadata.LockExpiryChunks);
+            foreach (var bucket in emptiedBuckets)
+            {
+                chunkRanges.Remove(bucket);
+            }
+            foreach (var (bucket, range) in advancedBuckets)
+            {
+                chunkRanges[bucket] = range;
+            }
+            await SetMetadataAsync(metadata with
+            {
+                LockCount = Math.Max(0, metadata.LockCount - expired),
+                LockExpiryBuckets = buckets,
+                LockExpiryChunks = chunkRanges
+            });
+            await StateManager.SaveStateAsync();
+        }
+
+        // Cross-actor, so kept out of the batch above and committed per item - see
+        // DeadLetterExpiredLockAsync.
+        foreach (var lockId in deadLettered)
+        {
+            var lockState = await StateManager.TryGetStateAsync<LockState>($"{lockId}-lock");
+            if (lockState.HasValue)
+            {
+                await DeadLetterExpiredLockAsync(lockId, lockState.Value);
+            }
+        }
+
+        // Reads the locks behind one chunk's ids, within the budget, staging the removal of each
+        // expired one. Returns the ids the chunk should keep: those it didn't reach first, so the next
+        // sweep starts where this one stopped, then the live and dead-letter-pending ones it read.
+        async Task<List<string>> SweepChunkAsync(List<string> ids, long bucket, ActorMetadata indexed)
+        {
             var survivors = new List<string>();
             var unread = new List<string>();
-            var ids = bucketState.Value;
 
             for (int i = 0; i < ids.Count; i++)
             {
@@ -707,8 +849,6 @@ public class QueueActor : Actor, IQueueActor
 
                 if (budget <= 0)
                 {
-                    // Out of budget: everything not yet examined stays for the next operation, ahead
-                    // of the survivors so that operation starts where this one stopped.
                     unread.AddRange(ids.Skip(i));
                     break;
                 }
@@ -727,6 +867,14 @@ public class QueueActor : Actor, IQueueActor
                 // not lapsed yet (and locks extended into a later expiry). Check each one.
                 if (now < lockState.Value.ExpiresAt)
                 {
+                    // An extended lock: ExtendLock filed it under its new bucket and left this entry
+                    // behind, so once that bucket is indexed the entry here is only a duplicate.
+                    long ownBucket = ExpiryBucketFor(lockState.Value.ExpiresAt);
+                    if (ownBucket != bucket && indexed.LockExpiryBuckets.Contains(ownBucket))
+                    {
+                        continue;
+                    }
+
                     survivors.Add(lockId);
                     continue;
                 }
@@ -748,49 +896,7 @@ public class QueueActor : Actor, IQueueActor
             }
 
             survivors.InsertRange(0, unread);
-            if (survivors.Count == 0)
-            {
-                await StateManager.RemoveStateAsync(bucketKey);
-                emptiedBuckets.Add(bucket);
-            }
-            else if (!survivors.SequenceEqual(ids))
-            {
-                await StateManager.SetStateAsync(bucketKey, survivors);
-            }
-        }
-
-        // Skipped when nothing local changed - but dead-lettering below still runs.
-        if (expired > 0 || emptiedBuckets.Count > 0)
-        {
-            await RestoreInOrderInternal(restored);
-
-            if (restored.Count > 0)
-            {
-                Logger.LogInformation(
-                    "Sweep expired {Expired} lock(s); restored {Restored} item(s) to their original positions",
-                    expired, restored.Count);
-            }
-
-            // Re-read: the restore staged queue/metadata updates of its own.
-            metadata = await GetMetadataAsync();
-            var buckets = metadata.LockExpiryBuckets.Where(b => !emptiedBuckets.Contains(b)).ToList();
-            await SetMetadataAsync(metadata with
-            {
-                LockCount = Math.Max(0, metadata.LockCount - expired),
-                LockExpiryBuckets = buckets
-            });
-            await StateManager.SaveStateAsync();
-        }
-
-        // Cross-actor, so kept out of the batch above and committed per item - see
-        // DeadLetterExpiredLockAsync.
-        foreach (var lockId in deadLettered)
-        {
-            var lockState = await StateManager.TryGetStateAsync<LockState>($"{lockId}-lock");
-            if (lockState.HasValue)
-            {
-                await DeadLetterExpiredLockAsync(lockId, lockState.Value);
-            }
+            return survivors;
         }
     }
 
@@ -1703,7 +1809,7 @@ public class QueueActor : Actor, IQueueActor
             // read failing after the loop would commit items taken off the queue under locks that are
             // neither counted nor indexed - lost. Skipped when nothing is ready, so an idle poll costs no
             // extra read.
-            var lockIndex = metadata.Queues.Values.Any(q => q.Count > 0) ? await ReadLockIndexAsync(lockExpiresAt) : null;
+            var lockIndex = metadata.Queues.Values.Any(q => q.Count > 0) ? await ReadLockIndexAsync(metadata, lockExpiresAt) : null;
 
             for (int i = 0; lockIndex != null && i < count; i++)
             {
@@ -1772,8 +1878,8 @@ public class QueueActor : Actor, IQueueActor
             metadata = await GetMetadataAsync();
             // Save all state atomically - increment lock counter
             metadata = metadata with { LockCount = metadata.LockCount + lockedItems.Count };
-            // Index the whole batch in one write: every lock here shares lockExpiresAt, so they share
-            // a bucket. This is what makes these locks findable again without a per-lock reminder.
+            // Index the whole batch together: every lock here shares lockExpiresAt, so they share a
+            // bucket. This is what makes these locks findable again without a per-lock reminder.
             metadata = await IndexLocksAsync(metadata, newLockIds, lockExpiresAt, lockIndex!);
             await SetMetadataAsync(metadata);
             await StateManager.SaveStateAsync();
@@ -2064,9 +2170,9 @@ public class QueueActor : Actor, IQueueActor
             await StateManager.SetStateAsync($"{lockId}-lock", updatedLock);
 
             // File the id under its new expiry bucket so the sweep will still find it once the
-            // extension runs out. The old entry is left behind on purpose: the sweep checks each
-            // lock's real ExpiresAt and simply keeps a not-yet-expired id as a survivor, so a stale
-            // duplicate costs one string rather than an O(n) rewrite of a potentially huge bucket.
+            // extension runs out. The old entry is left behind on purpose, rather than rewriting a
+            // potentially huge bucket here: once the old bucket comes due, the sweep sees the lock's
+            // real ExpiresAt falls in an indexed later bucket and drops the duplicate.
             if (!IsSessionActor() && ExpiryBucketFor(newExpiresAt) != ExpiryBucketFor(lockData.ExpiresAt))
             {
                 metadata = await IndexLocksAsync(metadata, [lockId], newExpiresAt);
@@ -2173,7 +2279,7 @@ public class QueueActor : Actor, IQueueActor
             if (results.Any(r => r.Outcome == ExtendOutcomeExtended))
             {
                 // File each moved lock under its new expiry bucket, one index write per bucket. As in
-                // ExtendLock, the stale entry in the old bucket is left for the sweep to skip.
+                // ExtendLock, the stale entry in the old bucket is left for the sweep to drop.
                 foreach (var bucket in reindex.GroupBy(r => ExpiryBucketFor(r.NewExpiresAt)))
                 {
                     metadata = await IndexLocksAsync(metadata, bucket.Select(r => r.LockId).ToList(), bucket.First().NewExpiresAt);

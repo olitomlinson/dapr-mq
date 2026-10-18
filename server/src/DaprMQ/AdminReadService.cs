@@ -351,8 +351,8 @@ public class AdminReadService : IAdminReadService
     }
 
     /// <summary>
-    /// Lock ids in index order: the session index on a session actor, else every expiry bucket in
-    /// bucket order. The bucketed index may still list settled locks.
+    /// Lock ids in index order: the session index on a session actor, else every chunk of every expiry
+    /// bucket in bucket order. The bucketed index may still list settled locks.
     /// </summary>
     private async Task<List<string>> ReadLockIndexAsync(string queueId, ActorMetadata metadata, CancellationToken cancellationToken)
     {
@@ -361,9 +361,14 @@ public class AdminReadService : IAdminReadService
             return await _reader.ReadStateAsync<List<string>>(_types.Queue, queueId, QueueActor.SessionLockIndexKey, cancellationToken) ?? [];
         }
 
-        var buckets = await Task.WhenAll(metadata.LockExpiryBuckets.Order().Select(bucket =>
-            _reader.ReadStateAsync<List<string>>(_types.Queue, queueId, QueueActor.ExpiryBucketKey(bucket), cancellationToken)));
-        return buckets.SelectMany(ids => ids ?? []).Distinct().ToList();
+        var chunkKeys = metadata.LockExpiryBuckets.Order().SelectMany(bucket =>
+        {
+            var chunks = QueueActor.ChunksOf(metadata, bucket);
+            return Enumerable.Range(chunks.First, chunks.Last - chunks.First + 1).Select(chunk => QueueActor.ExpiryChunkKey(bucket, chunk));
+        });
+        var chunkIds = await Task.WhenAll(chunkKeys.Select(key =>
+            _reader.ReadStateAsync<List<string>>(_types.Queue, queueId, key, cancellationToken)));
+        return chunkIds.SelectMany(ids => ids ?? []).Distinct().ToList();
     }
 
     private async Task<AdminReadResult<AdminPayload>> ReadPayloadAsync(string itemJson, CancellationToken cancellationToken)

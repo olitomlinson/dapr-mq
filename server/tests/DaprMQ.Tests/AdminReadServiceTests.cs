@@ -300,6 +300,28 @@ public class AdminReadServiceTests
     }
 
     [Fact]
+    public async Task Locks_WalkEveryChunkOfABucket_InChunkOrder()
+    {
+        Queue("orders", Meta() with
+        {
+            LockCount = 3,
+            LockExpiryBuckets = [10],
+            LockExpiryChunks = new() { [10] = new LockBucketChunks { First = 1, Last = 3 } }
+        });
+        _reader.State[("QueueActor", "orders", "locks_exp_10")] = new List<string> { "swept" };
+        _reader.State[("QueueActor", "orders", "locks_exp_10_1")] = new List<string> { "lockA" };
+        _reader.State[("QueueActor", "orders", "locks_exp_10_3")] = new List<string> { "lockB", "lockC" };
+        Lock("orders", "lockA", 1);
+        Lock("orders", "lockB", 2);
+        Lock("orders", "lockC", 3);
+        Lock("orders", "swept", 4);
+
+        var page = (await CreateService().ListLocksAsync("orders", 0, 10)).Value!;
+
+        Assert.Equal(["lockA", "lockB", "lockC"], page.Items.Select(l => l.LockId));
+    }
+
+    [Fact]
     public async Task Locks_PageByIndexOffset()
     {
         Queue("orders", Meta() with { LockExpiryBuckets = [10] });
