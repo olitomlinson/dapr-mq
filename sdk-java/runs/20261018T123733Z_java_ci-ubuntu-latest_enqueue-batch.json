@@ -1,0 +1,90 @@
+{
+  "schemaVersion" : 2,
+  "runId" : "20261018T123733Z_java_ci-ubuntu-latest_enqueue-batch",
+  "timestampUtc" : "2026-10-18T12:37:33.445537416Z",
+  "sdk" : {
+    "name" : "java",
+    "version" : null,
+    "runtime" : "OpenJDK 64-Bit Server VM 17.0.20.1"
+  },
+  "environment" : {
+    "label" : "ci-ubuntu-latest",
+    "gitSha" : "102a779019f204ab23442dd6da8278b66bc9c31a",
+    "gitBranch" : "main",
+    "gitDirty" : false,
+    "os" : "Linux 6.17.0-1022-azure",
+    "cpuCount" : 4
+  },
+  "topology" : {
+    "apiReplicas" : 1,
+    "schedulerReplicas" : 3,
+    "loadBalancer" : false,
+    "server" : "testcontainers daprmq-api:test"
+  },
+  "scale" : "pr",
+  "scenario" : {
+    "id" : "P-02",
+    "name" : "enqueue-batch",
+    "profile" : "enqueue-batch",
+    "key" : "enqueue-batch:c4/q4/b100/256B/3+15s",
+    "params" : {
+      "concurrency" : [ 4 ],
+      "queues" : 4,
+      "batchSize" : 100,
+      "dequeueCount" : 1,
+      "payloadBytes" : 256,
+      "seedPerQueue" : 0,
+      "warmupSeconds" : 3,
+      "durationSeconds" : 15
+    }
+  },
+  "metrics" : {
+    "opsPerSecond" : 426.93333333333334,
+    "messagesPerSecond" : 42693.333333333336,
+    "latencyMs" : {
+      "count" : 6404,
+      "mean" : 9.367704952998112,
+      "p50" : 8.84124200000042,
+      "p95" : 12.915298999998413,
+      "p99" : 15.223802999999862,
+      "max" : 102.59915899999987
+    },
+    "ops" : 6404,
+    "messages" : 640400,
+    "errors" : 0
+  },
+  "checks" : {
+    "passed" : true,
+    "failures" : [ ]
+  },
+  "steps" : [ {
+    "concurrency" : 4,
+    "queues" : 4,
+    "durationSeconds" : 15.0,
+    "ops" : 6404,
+    "messages" : 640400,
+    "errors" : 0,
+    "opsPerSecond" : 426.93333333333334,
+    "messagesPerSecond" : 42693.333333333336,
+    "latencyMs" : {
+      "count" : 6404,
+      "mean" : 9.367704952998112,
+      "p50" : 8.84124200000042,
+      "p95" : 12.915298999998413,
+      "p99" : 15.223802999999862,
+      "max" : 102.59915899999987
+    }
+  } ],
+  "timeline" : {
+    "bucketMs" : 1000,
+    "series" : {
+      "opsPerSecond" : [ 381, 431, 428, 421, 434, 423, 428, 431, 427, 425, 436, 431, 435, 435, 438 ],
+      "messagesPerSecond" : [ 38100, 43100, 42800, 42100, 43400, 42300, 42800, 43100, 42700, 42500, 43600, 43100, 43500, 43500, 43800 ],
+      "latencyP50Ms" : [ 9.056, 8.906, 8.921, 8.889, 8.683, 9.046, 8.835, 8.85, 8.934, 8.864, 8.764, 8.66, 8.801, 8.804, 8.612 ],
+      "latencyP95Ms" : [ 13.563, 12.863, 12.837, 13.673, 12.716, 12.876, 12.946, 13.077, 12.751, 13.493, 12.673, 13.58, 12.379, 12.269, 12.786 ],
+      "latencyP99Ms" : [ 95.142, 15.741, 14.906, 16.125, 14.382, 15.224, 14.922, 14.152, 15.492, 15.78, 14.448, 15.227, 14.238, 13.65, 14.46 ],
+      "errors" : [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 ],
+      "concurrency" : [ 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 ]
+    }
+  }
+}
