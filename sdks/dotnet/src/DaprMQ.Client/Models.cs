@@ -85,6 +85,21 @@ public record ConsumeOptions
     public bool AllowCompetingConsumers { get; init; }
 
     /// <summary>
+    /// Renew only the locks of items reported started with <see cref="QueueDelivery.StartedAsync"/>,
+    /// as Azure Service Bus renews only messages a handler is processing. A delivered item never
+    /// reported started runs out its lock and returns to the queue, counting as a delivery. Off by
+    /// default: the server renews every delivered item's lock until it is settled.
+    /// </summary>
+    public bool RenewOnlyStarted { get; init; }
+
+    /// <summary>
+    /// With <see cref="RenewOnlyStarted"/>: how long after an item is reported started the server stops
+    /// renewing its lock, so a stuck handler can't hold it forever. Zero (the default) is no limit.
+    /// Sent in whole seconds, rounded up.
+    /// </summary>
+    public TimeSpan MaxAutoLockRenewalDuration { get; init; }
+
+    /// <summary>
     /// Called from the stream's reader when the server rejects an Ack, Nack or DeadLetter (for
     /// example <see cref="Exceptions.LockNotFoundException"/> once the lock was lost). The stream carries on.
     /// </summary>
@@ -105,6 +120,13 @@ public sealed class QueueDelivery
 
     /// <summary>1 on a first delivery, 2 on the first redelivery after a Nack or a lapsed lock, and so on.</summary>
     public required int DeliveryCount { get; init; }
+
+    /// <summary>
+    /// Reports that a handler has started the item, so the server renews its lock - needed only with
+    /// <see cref="ConsumeOptions.RenewOnlyStarted"/>. A lock that lapsed first comes back through
+    /// <see cref="ConsumeOptions.OnSettleFailed"/> as a lock expiry.
+    /// </summary>
+    public Func<CancellationToken, Task> StartedAsync { get; init; } = _ => Task.CompletedTask;
 
     /// <summary>Permanently removes the item.</summary>
     public required Func<CancellationToken, Task> AckAsync { get; init; }

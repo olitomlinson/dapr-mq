@@ -591,6 +591,10 @@ message ConsumeRequest {
 
     // Move a delivered item to the dead letter queue.
     ConsumeDeadLetter dead_letter = 4;
+
+    // Handlers have started these delivered items. With lock_renewal RENEW_STARTED, only these locks
+    // are renewed.
+    ConsumeStarted started = 5;
   }
 }
 
@@ -612,6 +616,25 @@ message ConsumeStart {
   // Let this stream hold locks while other consumers hold theirs, as on DequeueLocked. When false,
   // the queue serves one lock holder at a time.
   bool allow_competing_consumers = 4;
+
+  // Which locks the server renews. RENEW_DELIVERED (the default) renews every delivered, unsettled
+  // lock. RENEW_STARTED renews only locks named in a Started frame, as Azure Service Bus renews only
+  // messages a handler is processing: a delivered item no handler has started runs out its lock and
+  // returns to the queue, counting as a delivery.
+  ConsumeLockRenewal lock_renewal = 5;
+
+  // With RENEW_STARTED: stop renewing a started lock this many seconds after it started (0 = no
+  // limit), so a stuck handler can't hold its item forever. Service Bus's MaxAutoLockRenewalDuration.
+  int32 max_renewal_seconds = 6;
+}
+
+enum ConsumeLockRenewal {
+  RENEW_DELIVERED = 0;
+  RENEW_STARTED = 1;
+}
+
+message ConsumeStarted {
+  repeated string lock_ids = 1;
 }
 
 message ConsumeAck {
