@@ -208,7 +208,8 @@ while [[ $SECONDS -lt $deadline ]]; do
         published_at=$((SECONDS - start)); LAUNCHER_PID=""
         log_info "t=${published_at}s all ${PUBLISHERS} publishers finished"
     fi
-    [[ -n "$published_at" && "$r" == "0" ]] && break
+    # Back at 0 only counts once KEDA has scaled out: batch publishing can finish before the first replica starts.
+    [[ -n "$published_at" && "$r" == "0" && $peak -gt 0 ]] && break
     if (( SECONDS - start - last_report >= 15 )); then
         last_report=$((SECONDS - start))
         [[ -z "$published_at" ]] && pubs="publishers=$(publishers_started) started/$(publishers_done) done" || pubs="publishing done"
@@ -251,10 +252,10 @@ else
     fail "workers consumed in parallel" "only ${pods:-0} pod(s) logged processed items"
 fi
 
-if [[ -n "$published_at" && "$(replicas)" == "0" ]]; then
+if [[ -n "$published_at" && $peak -gt 0 && "$(replicas)" == "0" ]]; then
     pass "queue drained and worker scaled back to 0 (${elapsed}s after the first publish, cooldown ${COOLDOWN}s)"
 else
-    fail "queue drained and worker scaled back to 0" "still at $(replicas) replicas after ${elapsed}s"
+    fail "queue drained and worker scaled back to 0" "$([[ $peak -gt 0 ]] && echo "still at $(replicas) replicas" || echo "never scaled out") after ${elapsed}s"
 fi
 
 # ---------------------------------------------------------------------------
