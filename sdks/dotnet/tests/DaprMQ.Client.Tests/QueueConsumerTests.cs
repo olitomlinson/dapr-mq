@@ -123,9 +123,30 @@ public class QueueConsumerTests
         await WaitUntilAsync(() => opened.Count == 1);
         await consumer.StopAsync();
 
-        Assert.Equal(100, opened[0].PrefetchCount);
-        Assert.Equal(TimeSpan.FromSeconds(30), opened[0].LockTtl);
+        // Service Bus's processor defaults: one handler (MaxConcurrentCalls = 1), no prefetch beyond
+        // what the handlers hold (PrefetchCount = 0), and a 60s lock.
+        Assert.Equal(1, opened[0].PrefetchCount);
+        Assert.Equal(TimeSpan.FromSeconds(60), opened[0].LockTtl);
         Assert.True(opened[0].AllowCompetingConsumers);
+    }
+
+    [Theory]
+    [InlineData(10, null, 10)]   // the window defaults to the handler count: nothing waits locked
+    [InlineData(0, null, 100)]   // unlimited handlers keep the old window of 100
+    [InlineData(2, 20, 20)]      // an explicit window is honoured: extra messages are prefetched
+    public async Task Window_DefaultsToTheHandlerCount(int handlers, int? maxActiveMessages, int expectedPrefetch)
+    {
+        var stream = new FakeStream();
+        var (client, opened) = ClientOver(stream);
+        var consumer = Consumer(client.Object,
+            new QueueConsumerOptions { MaxConcurrentHandlers = handlers, MaxActiveMessages = maxActiveMessages },
+            (_, _) => Task.CompletedTask);
+
+        await consumer.StartAsync();
+        await WaitUntilAsync(() => opened.Count == 1);
+        await consumer.StopAsync();
+
+        Assert.Equal(expectedPrefetch, opened[0].PrefetchCount);
     }
 
     [Fact]

@@ -124,15 +124,17 @@ Stopping - `StopAsync()` - stops handing out messages, lets running handlers fin
 
 | Option | Default | Notes |
 | --- | --- | --- |
-| `MaxActiveMessages` | 100 | The stream's prefetch count: messages locked to this consumer, handled or waiting |
-| `MaxConcurrentHandlers` | 0 (unlimited) | Bounded by `MaxActiveMessages` |
-| `LockTtl` | 30 s | The server renews each lock until its message is settled |
+| `MaxActiveMessages` | `MaxConcurrentHandlers`, or 100 when handlers are unlimited | The stream's prefetch count: messages locked to this consumer, handled or waiting. Above the handler count, the extra messages wait in the buffer, locked |
+| `MaxConcurrentHandlers` | 1 | 0 = unlimited, bounded by `MaxActiveMessages` |
+| `LockTtl` | 60 s | The server renews each lock until its message is settled |
 | `AllowCompetingConsumers` | `true` | Replicas share the queue |
 | `StrictOrder` | `false` | Queue order even after a nack: a window of 1, one handler, no competing consumers |
 | `OnHandlerError` | `Nack` | Or `DeadLetter` |
 | `MaxRetriableErrorsPerSec` | 10 | Paces nacks after handler errors; 0 for unpaced |
 | `MinBackoffSeconds` / `MaxBackoffSeconds` | 1 / 60 | Seconds before reopening a broken stream; doubles per break, resets after a delivery |
 | `DrainTimeout` | 30 s | |
+
+The defaults follow Azure Service Bus's processor: one handler (`MaxConcurrentCalls = 1`), no prefetch beyond what handlers hold (`PrefetchCount = 0`) and a 60-second lock. To prefetch, set `MaxActiveMessages` above `MaxConcurrentHandlers`, but keep it below what the consumer can handle within `LockTtl`. Service Bus suggests at most about `LockTtl ÷ 3 × messages handled per second`. Every message in the window holds a lock on the queue, so a window much larger than that costs lock renewals for messages that are only waiting.
 ## Sessions - manual (unary) API
 
 For sticky routing, admin tooling, or callers who don't want a managed consume loop:
