@@ -6,6 +6,20 @@ This document is for people developing or testing **this chart and the DaprMQ se
 
 Verified end-to-end against Docker Desktop's built-in Kubernetes with a real Postgres-backed state store - no external database or registry needed.
 
+**Scripted:** three repo-root scripts do all of the steps below. Each one prints its kube context on stdout, so they can be piped together or run on their own with `--context`:
+
+```bash
+./kind-create.sh | ./k8s-base-deploy.sh | ./daprmq-deploy.sh   # kind cluster -> Dapr, KEDA, Postgres -> DaprMQ + examples from source
+./daprmq-deploy.sh --context kind-daprmq-e2e                   # rebuild DaprMQ + examples from source and roll them out
+./daprmq-deploy.sh --context kind-daprmq-e2e --skip-examples   # rebuild and roll out just the server and operator
+./daprmq-deploy.sh --context kind-daprmq-e2e --skip-build      # redeploy the images already built locally
+./daprmq-deploy.sh --context docker-desktop --version 0.0.0-alpha.7   # a published chart instead of source
+```
+
+`daprmq-deploy.sh` builds from source unless `--version` is given, and running it without `--version` also moves a release that's on a published chart back to source. Each script's `--help` lists all of its options.
+
+The manual steps follow.
+
 **1. Postgres, namespace, and the state store Component:** follow [README.md's Prerequisites](README.md#prerequisites) as written - it already uses the recommended `daprmq` namespace and installs Postgres via the bitnami chart, which is exactly what this local setup needs too. Come back here once that's done.
 
 **2. Install from source instead of README's Quick Start:** rather than the packaged/registry image, build the server locally and point the chart at it:
