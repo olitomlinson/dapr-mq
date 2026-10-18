@@ -18,8 +18,9 @@ public class LockConfig
     public required int MaxDeliveryCount { get; init; }
 
     /// <summary>
-    /// Maximum number of expired locks a single operation resolves synchronously, so one Dequeue
-    /// can't stall behind a very large backlog. Any remainder is picked up by the next operation.
+    /// Maximum number of lock index entries a single operation's expiry sweep reads, so one Dequeue
+    /// can't stall behind a very large backlog. Every entry counts - expired, still live, or already
+    /// settled - since each is a state read. Any remainder is picked up by the next operation.
     /// </summary>
     public required int SweepBatchSize { get; init; }
 }

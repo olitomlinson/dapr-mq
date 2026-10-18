@@ -644,8 +644,8 @@ public class QueueActor : Actor, IQueueActor
     /// reporting itself locked and never recover.
     ///
     /// Self-contained: it commits its own batch, so callers just invoke it and then re-read metadata.
-    /// Bounded by LockConfig.SweepBatchSize so one operation can't stall behind a huge backlog; any
-    /// remainder is picked up by the next operation.
+    /// Bounded by LockConfig.SweepBatchSize lock reads so one operation can't stall behind a huge
+    /// backlog; the next operation resumes with the ids this one didn't reach.
     /// </summary>
     private async Task SweepExpiredLocksAsync()
     {
@@ -698,6 +698,7 @@ public class QueueActor : Actor, IQueueActor
             }
 
             var survivors = new List<string>();
+            var unread = new List<string>();
             var ids = bucketState.Value;
 
             for (int i = 0; i < ids.Count; i++)
@@ -706,10 +707,15 @@ public class QueueActor : Actor, IQueueActor
 
                 if (budget <= 0)
                 {
-                    // Out of budget: everything not yet examined stays for the next operation.
-                    survivors.AddRange(ids.Skip(i));
+                    // Out of budget: everything not yet examined stays for the next operation, ahead
+                    // of the survivors so that operation starts where this one stopped.
+                    unread.AddRange(ids.Skip(i));
                     break;
                 }
+
+                // Every read counts, not just a restore: after a burst most ids in a due bucket are
+                // for locks already settled, and without this one sweep would read them all.
+                budget--;
 
                 var lockState = await StateManager.TryGetStateAsync<LockState>($"{lockId}-lock");
                 if (!lockState.HasValue)
@@ -724,8 +730,6 @@ public class QueueActor : Actor, IQueueActor
                     survivors.Add(lockId);
                     continue;
                 }
-
-                budget--;
 
                 int deliveryCount = lockState.Value.DeliveryCount + 1;
                 if (deliveryCount > _lockConfig.MaxDeliveryCount)
@@ -743,12 +747,13 @@ public class QueueActor : Actor, IQueueActor
                 await StateManager.RemoveStateAsync($"{lockId}-lock");
             }
 
+            survivors.InsertRange(0, unread);
             if (survivors.Count == 0)
             {
                 await StateManager.RemoveStateAsync(bucketKey);
                 emptiedBuckets.Add(bucket);
             }
-            else if (survivors.Count != ids.Count)
+            else if (!survivors.SequenceEqual(ids))
             {
                 await StateManager.SetStateAsync(bucketKey, survivors);
             }

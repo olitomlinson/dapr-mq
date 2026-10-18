@@ -474,6 +474,60 @@ public class QueueActorLockExpiryTests
     }
 
     [Fact]
+    public async Task Sweep_CountsEveryIndexEntryItReads_NotJustTheLocksItRestores()
+    {
+        // After a burst, a due bucket is mostly ids whose lock was already acknowledged. Each one still
+        // costs a state read, so the budget has to cover them too or one sweep reads the whole bucket.
+        var (actor, state) = await CreateActorAsync(
+            lockConfig: new LockConfig { MaxDeliveryCount = 10, SweepBatchSize = 3 });
+        double lapsed = Now() - 10;
+        for (int i = 0; i < 5; i++)
+        {
+            SeedLock(state, $"lock{i}acked", lapsed, $"{{\"id\":{i}}}");
+            state.Remove($"lock{i}acked-lock");
+        }
+        SeedLock(state, "lockexpired", lapsed, "{\"id\":\"X\"}");
+        state["metadata"] = ((ActorMetadata)state["metadata"]) with { LockCount = 1 };
+
+        await actor.Dequeue(new DequeueRequest { Count = 0 });
+
+        // Three entries read and dropped; the next sweep starts with the two it didn't reach.
+        Assert.Equal(["lock3acked", "lock4acked", "lockexpired"], (List<string>)state[BucketKey(lapsed)]);
+        Assert.Equal(1, ((ActorMetadata)state["metadata"]).LockCount);
+
+        await actor.Dequeue(new DequeueRequest { Count = 0 });
+
+        Assert.Equal(0, ((ActorMetadata)state["metadata"]).LockCount);
+        Assert.False(state.ContainsKey(BucketKey(lapsed)));
+    }
+
+    [Fact]
+    public async Task Sweep_LiveLocksAtTheFrontOfABucket_DoNotStallTheLocksBehindThem()
+    {
+        // A sweep that runs out of budget on live locks moves them behind the ids it didn't read, so
+        // the next sweep reaches the expired lock instead of reading the same live ones again.
+        var (actor, state) = await CreateActorAsync(
+            lockConfig: new LockConfig { MaxDeliveryCount = 10, SweepBatchSize = 2 });
+        double lapsed = Now() - 10;
+        SeedLock(state, "locklive001", lapsed, "{\"id\":\"L1\"}");
+        SeedLock(state, "locklive002", lapsed, "{\"id\":\"L2\"}");
+        SeedLock(state, "lockexpired", lapsed, "{\"id\":\"X\"}");
+        foreach (var live in new[] { "locklive001", "locklive002" })
+        {
+            state[$"{live}-lock"] = ((LockState)state[$"{live}-lock"]) with { ExpiresAt = Now() + 600 };
+        }
+
+        await actor.Dequeue(new DequeueRequest { Count = 0 });
+        Assert.Equal(["lockexpired", "locklive001", "locklive002"], (List<string>)state[BucketKey(lapsed)]);
+
+        await actor.Dequeue(new DequeueRequest { Count = 0 });
+
+        Assert.False(state.ContainsKey("lockexpired-lock"));
+        Assert.Equal(2, ((ActorMetadata)state["metadata"]).LockCount);
+        Assert.Equal(1, ((ActorMetadata)state["metadata"]).Queues[1].Count);
+    }
+
+    [Fact]
     public async Task Dequeue_NonCompetingMode_ServesOnceEveryLockHasExpired()
     {
         // Regression guard: the sweep has to run before the LockCount>0 gate, or a queue whose locks
