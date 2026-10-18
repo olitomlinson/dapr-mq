@@ -380,6 +380,13 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+// TEMPORARY (dapr/dapr#10835): one turn at a time per actor, enforced in this host until the Dapr runtime or
+// SDK (dapr/dotnet-sdk#1937) does. Remove with Services/ActorTurnGuard.cs once a fix ships.
+if (registerActors)
+{
+    app.UseActorTurnGuard(app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("DaprMQ.ActorTurnGuard"));
+}
+
 app.UseRouting();
 app.UseCors("AllowDashboard");
 app.UseAuthorization();
