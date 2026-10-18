@@ -282,7 +282,9 @@ There are no reminders or timers. Locks are swept lazily at the top of Dequeue/D
 activation, found through the `locks_exp_{bucket}` index (`ActorMetadata.LockExpiryBuckets`). A bucket holding more
 than 100 lock ids is split into chunks (`locks_exp_{bucket}_{n}`, ranges in `ActorMetadata.LockExpiryChunks`), so no
 write rewrites more than 100. Each sweep reads at most `DAPRMQ_LOCK_SWEEP_BATCH_SIZE` (default 200) lock rows, and the
-next one resumes where it stopped. An expired item is
+next one resumes where it stopped. A sweep that read every due id within that budget holds off the next one for
+`DAPRMQ_LOCK_SWEEP_INTERVAL_MS` (default 1000), so a busy queue isn't re-reading the same live locks on every call; a
+lock may therefore be reclaimed up to that long after it lapses. An expired item is
 restored to the **position it was taken from**, not the tail: every item carries a monotonic `Sequence` stamped at
 enqueue, and the sweep merges reclaimed items back into the head segment in `Sequence` order. Each expiry increments the
 item's `DeliveryCount`; past `MaxDeliveryCount` (`DAPRMQ_MAX_DELIVERY_COUNT`, default 10) it is dead-lettered instead.

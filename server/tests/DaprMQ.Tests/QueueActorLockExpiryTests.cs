@@ -528,6 +528,39 @@ public class QueueActorLockExpiryTests
     }
 
     [Fact]
+    public async Task Sweep_FinishedWithinItsBudget_IsSkippedUntilTheIntervalPasses()
+    {
+        // Every Consume refill is a DequeueLocked, and each one swept: the bucket reads for live and
+        // settled locks were repeated many times a second for nothing to restore.
+        var (actor, state) = await CreateActorAsync(
+            lockConfig: new LockConfig { MaxDeliveryCount = 10, SweepBatchSize = 200, SweepIntervalMs = 60_000 });
+        SeedLock(state, "lockaaaaaaa", Now() - 10, "{\"id\":\"A\"}");
+
+        await actor.Dequeue(new DequeueRequest { Count = 0 });
+        Assert.False(state.ContainsKey("lockaaaaaaa-lock"));
+
+        SeedLock(state, "lockbbbbbbb", Now() - 10, "{\"id\":\"B\"}");
+        await actor.Dequeue(new DequeueRequest { Count = 0 });
+
+        Assert.True(state.ContainsKey("lockbbbbbbb-lock"));
+    }
+
+    [Fact]
+    public async Task Sweep_ThatRanOutOfBudget_RunsAgainOnTheNextOperation()
+    {
+        // A backlog left over is work waiting, so the interval doesn't hold it back.
+        var (actor, state) = await CreateActorAsync(
+            lockConfig: new LockConfig { MaxDeliveryCount = 10, SweepBatchSize = 1, SweepIntervalMs = 60_000 });
+        SeedLock(state, "lockaaaaaaa", Now() - 10, "{\"id\":\"A\"}");
+        SeedLock(state, "lockbbbbbbb", Now() - 10, "{\"id\":\"B\"}");
+
+        await actor.Dequeue(new DequeueRequest { Count = 0 });
+        await actor.Dequeue(new DequeueRequest { Count = 0 });
+
+        Assert.Equal(0, ((ActorMetadata)state["metadata"]).LockCount);
+    }
+
+    [Fact]
     public async Task Dequeue_NonCompetingMode_ServesOnceEveryLockHasExpired()
     {
         // Regression guard: the sweep has to run before the LockCount>0 gate, or a queue whose locks

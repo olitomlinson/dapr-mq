@@ -23,4 +23,12 @@ public class LockConfig
     /// settled - since each is a state read. Any remainder is picked up by the next operation.
     /// </summary>
     public required int SweepBatchSize { get; init; }
+
+    /// <summary>
+    /// Milliseconds a plain queue waits after a sweep that finished within SweepBatchSize before it
+    /// sweeps again. Every Dequeue and DequeueLocked sweeps first, so without this a busy queue re-reads
+    /// the same due buckets many times a second with nothing to restore. A sweep that used its whole
+    /// budget sets no wait: the remainder is swept by the next operation. 0 sweeps on every operation.
+    /// </summary>
+    public int SweepIntervalMs { get; init; }
 }

@@ -179,6 +179,10 @@ public class QueueActor : Actor, IQueueActor
     // The lapsed lease this activation has already told the reporter about (see AfterActorMethodAsync).
     private string? _expiredLeaseReported;
 
+    // Environment.TickCount64 before which a plain queue skips its expiry sweep; see LockConfig.SweepIntervalMs.
+    // Memory only, so a new activation sweeps straight away.
+    private long _nextSweepAt;
+
     private const int MaxSegmentSize = 100;
     private const int MinLockTtlSeconds = 1;
     private const int MaxLockTtlSeconds = 300;
@@ -729,7 +733,7 @@ public class QueueActor : Actor, IQueueActor
 
         // Oldest first, so a backlog capped by SweepBatchSize still drains in expiry order.
         var dueBuckets = metadata.LockExpiryBuckets.Where(b => now >= b).OrderBy(b => b).ToList();
-        if (dueBuckets.Count == 0)
+        if (dueBuckets.Count == 0 || Environment.TickCount64 < _nextSweepAt)
         {
             return;
         }
@@ -790,6 +794,10 @@ public class QueueActor : Actor, IQueueActor
                 advancedBuckets[bucket] = chunks with { First = first };
             }
         }
+
+        // Budget left means every due id was read, so there is nothing to come back for until more
+        // locks lapse. Used up, there may be more, and the next operation sweeps again.
+        _nextSweepAt = budget > 0 ? Environment.TickCount64 + _lockConfig.SweepIntervalMs : 0;
 
         // Skipped when nothing local changed - but dead-lettering below still runs.
         if (expired > 0 || emptiedBuckets.Count > 0 || advancedBuckets.Count > 0)
