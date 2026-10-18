@@ -97,6 +97,38 @@ public class DaprMQClientConsumeTests
     }
 
     [Fact]
+    public async Task ConsumeAsync_RenewOnlyStarted_GoesInTheStartFrame_AndStartedWritesItsFrame()
+    {
+        var (client, requests, responses) = CreateClientWithFakeStream();
+        responses.Add(Delivered("L1"));
+        responses.Complete();
+
+        var options = new ConsumeOptions { RenewOnlyStarted = true, MaxAutoLockRenewalDuration = TimeSpan.FromMinutes(5) };
+        await foreach (var delivery in client.ConsumeAsync("q", options))
+        {
+            await delivery.StartedAsync(CancellationToken.None);
+        }
+
+        var written = requests.WrittenSoFar;
+        Assert.Equal(ConsumeLockRenewal.RenewStarted, written[0].Start.LockRenewal);
+        Assert.Equal(300, written[0].Start.MaxRenewalSeconds);
+        Assert.Equal(new[] { "L1" }, written[1].Started.LockIds);
+    }
+
+    [Fact]
+    public async Task ConsumeAsync_StartFrame_RenewsEveryDeliveredLockByDefault()
+    {
+        var (client, requests, responses) = CreateClientWithFakeStream();
+        responses.Complete();
+
+        await foreach (var _ in client.ConsumeAsync("orders")) { }
+
+        var start = requests.WrittenSoFar[0].Start;
+        Assert.Equal(ConsumeLockRenewal.RenewDelivered, start.LockRenewal);
+        Assert.Equal(0, start.MaxRenewalSeconds);
+    }
+
+    [Fact]
     public async Task ConsumeAsync_NackAndDeadLetter_WriteTheirFrames()
     {
         var (client, requests, responses) = CreateClientWithFakeStream();

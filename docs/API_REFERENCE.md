@@ -427,11 +427,15 @@ The dead letter queue is itself a normal queue — dequeue from `{queueId}-deadl
 
 A managed consume loop for a plain queue, gRPC only: `rpc Consume(stream ConsumeRequest) returns (stream ConsumeResponse)`. Instead of polling `DequeueLocked`, the client opens one stream and the server pushes locked items to it.
 
-1. The client sends `Start { queue_id, prefetch_count, lock_ttl_seconds, allow_competing_consumers }` first. `prefetch_count` (1-1000, default 1) is how many delivered-but-unsettled items the stream holds; `lock_ttl_seconds` is 1-300, default 30.
+1. The client sends `Start { queue_id, prefetch_count, lock_ttl_seconds, allow_competing_consumers, lock_renewal, max_renewal_seconds }` first. `prefetch_count` (1-1000, default 1) is how many delivered-but-unsettled items the stream holds; `lock_ttl_seconds` is 1-300, default 30. `lock_renewal` and `max_renewal_seconds` choose which locks are renewed (see **Locks**).
 2. The server sends a `Delivered { lock_id, item_json, priority, lock_expires_at, delivery_count }` frame per item. `delivery_count` counts this delivery: 1 is the first, 2 the first redelivery after a nack or a lapsed lock.
 3. The client settles each item with an `Ack`, `Nack` or `DeadLetter` frame carrying its `lock_id`. When settles bring the window down to half, the server dequeues more.
 
-**Locks.** The server renews the lock of every delivered, unsettled item shortly before it expires, `min(half its remaining time, 10s)` before, as Azure Service Bus's processor does, for as long as the stream is open, so the client never calls Extend Lock. When the stream ends, the server nacks every item still unsettled, so each goes back to its original position straight away; if the server itself goes away, the locks lapse after `lock_ttl_seconds` as usual.
+**Locks.** The server renews locks shortly before they expire, `min(half the remaining time, 10s)` before, as Azure Service Bus's processor does, for as long as the stream is open, so the client never calls Extend Lock. Which locks it renews depends on `lock_renewal`:
+
+- `RENEW_DELIVERED` (the default): every delivered, unsettled item.
+- `RENEW_STARTED`: only items the client has reported with a `Started { lock_ids }` frame, the way Service Bus renews only messages a handler is processing. An item never reported started runs out its lock and goes back to the queue, which counts as a delivery (its `delivery_count` goes up), and its slot in the window is refilled. A started item's lock is renewed until `max_renewal_seconds` after it started (0 = no limit), Service Bus's `MaxAutoLockRenewalDuration`. A `Started` for a lock that has already lapsed gets `SettleFailed` with `LOCK_EXPIRED`.
+ When the stream ends, the server nacks every item still unsettled, so each goes back to its original position straight away; if the server itself goes away, the locks lapse after `lock_ttl_seconds` as usual.
 
 **Errors.** A rejected settle (for example `LOCK_NOT_FOUND` after a lock was lost) comes back as a `SettleFailed { lock_id, error_code, message }` frame, and the stream carries on. An `Error { error_code, message }` frame ends the stream, for example `INVALID_ARGUMENT` when the first frame isn't `Start` or `queue_id` is empty.
 

@@ -126,7 +126,8 @@ Stopping - `StopAsync()` - stops handing out messages, lets running handlers fin
 | --- | --- | --- |
 | `MaxActiveMessages` | `MaxConcurrentHandlers`, or 100 when handlers are unlimited | The stream's prefetch count: messages locked to this consumer, handled or waiting. Above the handler count, the extra messages wait in the buffer, locked |
 | `MaxConcurrentHandlers` | 1 | 0 = unlimited, bounded by `MaxActiveMessages` |
-| `LockTtl` | 60 s | The server renews each lock until its message is settled |
+| `LockTtl` | 60 s | |
+| `MaxAutoLockRenewalDuration` | 5 min | The server renews a message's lock from when its handler starts until it's settled, up to this long. `TimeSpan.Zero` is no limit |
 | `AllowCompetingConsumers` | `true` | Replicas share the queue |
 | `StrictOrder` | `false` | Queue order even after a nack: a window of 1, one handler, no competing consumers |
 | `OnHandlerError` | `Nack` | Or `DeadLetter` |
@@ -134,7 +135,9 @@ Stopping - `StopAsync()` - stops handing out messages, lets running handlers fin
 | `MinBackoffSeconds` / `MaxBackoffSeconds` | 1 / 60 | Seconds before reopening a broken stream; doubles per break, resets after a delivery |
 | `DrainTimeout` | 30 s | |
 
-The defaults follow Azure Service Bus's processor: one handler (`MaxConcurrentCalls = 1`), no prefetch beyond what handlers hold (`PrefetchCount = 0`) and a 60-second lock. To prefetch, set `MaxActiveMessages` above `MaxConcurrentHandlers`, but keep it below what the consumer can handle within `LockTtl`. Service Bus suggests at most about `LockTtl ÷ 3 × messages handled per second`. Every message in the window holds a lock on the queue, so a window much larger than that costs lock renewals for messages that are only waiting.
+The defaults follow Azure Service Bus's processor: one handler (`MaxConcurrentCalls = 1`), no prefetch beyond what handlers hold (`PrefetchCount = 0`) and a 60-second lock. Locks are renewed the same way too, from the point a handler starts a message. A prefetched message that is still waiting for a handler isn't renewed: if no handler reaches it within `LockTtl`, its lock runs out and it goes back to the queue, counting as a delivery. If a handler then picks up that stale copy, its ack fails (`OnSettleFailed`).
+
+To prefetch, set `MaxActiveMessages` above `MaxConcurrentHandlers`, but keep it below what the consumer can handle within `LockTtl`. Service Bus suggests at most about `LockTtl ÷ 3 × messages handled per second`. Messages that are prefetched beyond that will expire and be redelivered, and each expiry counts toward the max delivery count.
 ## Sessions - manual (unary) API
 
 For sticky routing, admin tooling, or callers who don't want a managed consume loop:
