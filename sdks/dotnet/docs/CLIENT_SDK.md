@@ -137,7 +137,9 @@ Stopping - `StopAsync()` - stops handing out messages, lets running handlers fin
 
 The defaults follow Azure Service Bus's processor: one handler (`MaxConcurrentCalls = 1`), no prefetch beyond what handlers hold (`PrefetchCount = 0`) and a 60-second lock. Locks are renewed the same way too, from the point a handler starts a message. A prefetched message that is still waiting for a handler isn't renewed: if no handler reaches it within `LockTtl`, its lock runs out and it goes back to the queue, counting as a delivery. If a handler then picks up that stale copy, its ack fails (`OnSettleFailed`).
 
-To prefetch, set `MaxActiveMessages` above `MaxConcurrentHandlers`, but keep it below what the consumer can handle within `LockTtl`. Service Bus suggests at most about `LockTtl ÷ 3 × messages handled per second`. Messages that are prefetched beyond that will expire and be redelivered, and each expiry counts toward the max delivery count.
+To prefetch, set `MaxActiveMessages` above `MaxConcurrentHandlers`, but keep it below what the consumer can handle within `LockTtl`. Service Bus suggests at most about `LockTtl ÷ 3 × messages handled per second`.
+
+> **Warning: an oversized window dead-letters messages that were never handled.** A prefetched message whose lock runs out before a handler reaches it goes back to the queue as a delivery attempt. Past the server's max delivery count (`DAPRMQ_MAX_DELIVERY_COUNT`, default 10) it's dead-lettered, even if no handler ever saw it, exactly as with Service Bus prefetch. In a load test with 81 consumers × 1 handler × `MaxActiveMessages = 100` on one queue, 27% of 100,000 messages were dead-lettered this way. The same test with a window equal to the handler count dead-lettered none.
 ## Sessions - manual (unary) API
 
 For sticky routing, admin tooling, or callers who don't want a managed consume loop:
