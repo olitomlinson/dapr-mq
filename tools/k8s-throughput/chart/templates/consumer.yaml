@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tp.consumerName" . }}
+  labels:
+    {{- include "tp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: consumer
+spec:
+  {{- if eq .Values.scaling.mode "fixed" }}
+  replicas: {{ .Values.scaling.replicas }}
+  {{- else }}
+  # KEDA owns the replica count.
+  replicas: 0
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "tp.labels" . | nindent 6 }}
+      app.kubernetes.io/component: consumer
+  template:
+    metadata:
+      labels:
+        {{- include "tp.labels" . | nindent 8 }}
+        app.kubernetes.io/component: consumer
+    spec:
+      terminationGracePeriodSeconds: 40
+      containers:
+      - name: consumer
+        image: {{ include "tp.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        args: ["consume"]
+        env:
+          {{- include "tp.env" . | nindent 10 }}
+        resources:
+          {{- toYaml .Values.consumer.resources | nindent 10 }}
+{{- if eq .Values.scaling.mode "keda" }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "tp.consumerName" . }}
+  labels:
+    {{- include "tp.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ include "tp.consumerName" . }}
+  minReplicaCount: 0
+  maxReplicaCount: {{ .Values.scaling.maxReplicas }}
+  pollingInterval: {{ .Values.scaling.pollingInterval }}
+  cooldownPeriod: {{ .Values.scaling.cooldownPeriod }}
+  triggers:
+  - type: external-push
+    metadata:
+      scalerAddress: "{{ .Values.daprmq.operatorService }}.{{ .Values.daprmq.namespace }}.svc.cluster.local:{{ .Values.daprmq.operatorGrpcPort }}"
+      queueId: {{ include "tp.queueId" . | quote }}
+      targetValue: {{ .Values.scaling.targetValue | quote }}
+{{- end }}

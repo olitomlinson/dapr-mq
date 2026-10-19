@@ -7,6 +7,11 @@ name: Performance (extreme)
 #
 # Results go to the perf-results branch (unless `publish` is off) under the runner's env label and
 # API replica count, so they never mix with the pr-scale baselines.
+#
+# The k8s-throughput job is different: it deploys DaprMQ, Dapr, Postgres and KEDA onto a kind cluster
+# on the runner and runs tools/k8s-throughput (KEDA-scaled competing consumers draining a backlog,
+# once per replica count). Its records use the same schema, as P-05 queue drains with profiles
+# k8s-queue-drain-r<N>, and publish alongside the SDK runs under sdk-dotnet-k8s.
 
 on:
   workflow_dispatch:
@@ -39,6 +44,18 @@ on:
         description: 'Run the Java SDK'
         type: boolean
         default: true
+      k8s_throughput:
+        description: 'Run the in-cluster throughput test (kind + KEDA)'
+        type: boolean
+        default: true
+      k8s_replicas:
+        description: 'Consumer replica counts for the throughput test, comma-separated, one run each'
+        required: false
+        default: '2,5,10,20'
+      k8s_messages:
+        description: 'Backlog per throughput run'
+        required: false
+        default: '100000'
       publish:
         description: 'Commit results to the perf-results branch'
         type: boolean
@@ -275,9 +292,66 @@ jobs:
           path: perf-results/sdk-java
           if-no-files-found: ignore
 
+  k8s-throughput:
+    name: Kubernetes throughput (KEDA)
+    if: inputs.k8s_throughput
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned rather than whatever the runner image ships, as in k8s-keda.yml.
+      - uses: azure/setup-helm@v4
+        with:
+          version: v4.1.3
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: daprmq
+
+      - name: Deploy Dapr, Postgres, KEDA and DaprMQ
+        run: |
+          ./k8s-base-deploy.sh --context kind-daprmq
+          ./daprmq-deploy.sh --context kind-daprmq --skip-examples
+
+      - name: Throughput runs
+        env:
+          REPLICAS: ${{ inputs.k8s_replicas }}
+          MESSAGES: ${{ inputs.k8s_messages }}
+          ENV_LABEL: ci-k8s-${{ inputs.runner }}
+        run: |
+          set -o pipefail
+          status=0
+          tools/k8s-throughput/run.sh --context kind-daprmq --replicas "$REPLICAS" --messages "$MESSAGES" \
+            --env-label "$ENV_LABEL" --out perf-results | tee throughput.log || status=$?
+          # Written whatever happened: a failed check is when the table matters most.
+          {
+            echo '## Kubernetes throughput'
+            echo '```'
+            sed -n '/== results/,$p' throughput.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: perf-sdk-dotnet-k8s
+          path: perf-results/sdk-dotnet-k8s
+          if-no-files-found: ignore
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide
+          kubectl get scaledobjects,jobs -A
+          kubectl logs -n daprmq-throughput -l app.kubernetes.io/component=run --tail=200 || true
+          kubectl logs -n daprmq -l app.kubernetes.io/component=operator -c daprmq --tail=200 --prefix || true
+
   publish:
     name: Report and publish
-    needs: [dotnet, python, typescript, java]
+    needs: [dotnet, python, typescript, java, k8s-throughput]
     if: ${{ !cancelled() && (contains(needs.*.result, 'success') || contains(needs.*.result, 'failure')) }}
     runs-on: ubuntu-latest
     steps:

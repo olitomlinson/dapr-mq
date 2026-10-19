@@ -1,0 +1,56 @@
+# One throughput run. run.sh sets runId and anything passed on its command line.
+
+# Required. Names the queue (tp-<runId>) and the Job, so every run starts on an empty queue and a new Job.
+runId: ""
+
+image:
+  repository: daprmq-throughput-test
+  tag: dev
+  pullPolicy: IfNotPresent
+
+# The DaprMQ release under test.
+daprmq:
+  namespace: daprmq
+  gatewayService: daprmq-gateway
+  httpPort: 8080
+  grpcPort: 8081
+  # The operator's KEDA external scaler: KEDA scales the consumers from it, and the Job reads depth from it.
+  operatorService: daprmq-operator
+  operatorGrpcPort: 8081
+
+# The Job: publishes the backlog, waits for it to drain, prints "RESULT {json}".
+run:
+  messages: 100000
+  publishers: 10
+  publishBatch: 100
+  timeoutSeconds: 1800
+  # For the result record (sdks/testing/perf/result.schema.json); run.sh fills these in.
+  envLabel: local
+  gatewayReplicas: 1
+  serverLabel: kubernetes
+  gitSha: ""
+  gitBranch: ""
+  gitDirty: "false"
+
+# The competing consumers (QueueConsumer).
+consumer:
+  handlers: 10
+  window: 40
+  itemDelayMs: 200
+  lockTtlSeconds: 60
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+scaling:
+  # keda: a ScaledObject scales the consumers 0..maxReplicas from queue depth, as in production.
+  # fixed: exactly `replicas` consumers, for a comparison without autoscaling in the way.
+  mode: keda
+  maxReplicas: 20
+  replicas: 20
+  targetValue: 50
+  pollingInterval: 5
+  cooldownPeriod: 30
