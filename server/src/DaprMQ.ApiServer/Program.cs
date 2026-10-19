@@ -285,19 +285,14 @@ if (registerActors)
             options.ActorScanInterval = TimeSpan.FromSeconds(actorScanIntervalSeconds.Value);
         }
 
-        // Session actors self-register with their SessionCoordinatorActor on every activation,
-        // which can call back into itself mid-turn (SessionCoordinatorActor -> QueueActor ->
-        // SessionCoordinatorActor) - an A -> B -> A chain that non-reentrant actors deadlock on.
-        // Actor reentrancy is the documented fix.
-        //
-        // Historical note: enabling it once broke TopicActor's reminder-driven publish relay via a
-        // Dapr.Actors client-side state-manager caching bug (the "default" tracker used by
-        // activation/reminder/timer callbacks wasn't invalidated after a reentrancy-scoped call
-        // wrote the same key, so a read-modify-write silently saw stale data). That required a
-        // locally-built SDK for a while; it is fixed upstream as of the pinned Dapr version, so no
-        // local package source is needed. Kept only as context for
-        // docs/ADR/0002-enable-actor-reentrancy.md and docs/issues/resolved/reentrancy-*.md.
-        options.ReentrancyConfig = new Dapr.Actors.ActorReentrancyConfig { Enabled = true };
+        // Reentrancy is off: no actor calls back into one that is calling it. It was once on because
+        // session actors registered with their SessionCoordinatorActor on activation, so a coordinator
+        // call to a cold session ran SessionCoordinatorActor -> QueueActor -> SessionCoordinatorActor.
+        // Registration now happens after a method instead, and is skipped for the coordinator's own
+        // SetSessionLease/ClearSessionLease. With reentrancy on, every call gets a fresh, empty state
+        // tracker, so each one re-reads its state from the store; off, the cache lasts the activation.
+        // An A -> B -> A chain added later deadlocks until the call times out - SessionReentrancyTests
+        // covers the session one. See docs/ADR/0003-disable-actor-reentrancy.md.
         options.JsonSerializerOptions = new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase, // Use camelCase instead of PascalCase

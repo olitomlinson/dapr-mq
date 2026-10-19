@@ -7,11 +7,11 @@ using DaprMQ.IntegrationTests.Fixtures;
 namespace DaprMQ.IntegrationTests.Tests;
 
 /// <summary>
-/// Exercises the specific reentrancy hazard documented at QueueActor.cs's
-/// RegisterAsSessionActorIfNeededAsync: SessionCoordinatorActor calling SetSessionLease on a
-/// session actor that Dapr has actually deactivated (gone cold) reactivates it mid-turn, and that
-/// activation calls back into the very same SessionCoordinatorActor instance (A -> B -> A) before
-/// the coordinator's own outbound call returns. Runs against a dedicated fixture with a short
+/// Guards the A -> B -> A chain that once needed actor reentrancy (docs/ADR/0002, 0003):
+/// SessionCoordinatorActor calling SetSessionLease on a session actor that Dapr has actually
+/// deactivated (gone cold) reactivates it mid-turn. The session actor must not call back into the
+/// same SessionCoordinatorActor before the coordinator's own outbound call returns - with
+/// reentrancy off, that would deadlock. Runs against a dedicated fixture with a short
 /// ActorIdleTimeout/ActorScanInterval so the session actor goes cold within test time instead of
 /// the production 60s default.
 /// </summary>
@@ -58,12 +58,11 @@ public class SessionReentrancyTests(ReentrancyTestFixture fixture)
         await Task.Delay(TimeSpan.FromSeconds(7));
 
         // RenewSessionLease -> SessionCoordinatorActor.TrySyncSessionLeaseAsync -> SetSessionLease
-        // on the now-cold session actor. Reactivating it runs OnActivateAsync ->
-        // RegisterAsSessionActorIfNeededAsync, which calls back into this same
-        // SessionCoordinatorActor instance (RegisterSession) while the coordinator's own
-        // RenewSessionLease call is still awaiting that SetSessionLease response - the A -> B -> A
-        // chain. Without a working reentrancy fix this hangs; guard with an explicit timeout so a
-        // regression fails fast instead of hanging the test run.
+        // on the now-cold session actor. If reactivating it called back into this same
+        // SessionCoordinatorActor (RegisterSession) while the coordinator's RenewSessionLease is
+        // still awaiting that SetSessionLease response - the A -> B -> A chain - this would hang
+        // with reentrancy off; guard with an explicit timeout so a regression fails fast instead
+        // of hanging the test run.
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         HttpResponseMessage renewResponse;
         try
@@ -75,7 +74,7 @@ public class SessionReentrancyTests(ReentrancyTestFixture fixture)
         }
         catch (OperationCanceledException)
         {
-            Assert.Fail("RenewSessionLease against a cold session actor did not complete within 20s - reentrancy deadlock likely regressed.");
+            Assert.Fail("RenewSessionLease against a cold session actor did not complete within 20s - A -> B -> A deadlock likely regressed.");
             return;
         }
 
