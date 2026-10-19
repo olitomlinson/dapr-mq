@@ -1,6 +1,6 @@
 # ADR 0002: Enable Dapr actor reentrancy
 
-- **Status:** Accepted
+- **Status:** Superseded by [0003](0003-disable-actor-reentrancy.md)
 - **Date:** 2026-09-23
 
 ## Context

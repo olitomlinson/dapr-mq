@@ -6,4 +6,5 @@ consequences. Superseded records stay in place with their status updated.
 | # | Decision | Status |
 |---|---|---|
 | [0001](0001-consume-session-ack-driven-prefetch-refill.md) | ConsumeSession refills the prefetch window on acks, not only on a timer | Accepted |
-| [0002](0002-enable-actor-reentrancy.md) | Enable Dapr actor reentrancy | Accepted |
+| [0002](0002-enable-actor-reentrancy.md) | Enable Dapr actor reentrancy | Superseded by 0003 |
+| [0003](0003-disable-actor-reentrancy.md) | Disable Dapr actor reentrancy | Accepted |
