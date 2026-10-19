@@ -147,6 +147,12 @@ introduced ([proposals/continuous-receive.md](../../proposals/continuous-receive
 - **Checks:** the run fails if a message is never handled, or, under `strictOrder`, if a message
   starts before an earlier one.
 
+**In-cluster variant.** [tools/k8s-throughput](../../tools/k8s-throughput/) records P-05 runs too, with profiles
+`k8s-queue-drain-r<replicas>` (scale `extreme`). Instead of one consumer against Testcontainers, it runs KEDA-scaled
+consumer replicas inside a Kubernetes cluster against one queue. Its records go to `sdk-dotnet-k8s/`, and its key
+includes the replica count. These profiles aren't in `profiles.json` or any suite, since no SDK harness runs them.
+The extreme workflow's `k8s-throughput` job runs them on kind.
+
 ## Result format
 
 Defined by [perf/result.schema.json](perf/result.schema.json) (schema version 2). An SDK writes:

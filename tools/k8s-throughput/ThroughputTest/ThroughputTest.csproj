@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Grpc.Net.Client" Version="2.70.0" />
+    <PackageReference Include="Google.Protobuf" Version="3.28.3" />
+    <PackageReference Include="Grpc.Tools" Version="2.68.1">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\sdks\dotnet\src\DaprMQ.Client\DaprMQ.Client.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The KEDA external scaler contract, to read queue depth the way KEDA does. -->
+    <Protobuf Include="..\..\..\server\src\DaprMQ.Operator\Protos\externalscaler.proto" GrpcServices="Client" Link="Protos\externalscaler.proto" />
+  </ItemGroup>
+
+</Project>

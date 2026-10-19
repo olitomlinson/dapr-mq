@@ -1,0 +1,45 @@
+# Named per run: a Job's pod template is immutable, so each run is a new Job.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "tp.queueId" . }}
+  labels:
+    {{- include "tp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: run
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ add .Values.run.timeoutSeconds 300 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tp.labels" . | nindent 8 }}
+        app.kubernetes.io/component: run
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: run
+        image: {{ include "tp.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        args: ["run"]
+        env:
+          {{- include "tp.env" . | nindent 10 }}
+          - name: MESSAGES
+            value: {{ .Values.run.messages | quote }}
+          - name: PUBLISHERS
+            value: {{ .Values.run.publishers | quote }}
+          - name: PUBLISH_BATCH
+            value: {{ .Values.run.publishBatch | quote }}
+          - name: TIMEOUT_SECONDS
+            value: {{ .Values.run.timeoutSeconds | quote }}
+          - name: ENV_LABEL
+            value: {{ .Values.run.envLabel | quote }}
+          - name: GATEWAY_REPLICAS
+            value: {{ .Values.run.gatewayReplicas | quote }}
+          - name: SERVER_LABEL
+            value: {{ .Values.run.serverLabel | quote }}
+          - name: GIT_SHA
+            value: {{ .Values.run.gitSha | quote }}
+          - name: GIT_BRANCH
+            value: {{ .Values.run.gitBranch | quote }}
+          - name: GIT_DIRTY
+            value: {{ .Values.run.gitDirty | quote }}
