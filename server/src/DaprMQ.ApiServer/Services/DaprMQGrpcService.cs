@@ -1441,15 +1441,17 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
 
     /// <summary>
     /// When a lock expiring at expiresAt (Unix seconds) is next due for renewal: min(remaining / 2, 10s)
-    /// before it expires, less up to 200ms of jitter, so a stream's locks don't all come due together.
-    /// This is Azure Service Bus's processor rule (ReceiverManager.CalculateRenewDelay). Renewing well
-    /// before every lock expires costs a renewal each time; this renews each lock about once per TTL.
+    /// before it expires. This is Azure Service Bus's processor rule (ReceiverManager.CalculateRenewDelay)
+    /// without its 0-200ms jitter. Service Bus jitters per-message timers so they don't all call the
+    /// broker at once; here renewals are batched, and the queue actor runs one turn at a time, so each
+    /// renewal's new expiry is already staggered by the turn it ran in. Jitter would only split locks
+    /// that come due together into separate ExtendLockBatch calls. Renews each lock about once per TTL.
     /// </summary>
     internal static double RenewAt(double expiresAt)
     {
         var remaining = expiresAt - UnixNow();
         var buffer = Math.Min(remaining / 2, MaxRenewBufferSeconds);
-        return expiresAt - Math.Max(buffer, 0) - Random.Shared.Next(0, 200) / 1000.0;
+        return expiresAt - Math.Max(buffer, 0);
     }
 
     private const double MaxRenewBufferSeconds = 10;

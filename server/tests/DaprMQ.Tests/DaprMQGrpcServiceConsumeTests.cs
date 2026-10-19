@@ -402,7 +402,22 @@ public class DaprMQGrpcServiceConsumeTests
         reader.Complete();
         await task;
 
-        Assert.InRange(renewedAfter.TotalSeconds, 1.2, 2.0);
+        Assert.InRange(renewedAfter.TotalSeconds, 1.3, 1.8);
+    }
+
+    [Theory]
+    [InlineData(3, 1.5)]    // half the remaining time
+    [InlineData(30, 10)]    // capped at 10s
+    [InlineData(60, 10)]
+    public void RenewAt_IsExactlyTheServiceBusBuffer_BeforeExpiry_WithNoJitter(double remaining, double buffer)
+    {
+        // No jitter: the actor runs one turn at a time, so renewals are already staggered by the turn
+        // each one ran in, and jitter would only split locks that come due together into two batches.
+        for (int i = 0; i < 20; i++)
+        {
+            var expiresAt = UnixNow() + remaining;
+            Assert.InRange(expiresAt - DaprMQGrpcService.RenewAt(expiresAt), buffer - 0.01, buffer + 0.01);
+        }
     }
 
     [Fact]
