@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 2,
+  "runId": "20261019T193903Z_dotnet_ci-ubuntu-latest_deep-session",
+  "timestampUtc": "2026-10-19T19:39:03.7040331\u002B00:00",
+  "sdk": {
+    "name": "dotnet",
+    "version": "0.0.0-alpha.0",
+    "runtime": ".NET 10.0.13"
+  },
+  "environment": {
+    "label": "ci-ubuntu-latest",
+    "gitSha": "98fd4a2d3cbbe96d55c562f8a001c29be96cdf3f",
+    "gitBranch": "main",
+    "gitDirty": false,
+    "os": "Ubuntu 24.04.5 LTS",
+    "cpuCount": 4
+  },
+  "topology": {
+    "apiReplicas": 1,
+    "schedulerReplicas": 3,
+    "loadBalancer": false,
+    "server": "testcontainers daprmq-api:test"
+  },
+  "scale": "pr",
+  "scenario": {
+    "id": "P-04",
+    "name": "session-drain",
+    "profile": "deep-session",
+    "key": "4x1000@10ms/4slots\u002Bidle1s",
+    "params": {
+      "sessions": 4,
+      "messagesPerSession": 1000,
+      "settleMs": 10,
+      "maxConcurrentSessions": 4,
+      "prefetchCount": 10,
+      "leaseSeconds": 30,
+      "sessionIdleTimeoutSeconds": 1,
+      "publishMode": "before",
+      "publishIntervalMs": 0,
+      "publishJitterMs": 0
+    }
+  },
+  "metrics": {
+    "seedSeconds": 0.0628327,
+    "wallClockSeconds": 10.2745192,
+    "idealSeconds": 10,
+    "efficiency": 0.9732815526783969,
+    "timeToFirstMessageSeconds": 0.0145006,
+    "tailSeconds": 10.2361319,
+    "peak": {
+      "startSeconds": 0.0145006,
+      "endSeconds": 0.038387300000000006,
+      "capacitySlotSeconds": 0.09554680000000002,
+      "handlingSeconds": 0.05222630000000001,
+      "claimSeconds": 0.0427165,
+      "inSessionWaitSeconds": 0.0006040000000000028,
+      "drainWaitSeconds": 0,
+      "betweenStreamsSeconds": 0,
+      "idleSlotSeconds": 0.043320500000000005,
+      "utilization": 0.5466043865414645
+    },
+    "overall": {
+      "startSeconds": 0,
+      "endSeconds": 10.2745192,
+      "capacitySlotSeconds": 41.0980768,
+      "handlingSeconds": 40.5101559,
+      "claimSeconds": 0.1004892,
+      "inSessionWaitSeconds": 0.4259065000000064,
+      "drainWaitSeconds": 0.06129970000000139,
+      "betweenStreamsSeconds": 0.00022550000000046567,
+      "idleSlotSeconds": 0.5879209000000003,
+      "utilization": 0.9856946858398979
+    },
+    "claimLatencyMs": {
+      "count": 4,
+      "mean": 25.122300000000003,
+      "p50": 19.6705,
+      "p95": 38.3543,
+      "p99": 38.3543,
+      "max": 38.3543
+    },
+    "drainWaitMs": {
+      "count": 4,
+      "mean": 25.986774999999398,
+      "p50": 28.8187999999991,
+      "p95": 40.32539999999972,
+      "p99": 40.32539999999972,
+      "max": 40.32539999999972
+    },
+    "interMessageGapMs": {
+      "count": 3996,
+      "mean": 0.10658080580580664,
+      "p50": 0.0787000000000262,
+      "p95": 0.226099999999974,
+      "p99": 0.4092000000000553,
+      "max": 4.651600000000144
+    },
+    "deliveryLatencyMs": {
+      "count": 4000,
+      "mean": 5199.757,
+      "p50": 5204,
+      "p95": 9806,
+      "p99": 10215,
+      "max": 10327
+    },
+    "streams": 4,
+    "failedClaims": 0,
+    "sessionsClaimedMoreThanOnce": 0,
+    "messagesHandled": 4000,
+    "duplicates": 0,
+    "missing": 0,
+    "fifoViolations": 0
+  },
+  "checks": {
+    "passed": true,
+    "failures": []
+  },
+  "timeline": {
+    "bucketMs": 1000,
+    "series": {
+      "busySlots": [
+        3.863,
+        3.96,
+        3.967,
+        3.956,
+        3.942,
+        3.96,
+        3.96,
+        3.96,
+        3.954,
+        3.96,
+        1.028
+      ]
+    }
+  }
+}
