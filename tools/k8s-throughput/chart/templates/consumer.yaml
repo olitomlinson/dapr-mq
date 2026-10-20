@@ -52,5 +52,10 @@ spec:
     metadata:
       scalerAddress: "{{ .Values.daprmq.operatorService }}.{{ .Values.daprmq.namespace }}.svc.cluster.local:{{ .Values.daprmq.operatorGrpcPort }}"
       queueId: {{ include "tp.queueId" . | quote }}
+      {{- if eq .Values.workload "sessions" }}
+      mode: sessions
+      targetValue: {{ .Values.sessions.concurrent | quote }}
+      {{- else }}
       targetValue: {{ .Values.scaling.targetValue | quote }}
+      {{- end }}
 {{- end }}

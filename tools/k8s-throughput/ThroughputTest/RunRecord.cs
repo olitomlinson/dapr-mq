@@ -6,7 +6,10 @@ using DaprMQ.Client;
 
 namespace ThroughputTest;
 
-/// <summary>What a run measured, before it becomes a result record.</summary>
+/// <summary>
+/// What a run measured, before it becomes a result record. For sessions, PeakDepth is the most sessions
+/// with work at once and PeakConcurrentHandlers the most sessions being handled at once.
+/// </summary>
 public sealed record RunMeasurements(
     bool Drained,
     double? PublishSeconds,
@@ -17,30 +20,44 @@ public sealed record RunMeasurements(
     double? TimeToFirstMessageSeconds,
     int PeakConcurrentHandlers,
     Distribution DeliveryLatencyMs,
-    StatsTimeline Timeline);
+    StatsTimeline Timeline)
+{
+    /// <summary>Sessions only: messages a consumer handled after a later message of their session.</summary>
+    public int FifoViolations { get; init; }
+
+    /// <summary>Sessions only: when the scaler's count of sessions with work first read 0.</summary>
+    public double? ScalerDrainSeconds { get; init; }
+}
 
 /// <summary>
 /// Builds the run's record in the shared SDK harness schema (sdks/testing/perf/result.schema.json,
-/// schema version 2) as a P-05 queue drain by the .NET SDK, with its own k8s-queue-drain-r{N} profiles.
+/// schema version 2): a P-05 queue drain by the .NET SDK with its own k8s-queue-drain-r{N} profiles, or
+/// for the sessions workload a P-04 session drain with k8s-session-drain-r{N} profiles.
 /// So the report and regression check treat it like any harness run, and only ever compare it with runs
 /// of the same shape: runs group by (environment.label, topology.apiReplicas, scenario.key), and the key
 /// carries every parameter that changes the result.
 /// </summary>
 public static class RunRecord
 {
-    public static string Profile(Settings s) => $"k8s-queue-drain-r{s.Replicas}";
+    private static bool IsSessions(Settings s) => s.Workload == "sessions";
+
+    public static string Profile(Settings s) => IsSessions(s) ? $"k8s-session-drain-r{s.Replicas}" : $"k8s-queue-drain-r{s.Replicas}";
 
     public static string Key(Settings s) =>
-        $"k8s-queue:{s.Messages}@{s.ItemDelayMs}ms/active{s.Window}/handlers{s.Handlers}/replicas{s.Replicas}"
+        (IsSessions(s)
+            ? $"k8s-sessions:{s.Sessions}x{s.MessagesPerSession}@{s.ItemDelayMs}ms/{s.ConcurrentSessions}slots/prefetch{s.Prefetch}"
+              + $"/lease{s.LeaseSeconds}s/idle{s.SessionIdleTimeoutSeconds}s/replicas{s.Replicas}"
+            : $"k8s-queue:{s.Messages}@{s.ItemDelayMs}ms/active{s.Window}/handlers{s.Handlers}/replicas{s.Replicas}")
         + (s.ScalingMode == "fixed" ? "+fixed" : "");
 
-    public static JsonObject Build(Settings s, RunMeasurements m, DateTimeOffset timestamp)
+    public static JsonObject Build(Settings s, RunMeasurements m, DateTimeOffset timestamp) =>
+        IsSessions(s) ? BuildSessions(s, m, timestamp) : BuildQueue(s, m, timestamp);
+
+    private static JsonObject BuildQueue(Settings s, RunMeasurements m, DateTimeOffset timestamp)
     {
-        var profile = Profile(s);
         var concurrency = s.Replicas * Math.Min(s.Handlers, s.Window);
         // The handler work spread over every handler that can run at once, but never less than one handler.
         double? ideal = s.ItemDelayMs > 0 ? Math.Max(s.Messages * s.ItemDelayMs / 1000.0 / concurrency, s.ItemDelayMs / 1000.0) : null;
-        double? perSecond = m.WallClockSeconds > 0 ? m.MessagesHandled / m.WallClockSeconds : null;
         var missing = Math.Max(0, s.Messages - m.MessagesHandled - (long)m.DeadLettered);
 
         var failures = new List<string>();
@@ -57,6 +74,96 @@ public static class RunRecord
             failures.Add($"{m.DeadLettered:0} messages dead-lettered");
         }
 
+        var parameters = new JsonObject
+        {
+            ["messages"] = s.Messages, ["settleMs"] = s.ItemDelayMs, ["maxActiveMessages"] = s.Window,
+            ["maxConcurrentHandlers"] = s.Handlers, ["replicas"] = s.Replicas, ["scaling"] = s.ScalingMode,
+            ["lockTtlSeconds"] = s.LockTtlSeconds, ["publishers"] = s.Publishers
+        };
+        var metrics = Headlines(m, ideal, s.Messages);
+        metrics["missing"] = missing;
+        metrics["orderViolations"] = 0;
+        metrics["deadLettered"] = m.DeadLettered;
+        metrics["peakDepth"] = m.PeakDepth;
+
+        return Envelope(s, timestamp, "P-05", "queue-drain", parameters, metrics,
+            new JsonObject
+            {
+                ["messagesPerSecond"] = JsonSerializer.SerializeToNode(m.Timeline.MessagesPerSecond),
+                ["busyHandlers"] = JsonSerializer.SerializeToNode(m.Timeline.BusyHandlers)
+            },
+            m.Timeline.BucketMs, failures);
+    }
+
+    /// <summary>
+    /// P-04, named and shaped like the SDK harnesses' session drains so the report charts it with them:
+    /// busySlots is the sessions being handled at once. Claim latency and the idle-time breakdown need
+    /// per-stream timings SessionQueueConsumer doesn't expose, so they're left out. Dead-letters aren't
+    /// read (every session has its own DLQ); the handler never fails, so any would show as missing.
+    /// </summary>
+    private static JsonObject BuildSessions(Settings s, RunMeasurements m, DateTimeOffset timestamp)
+    {
+        // The work spread over every slot that has a session to run, but never less than one session's own work.
+        var slots = Math.Min(s.Replicas * s.ConcurrentSessions, s.Sessions);
+        double? ideal = s.ItemDelayMs > 0
+            ? Math.Max(s.Messages * s.ItemDelayMs / 1000.0 / slots, s.MessagesPerSession * s.ItemDelayMs / 1000.0)
+            : null;
+        var missing = Math.Max(0, s.Messages - m.MessagesHandled);
+
+        var failures = new List<string>();
+        if (!m.Drained)
+        {
+            failures.Add("the sessions did not drain");
+        }
+        if (missing > 0)
+        {
+            failures.Add($"{missing} messages missing");
+        }
+        if (m.FifoViolations > 0)
+        {
+            failures.Add($"{m.FifoViolations} FIFO violations");
+        }
+
+        var parameters = new JsonObject
+        {
+            ["sessions"] = s.Sessions, ["messagesPerSession"] = s.MessagesPerSession, ["settleMs"] = s.ItemDelayMs,
+            ["maxConcurrentSessions"] = s.ConcurrentSessions, ["prefetchCount"] = s.Prefetch, ["leaseSeconds"] = s.LeaseSeconds,
+            ["sessionIdleTimeoutSeconds"] = s.SessionIdleTimeoutSeconds, ["replicas"] = s.Replicas, ["scaling"] = s.ScalingMode,
+            ["publishers"] = s.Publishers
+        };
+        var metrics = Headlines(m, ideal, s.Messages);
+        metrics["missing"] = missing;
+        metrics["fifoViolations"] = m.FifoViolations;
+        metrics["peakDepth"] = m.PeakDepth;
+        metrics["scalerDrainSeconds"] = m.ScalerDrainSeconds;
+
+        return Envelope(s, timestamp, "P-04", "session-drain", parameters, metrics,
+            new JsonObject
+            {
+                ["messagesPerSecond"] = JsonSerializer.SerializeToNode(m.Timeline.MessagesPerSecond),
+                ["busySlots"] = JsonSerializer.SerializeToNode(m.Timeline.BusyHandlers)
+            },
+            m.Timeline.BucketMs, failures);
+    }
+
+    private static JsonObject Headlines(RunMeasurements m, double? ideal, int messages) => new()
+    {
+        ["seedSeconds"] = m.PublishSeconds,
+        ["wallClockSeconds"] = m.WallClockSeconds,
+        ["messagesPerSecond"] = m.WallClockSeconds > 0 ? m.MessagesHandled / m.WallClockSeconds : null,
+        ["idealSeconds"] = ideal,
+        ["efficiency"] = ideal != null && m.WallClockSeconds > 0 ? ideal / m.WallClockSeconds : null,
+        ["timeToFirstMessageSeconds"] = m.TimeToFirstMessageSeconds,
+        ["peakConcurrentHandlers"] = m.PeakConcurrentHandlers,
+        ["deliveryLatencyMs"] = JsonSerializer.SerializeToNode(m.DeliveryLatencyMs, JsonSerializerOptions.Web),
+        ["messagesHandled"] = m.MessagesHandled,
+        ["duplicates"] = Math.Max(0, m.MessagesHandled - messages),
+    };
+
+    private static JsonObject Envelope(Settings s, DateTimeOffset timestamp, string id, string name, JsonObject parameters,
+        JsonObject metrics, JsonObject series, int bucketMs, List<string> failures)
+    {
+        var profile = Profile(s);
         return new JsonObject
         {
             ["schemaVersion"] = 2,
@@ -80,40 +187,10 @@ public static class RunRecord
             ["scale"] = "extreme",
             ["scenario"] = new JsonObject
             {
-                ["id"] = "P-05", ["name"] = "queue-drain", ["profile"] = profile, ["key"] = Key(s),
-                ["params"] = new JsonObject
-                {
-                    ["messages"] = s.Messages, ["settleMs"] = s.ItemDelayMs, ["maxActiveMessages"] = s.Window,
-                    ["maxConcurrentHandlers"] = s.Handlers, ["replicas"] = s.Replicas, ["scaling"] = s.ScalingMode,
-                    ["lockTtlSeconds"] = s.LockTtlSeconds, ["publishers"] = s.Publishers
-                }
+                ["id"] = id, ["name"] = name, ["profile"] = profile, ["key"] = Key(s), ["params"] = parameters
             },
-            ["metrics"] = new JsonObject
-            {
-                ["seedSeconds"] = m.PublishSeconds,
-                ["wallClockSeconds"] = m.WallClockSeconds,
-                ["messagesPerSecond"] = perSecond,
-                ["idealSeconds"] = ideal,
-                ["efficiency"] = ideal != null && m.WallClockSeconds > 0 ? ideal / m.WallClockSeconds : null,
-                ["timeToFirstMessageSeconds"] = m.TimeToFirstMessageSeconds,
-                ["peakConcurrentHandlers"] = m.PeakConcurrentHandlers,
-                ["deliveryLatencyMs"] = JsonSerializer.SerializeToNode(m.DeliveryLatencyMs, JsonSerializerOptions.Web),
-                ["messagesHandled"] = m.MessagesHandled,
-                ["duplicates"] = Math.Max(0, m.MessagesHandled - s.Messages),
-                ["missing"] = missing,
-                ["orderViolations"] = 0,
-                ["deadLettered"] = m.DeadLettered,
-                ["peakDepth"] = m.PeakDepth
-            },
-            ["timeline"] = new JsonObject
-            {
-                ["bucketMs"] = m.Timeline.BucketMs,
-                ["series"] = new JsonObject
-                {
-                    ["messagesPerSecond"] = JsonSerializer.SerializeToNode(m.Timeline.MessagesPerSecond),
-                    ["busyHandlers"] = JsonSerializer.SerializeToNode(m.Timeline.BusyHandlers)
-                }
-            },
+            ["metrics"] = metrics,
+            ["timeline"] = new JsonObject { ["bucketMs"] = bucketMs, ["series"] = series },
             ["checks"] = new JsonObject
             {
                 ["passed"] = failures.Count == 0,

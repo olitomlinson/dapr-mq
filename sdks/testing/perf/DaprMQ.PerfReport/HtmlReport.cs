@@ -428,15 +428,22 @@ function renderDetail(allRuns, key, present) {
 
   if (isDrain(sample)) {
     timelineChart(container, 'Busy slots over time', 'Average handlers running per second, latest run per SDK.', 'busy slots', latestRuns, 'busySlots');
-    const idleId = card(container, 'Where peak idle time went', 'Idle slot-seconds in the peak window, latest run per SDK, by cause.');
-    const idleOpts = baseOptions('slot-seconds', { endLabelsOn: false });
-    idleOpts.scales.x.stacked = true; idleOpts.scales.y.stacked = true;
-    idleOpts.plugins.legend.labels = { ...idleOpts.plugins.legend.labels, boxWidth: 10, boxHeight: 10 };
-    const causes = [['Drain wait', 'drainWaitSeconds'], ['Claim', 'claimSeconds'], ['In-session wait', 'inSessionWaitSeconds'], ['Between streams', 'betweenStreamsSeconds']];
-    draw(idleId, { type: 'bar', data: { labels: latestRuns.map(r => SDK_LABEL[r.sdk.name]), datasets: causes.map(([label, f], i) => bar(label, latestRuns.map(r => r.metrics.peak[f]), css(`--series-${i + 1}`))) }, options: idleOpts });
+    // The k8s session drain (k8s-session-drain-r*) can't time individual streams, so it has no idle-time breakdown or claim latency.
+    if (latestRuns.some(r => r.metrics.peak)) {
+      const idleId = card(container, 'Where peak idle time went', 'Idle slot-seconds in the peak window, latest run per SDK, by cause.');
+      const idleOpts = baseOptions('slot-seconds', { endLabelsOn: false });
+      idleOpts.scales.x.stacked = true; idleOpts.scales.y.stacked = true;
+      idleOpts.plugins.legend.labels = { ...idleOpts.plugins.legend.labels, boxWidth: 10, boxHeight: 10 };
+      const causes = [['Drain wait', 'drainWaitSeconds'], ['Claim', 'claimSeconds'], ['In-session wait', 'inSessionWaitSeconds'], ['Between streams', 'betweenStreamsSeconds']];
+      draw(idleId, { type: 'bar', data: { labels: latestRuns.map(r => SDK_LABEL[r.sdk.name]), datasets: causes.map(([label, f], i) => bar(label, latestRuns.map(r => r.metrics.peak?.[f]), css(`--series-${i + 1}`))) }, options: idleOpts });
+    } else {
+      timelineChart(container, 'Throughput over the drain', 'Messages handled per second, latest run per SDK.', 'messages/s', latestRuns, 'messagesPerSecond');
+    }
     trendChart(container, 'Wall clock', 'Consume start to last message handled, every run.', 'seconds', runs, sdksHere, r => r.metrics.wallClockSeconds);
     trendChart(container, 'Efficiency', 'Ideal ÷ wall clock, every run.', '%', runs, sdksHere, r => r.metrics.efficiency * 100);
-    trendChart(container, 'Claim latency p95', 'Stream opened to first delivery.', 'ms', runs, sdksHere, r => r.metrics.claimLatencyMs.p95);
+    if (runs.some(r => r.metrics.claimLatencyMs)) {
+      trendChart(container, 'Claim latency p95', 'Stream opened to first delivery.', 'ms', runs, sdksHere, r => r.metrics.claimLatencyMs?.p95);
+    }
     trendChart(container, 'Delivery latency p95', 'Enqueue to handler start.', 'ms', runs, sdksHere, r => r.metrics.deliveryLatencyMs?.p95);
   } else if (isQueueDrain(sample)) {
     timelineChart(container, 'Throughput over the drain', 'Messages handled per second, latest run per SDK.', 'messages/s', latestRuns, 'messagesPerSecond');
@@ -479,8 +486,8 @@ function detailColumns(sample) {
   const common = [['SDK', null], ['Run', r => when(r)], ['Version', r => [r.sdk.version, r.sdk.runtime].filter(Boolean).join(' · ') || '–']];
   if (isDrain(sample)) return common.concat([
     ['Wall (s)', r => fmt(r.metrics.wallClockSeconds)], ['Ideal (s)', r => fmt(r.metrics.idealSeconds)],
-    ['Efficiency', r => fmt(r.metrics.efficiency * 100) + '%'], ['Peak util', r => fmt(r.metrics.peak.utilization * 100) + '%'],
-    ['Claim p95 (ms)', r => fmt(r.metrics.claimLatencyMs.p95, 0)], ['Msg gap p95 (ms)', r => fmt(r.metrics.interMessageGapMs.p95, 0)],
+    ['Efficiency', r => fmt(r.metrics.efficiency * 100) + '%'], ['Peak util', r => r.metrics.peak ? fmt(r.metrics.peak.utilization * 100) + '%' : '–'],
+    ['Claim p95 (ms)', r => fmt(r.metrics.claimLatencyMs?.p95, 0)], ['Msg gap p95 (ms)', r => fmt(r.metrics.interMessageGapMs?.p95, 0)],
     ['Delivery p95 (ms)', r => fmt(r.metrics.deliveryLatencyMs?.p95, 0)], ['Checks', status],
   ]);
   if (isQueueDrain(sample)) return common.concat([

@@ -9,7 +9,8 @@ name: Performance (extreme)
 # API replica count, so they never mix with the pr-scale baselines.
 #
 # The k8s-throughput job is different: it deploys DaprMQ, Dapr, Postgres and KEDA onto a kind cluster
-# on the runner and runs tools/k8s-throughput (KEDA-scaled competing consumers draining a backlog,
+# on the runner and runs tools/k8s-throughput twice, for a queue and for sessions (KEDA-scaled competing
+# or session consumers draining a backlog,
 # once per replica count). Its records use the same schema, as P-05 queue drains with profiles
 # k8s-queue-drain-r<N>, and publish alongside the SDK runs under sdk-dotnet-k8s.
 
@@ -53,7 +54,7 @@ on:
         required: false
         default: '2,5,10,20'
       k8s_messages:
-        description: 'Backlog per throughput run'
+        description: 'Backlog per throughput run (queue and sessions; sessions spread it over 1,000 sessions)'
         required: false
         default: '100000'
       publish:
@@ -330,6 +331,27 @@ jobs:
             echo '## Kubernetes throughput'
             echo '```'
             sed -n '/== results/,$p' throughput.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      # After the queue series whatever its result, on the same cluster: the same backlog over 1,000
+      # sessions of 100, drained by session consumers (k8s-session-drain-r<N>).
+      - name: Session throughput runs
+        if: ${{ !cancelled() }}
+        env:
+          REPLICAS: ${{ inputs.k8s_replicas }}
+          MESSAGES: ${{ inputs.k8s_messages }}
+          ENV_LABEL: ci-k8s-${{ inputs.runner }}
+        run: |
+          set -o pipefail
+          status=0
+          tools/k8s-throughput/run.sh --context kind-daprmq --workload sessions --replicas "$REPLICAS" \
+            --messages "$MESSAGES" --env-label "$ENV_LABEL" --out perf-results | tee session-throughput.log || status=$?
+          {
+            echo '## Kubernetes session throughput'
+            echo '```'
+            sed -n '/== results/,$p' session-throughput.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           exit $status

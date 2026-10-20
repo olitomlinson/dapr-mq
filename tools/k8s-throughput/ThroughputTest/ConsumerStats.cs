@@ -3,9 +3,14 @@ namespace ThroughputTest;
 /// <summary>
 /// One consumer pod's stats so far, sent every few seconds to the run's stats queue. Cumulative, so the
 /// run keeps only each pod's newest report and a lost or repeated report changes nothing.
+/// <see cref="LastHandledMs"/> and <see cref="FifoViolations"/> are only filled in by session consumers.
 /// </summary>
 public sealed record ConsumerStatsReport(
-    string Pod, long Seq, long SentAtMs, long Handled, int Busy, long? FirstHandledMs, HistogramSnapshot Latency);
+    string Pod, long Seq, long SentAtMs, long Handled, int Busy, long? FirstHandledMs, HistogramSnapshot Latency)
+{
+    public long? LastHandledMs { get; init; }
+    public int FifoViolations { get; init; }
+}
 
 /// <summary>Per-bucket series, as result.schema.json's timeline wants them for P-05.</summary>
 public sealed record StatsTimeline(int BucketMs, double[] MessagesPerSecond, double[] BusyHandlers);
@@ -18,6 +23,9 @@ public static class ConsumerStats
 
     public static long? FirstHandledMs(IEnumerable<ConsumerStatsReport> reports) =>
         reports.Select(r => r.FirstHandledMs).Where(t => t != null).Min();
+
+    public static long? LastHandledMs(IEnumerable<ConsumerStatsReport> reports) =>
+        reports.Select(r => r.LastHandledMs).Where(t => t != null).Max();
 
     /// <summary>
     /// Buckets of <paramref name="bucketMs"/> from <paramref name="startMs"/> to <paramref name="endMs"/>.

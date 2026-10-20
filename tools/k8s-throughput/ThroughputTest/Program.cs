@@ -8,9 +8,10 @@ using Grpc.Net.Client;
 namespace ThroughputTest;
 
 /// <summary>
-/// The in-cluster throughput test. `consume` is a competing consumer (the chart runs it as a
-/// KEDA-scaled Deployment); `run` publishes the backlog, waits for the consumers to drain it, and
-/// prints one "RESULT {json}" line (the chart runs it as a Job). Settings come from the environment.
+/// The in-cluster throughput test. `consume` is a competing consumer, or a session consumer for the
+/// sessions workload (the chart runs it as a KEDA-scaled Deployment); `run` publishes the backlog, waits
+/// for the consumers to drain it, and prints one "RESULT {json}" line (the chart runs it as a Job).
+/// Settings come from the environment.
 /// </summary>
 public static class Program
 {
@@ -29,6 +30,7 @@ public static class Program
         return args.FirstOrDefault() switch
         {
             "run" => await RunAsync(settings, client),
+            "consume" when settings.Workload == "sessions" => await ConsumeSessionsAsync(settings, client),
             "consume" => await ConsumeAsync(settings, client),
             _ => Usage()
         };
@@ -133,6 +135,101 @@ public static class Program
         return 0;
     }
 
+    private static async Task<int> ConsumeSessionsAsync(Settings settings, DaprMQClient client)
+    {
+        long processed = 0;
+        int busy = 0;
+        long firstHandledMs = 0;
+        long lastHandledMs = 0;
+        var latency = new LatencyHistogram();
+        var order = new SessionOrderTracker();
+        var pod = Environment.GetEnvironmentVariable("HOSTNAME") ?? Guid.NewGuid().ToString("N");
+        long seq = 0;
+        var options = new SessionQueueConsumerOptions
+        {
+            MaxConcurrentSessions = settings.ConcurrentSessions,
+            PrefetchCount = settings.Prefetch,
+            LeaseSeconds = settings.LeaseSeconds,
+            SessionIdleTimeoutSeconds = settings.SessionIdleTimeoutSeconds
+        };
+        await using var consumer = new SessionQueueConsumer(client, settings.QueueId, options, async (ctx, ct) =>
+        {
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            Interlocked.CompareExchange(ref firstHandledMs, now, 0);
+            if (ctx.Item.TryGetProperty("publishedAt", out var publishedAt))
+            {
+                latency.Record(now - publishedAt.GetInt64());
+            }
+            order.Observe(ctx.SessionId, ctx.Item.GetProperty("seq").GetInt64());
+            Interlocked.Increment(ref busy);
+            try
+            {
+                if (settings.ItemDelayMs > 0)
+                {
+                    await Task.Delay(settings.ItemDelayMs, ct);
+                }
+                Interlocked.Increment(ref processed);
+                Interlocked.Exchange(ref lastHandledMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            }
+            finally
+            {
+                Interlocked.Decrement(ref busy);
+            }
+        });
+
+        async Task ReportAsync()
+        {
+            var first = Interlocked.Read(ref firstHandledMs);
+            var last = Interlocked.Read(ref lastHandledMs);
+            var report = new ConsumerStatsReport(pod, ++seq, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Interlocked.Read(ref processed), Volatile.Read(ref busy), first == 0 ? null : first, latency.Snapshot())
+            {
+                LastHandledMs = last == 0 ? null : last,
+                FifoViolations = order.FifoViolations
+            };
+            try
+            {
+                await client.EnqueueAsync(StatsQueue(settings), [new EnqueueItemDto(report)]);
+            }
+            catch (Exception ex)
+            {
+                Log($"stats report failed: {ex.Message}"); // the next report carries the same totals
+            }
+        }
+
+        using var stopping = new CancellationTokenSource();
+        using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context =>
+        {
+            context.Cancel = true;
+            stopping.Cancel();
+        });
+
+        Log($"consuming sessions of {settings.QueueId}: {settings.ConcurrentSessions} at a time, prefetch {settings.Prefetch}, {settings.ItemDelayMs}ms per message, lease {settings.LeaseSeconds}s, idle timeout {settings.SessionIdleTimeoutSeconds}s");
+        await consumer.StartAsync();
+        try
+        {
+            var nextLog = DateTime.UtcNow;
+            while (!stopping.IsCancellationRequested)
+            {
+                await Task.Delay(StatsInterval, stopping.Token);
+                await ReportAsync();
+                if (DateTime.UtcNow >= nextLog)
+                {
+                    Log($"processed {Interlocked.Read(ref processed)}, {order.Redeliveries} redelivered, {order.FifoViolations} out of order");
+                    nextLog = DateTime.UtcNow.AddSeconds(30);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
+        await consumer.StopAsync();
+        await ReportAsync();
+        Log($"stopped after processing {Interlocked.Read(ref processed)}");
+        return 0;
+    }
+
     private static async Task<int> RunAsync(Settings settings, DaprMQClient client)
     {
         using var ready = new CancellationTokenSource(TimeSpan.FromMinutes(5));
@@ -140,6 +237,9 @@ public static class Program
 
         using var channel = GrpcChannel.ForAddress(settings.ScalerAddress);
         var scaler = new ExternalScaler.ExternalScalerClient(channel);
+        var sessions = settings.Workload == "sessions";
+        // Messages: ready + locked. Sessions: how many sessions have work, which falls as a consumer releases
+        // each drained session, or otherwise once it has stayed empty for the directory's debounce (30s).
         async Task<double> DepthAsync(bool includeDeadLetter)
         {
             var request = new GetMetricsRequest
@@ -147,16 +247,25 @@ public static class Program
                 ScaledObjectRef = new ScaledObjectRef { Name = settings.ScaledObjectName, Namespace = settings.ScaledObjectNamespace }
             };
             request.ScaledObjectRef.ScalerMetadata.Add("queueId", settings.QueueId);
-            request.ScaledObjectRef.ScalerMetadata.Add("includeDeadLetter", includeDeadLetter ? "true" : "false");
+            if (sessions)
+            {
+                request.ScaledObjectRef.ScalerMetadata.Add("mode", "sessions");
+            }
+            else
+            {
+                request.ScaledObjectRef.ScalerMetadata.Add("includeDeadLetter", includeDeadLetter ? "true" : "false");
+            }
             var response = await scaler.GetMetricsAsync(request);
             return response.MetricValues.Single().MetricValueFloat;
         }
 
-        Log($"publishing {settings.Messages} messages to {settings.QueueId} from {settings.Publishers} publishers, {settings.PublishBatch} per call");
+        Log(sessions
+            ? $"publishing {settings.Sessions} sessions of {settings.MessagesPerSession} to {settings.QueueId} from {settings.Publishers} publishers, {settings.PublishBatch} per call"
+            : $"publishing {settings.Messages} messages to {settings.QueueId} from {settings.Publishers} publishers, {settings.PublishBatch} per call");
         var startedAt = DateTimeOffset.UtcNow;
         var startedAtMs = startedAt.ToUnixTimeMilliseconds();
         var clock = Stopwatch.StartNew();
-        var publishing = PublishAsync(settings, client);
+        var publishing = sessions ? PublishSessionsAsync(settings, client) : PublishAsync(settings, client);
         var tracker = new DrainTracker();
         var timeout = TimeSpan.FromSeconds(settings.TimeoutSeconds);
         TimeSpan? published = null;
@@ -182,35 +291,49 @@ public static class Program
                 Log($"depth read failed: {ex.Message}");
                 continue;
             }
-            tracker.Observe(depth, clock.Elapsed, publishingDone: published != null);
+            // A session only counts once it has registered with the session directory, so for sessions a 0
+            // isn't trusted until a session has been seen.
+            tracker.Observe(depth, clock.Elapsed, publishingDone: published != null && (!sessions || tracker.PeakDepth > 0));
             if (clock.Elapsed >= nextLog)
             {
-                Log($"depth {depth} (ready + locked)");
+                Log(sessions ? $"depth {depth} (sessions with work)" : $"depth {depth} (ready + locked)");
                 nextLog = clock.Elapsed + TimeSpan.FromSeconds(15);
             }
         }
 
-        var deadLettered = await DepthAsync(includeDeadLetter: true) - await DepthAsync(includeDeadLetter: false);
+        // Sessions have a DLQ each, so they aren't read: the handler never fails, and any would be missing.
+        var deadLettered = sessions ? 0 : await DepthAsync(includeDeadLetter: true) - await DepthAsync(includeDeadLetter: false);
 
         // Every consumer reports every few seconds; wait for a round after the drain, then read them all.
         await Task.Delay(StatsInterval * 2 + TimeSpan.FromSeconds(2));
         var reports = await ReadStatsAsync(settings, client);
         var latest = ConsumerStats.Latest(reports);
-        var endMs = startedAtMs + (long)(tracker.DrainedAt ?? clock.Elapsed).TotalMilliseconds;
+        var endMs = sessions && ConsumerStats.LastHandledMs(latest) is { } lastMs
+            ? lastMs
+            : startedAtMs + (long)(tracker.DrainedAt ?? clock.Elapsed).TotalMilliseconds;
         var timeline = ConsumerStats.Timeline(reports, startedAtMs, (int)StatsInterval.TotalMilliseconds, endMs);
         var firstHandled = ConsumerStats.FirstHandledMs(latest);
+        // Sessions: to the last message handled, as the SDK harnesses' session drains measure it. The scaler's
+        // 0 can trail it (by up to the directory's debounce), so it's kept as scalerDrainSeconds instead.
+        var wallClock = sessions && tracker.Drained && ConsumerStats.LastHandledMs(latest) is { } last
+            ? (last - startedAtMs) / 1000.0
+            : tracker.DrainedAt?.TotalSeconds;
 
         var measurements = new RunMeasurements(
             Drained: tracker.Drained,
             PublishSeconds: published?.TotalSeconds,
-            WallClockSeconds: tracker.DrainedAt?.TotalSeconds,
+            WallClockSeconds: wallClock,
             PeakDepth: tracker.PeakDepth,
             DeadLettered: deadLettered,
             MessagesHandled: latest.Sum(r => r.Handled),
             TimeToFirstMessageSeconds: firstHandled is { } f ? (f - startedAtMs) / 1000.0 : null,
             PeakConcurrentHandlers: (int)timeline.BusyHandlers.DefaultIfEmpty(0).Max(),
             DeliveryLatencyMs: LatencyHistogram.Merge(latest.Select(r => r.Latency)).Summary(),
-            Timeline: timeline);
+            Timeline: timeline)
+        {
+            FifoViolations = latest.Sum(r => r.FifoViolations),
+            ScalerDrainSeconds = sessions ? tracker.DrainedAt?.TotalSeconds : null
+        };
         Log($"{latest.Count} consumer pods reported, {measurements.MessagesHandled} messages handled");
         Console.WriteLine("RESULT " + RunRecord.Build(settings, measurements, startedAt).ToJsonString());
         return tracker.Drained ? 0 : 2;
@@ -252,6 +375,37 @@ public static class Program
                     {
                         Log($"publisher {publisher}: enqueue failed ({ex.Message}), retrying");
                         await Task.Delay(TimeSpan.FromSeconds(attempt));
+                    }
+                }
+            }
+        }));
+
+    /// <summary>
+    /// Publisher p takes sessions p, p + publishers, ..., each in order: seq 0..n-1, in calls of
+    /// PublishBatch to that one session, so every message's place in its session is known.
+    /// </summary>
+    private static Task PublishSessionsAsync(Settings settings, DaprMQClient client) =>
+        Task.WhenAll(Enumerable.Range(0, settings.Publishers).Select(async publisher =>
+        {
+            foreach (var session in Enumerable.Range(0, settings.Sessions).Where(s => s % settings.Publishers == publisher))
+            {
+                var sessionId = $"s{session}";
+                foreach (var batch in Enumerable.Range(0, settings.MessagesPerSession).Chunk(settings.PublishBatch))
+                {
+                    var publishedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    var items = batch.Select(seq => new EnqueueItemDto(new { session, seq, publishedAt }, SessionId: sessionId)).ToList();
+                    for (var attempt = 1; ; attempt++)
+                    {
+                        try
+                        {
+                            await client.EnqueueAsync(settings.QueueId, items);
+                            break;
+                        }
+                        catch (Exception ex) when (attempt < 5)
+                        {
+                            Log($"publisher {publisher}: enqueue to {sessionId} failed ({ex.Message}), retrying");
+                            await Task.Delay(TimeSpan.FromSeconds(attempt));
+                        }
                     }
                 }
             }
