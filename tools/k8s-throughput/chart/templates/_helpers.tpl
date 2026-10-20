@@ -31,6 +31,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   valueFrom:
     fieldRef:
       fieldPath: metadata.namespace
+- name: WORKLOAD
+  value: {{ .Values.workload | quote }}
 - name: HANDLERS
   value: {{ .Values.consumer.handlers | quote }}
 - name: WINDOW
@@ -39,6 +41,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   value: {{ .Values.consumer.itemDelayMs | quote }}
 - name: LOCK_TTL_SECONDS
   value: {{ .Values.consumer.lockTtlSeconds | quote }}
+- name: SESSIONS
+  value: {{ .Values.sessions.count | quote }}
+- name: CONCURRENT_SESSIONS
+  value: {{ .Values.sessions.concurrent | quote }}
+- name: PREFETCH
+  value: {{ .Values.sessions.prefetch | quote }}
+- name: LEASE_SECONDS
+  value: {{ .Values.sessions.leaseSeconds | quote }}
+- name: SESSION_IDLE_TIMEOUT_SECONDS
+  value: {{ .Values.sessions.idleTimeoutSeconds | quote }}
 - name: REPLICAS
   value: {{ ternary .Values.scaling.replicas .Values.scaling.maxReplicas (eq .Values.scaling.mode "fixed") | quote }}
 - name: SCALING_MODE

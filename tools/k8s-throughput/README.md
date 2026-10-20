@@ -2,7 +2,8 @@
 
 Measures how fast competing consumers drain a backlog from one queue, entirely inside a Kubernetes cluster. The
 publisher and the consumers are compiled .NET code ([ThroughputTest](ThroughputTest/Program.cs)) running as a Job
-and a Deployment. Nothing is port-forwarded.
+and a Deployment. Nothing is port-forwarded. With `--workload sessions` the backlog is spread over sessions and
+drained by session consumers instead (see [Sessions](#sessions)).
 
 Results are records in the shared SDK harness schema ([result.schema.json](../../sdks/testing/perf/result.schema.json)),
 so the perf report charts them alongside the SDK runs.
@@ -12,6 +13,7 @@ tools/k8s-throughput/run.sh --context kind-daprmq-e2e                    # the s
 tools/k8s-throughput/run.sh --replicas 20                                # one run
 tools/k8s-throughput/run.sh --replicas 20 --fixed                        # exactly 20, no autoscaling
 tools/k8s-throughput/run.sh --replicas 80 --window 100 --handlers 1      # any other shape
+tools/k8s-throughput/run.sh --workload sessions                          # the session series: 2, 5, 10 and 20 replicas x 10 sessions
 dotnet run --project sdks/testing/perf/DaprMQ.PerfReport -- report --results perf-results   # -> perf-results/report.html
 ```
 
@@ -70,11 +72,51 @@ A run is a P-05 queue drain by the .NET SDK, at scale `extreme`, with profile `k
 These profiles aren't in [profiles.json](../../sdks/testing/perf/profiles.json) or any harness suite: only
 this test produces them.
 
+## Sessions
+
+`--workload sessions` runs the same backlog as session queues. The Job publishes `--sessions` sessions (default
+1,000) of `--messages ÷ --sessions` each (default 100). Each publisher owns whole sessions and sends each one's
+messages in order, numbered from 0, so every message's place in its session is known.
+
+The consumers are `SessionQueueConsumer`s:
+- `--concurrent-sessions` (`MaxConcurrentSessions`, default 10) sessions per consumer, the queue run's 10 handlers
+- `--prefetch` messages in flight per session (default 1)
+- `--lease` seconds per session lease (default 30)
+- `--session-idle-timeout` seconds a slot waits on an emptied session before claiming another (default 1).
+  Not the server's default (the lease), which would hold every drained session for 30s.
+
+KEDA scales them with the scaler's `sessions` mode: the metric is the number of sessions with work, aiming for
+`--concurrent-sessions` per replica. The drain is decided from that count, as KEDA sees it, but timed from the
+consumers: the count falls as consumers release drained sessions, but a session that isn't released only drops
+out after the session directory's empty debounce (30s by default).
+
+A run is a P-04 session drain by the .NET SDK, with profile `k8s-session-drain-r<replicas>`.
+
+- **Key:** `k8s-sessions:<sessions>x<per session>@<delay>ms/<concurrent>slots/prefetch<p>/lease<l>s/idle<i>s/replicas<replicas>`,
+  with `+fixed` without KEDA.
+- **Metrics:** the queue run's headlines, except that a few differ:
+
+| Metric | Meaning |
+|---|---|
+| `wallClockSeconds` | From the first publish to the last message handled, once the scaler's session count has read 0 twice |
+| `scalerDrainSeconds` | When that count first read 0. Close to the wall clock when consumers release their sessions; up to the debounce later when they don't |
+| `idealSeconds`, `efficiency` | The work spread over every slot with a session to run (min(replicas × concurrent sessions, sessions)), but never less than one session's own work, and ideal ÷ wall clock |
+| `peakConcurrentHandlers` | The most sessions being handled at once |
+| `peakDepth` | The most sessions with work at once |
+| `fifoViolations` | Messages a consumer handled after a later message of their session. A message seen before is a redelivery, not a violation. Each consumer checks what it handled, so a session that moves between consumers is checked within each |
+
+- **Timeline:** `messagesPerSecond` and `busySlots` (sessions being handled) in 5-second buckets.
+- **Not measured:** claim latency and the idle-time breakdown of the SDK harnesses' session drains, which need
+  per-stream timings `SessionQueueConsumer` doesn't expose. Dead-letters aren't read either, as every session has
+  its own DLQ. The handler never fails, so a dead-lettered message shows as missing.
+- **Checks** fail if the sessions didn't drain, if messages are missing, or on any FIFO violation.
+
 ## In CI
 
 The [Performance (extreme)](../../.github/workflows/perf-extreme.yml) workflow runs it in its `k8s-throughput` job:
 - it creates a kind cluster on the runner and deploys the stack
-- it runs `--replicas` from the `k8s_replicas` input (default `2,5,10,20`, the standard series)
+- it runs `--replicas` from the `k8s_replicas` input (default `2,5,10,20`, the standard series), for the queue
+  and then for sessions
 - it writes the table to the job summary
 - it uploads the records as `perf-sdk-dotnet-k8s`, which the publish job merges into the perf-results branch
 

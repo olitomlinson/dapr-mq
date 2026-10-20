@@ -42,6 +42,27 @@ public class ConsumerStatsTests
     }
 
     [Fact]
+    public void LastHandled_IsTheLatestAcrossPods()
+    {
+        var reports = new[]
+        {
+            Report("a", 1, 9_000, 1, 0) with { LastHandledMs = 8_200 },
+            Report("b", 1, 9_000, 1, 0) with { LastHandledMs = 8_900 },
+            Report("c", 1, 9_000, 0, 0)
+        };
+
+        Assert.Equal(8_900, ConsumerStats.LastHandledMs(reports));
+    }
+
+    [Fact]
+    public void FifoViolations_AddUpAcrossPods()
+    {
+        var reports = new[] { Report("a", 1, 9_000, 1, 0) with { FifoViolations = 2 }, Report("b", 1, 9_000, 1, 0) with { FifoViolations = 1 } };
+
+        Assert.Equal(3, reports.Sum(r => r.FifoViolations));
+    }
+
+    [Fact]
     public void FirstHandled_IsTheEarliestAcrossPods()
     {
         var reports = new[] { Report("a", 1, 9_000, 1, 0, firstHandledMs: 4_200), Report("b", 1, 9_000, 1, 0, firstHandledMs: 3_100) };

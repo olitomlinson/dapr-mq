@@ -7,10 +7,16 @@ namespace ThroughputTest;
 /// One run's settings, from environment variables (the chart sets them on the Job and the consumer
 /// Deployment alike). The defaults are the run that drained fastest in the KEDA load tests: 20
 /// replicas x 10 handlers, a window of 40, 200ms of work per message, a 60s lock.
+///
+/// The `sessions` workload spreads the same backlog over session queues instead, consumed by a
+/// SessionQueueConsumer: by default 1,000 sessions of 100, 10 held at a time per consumer, which is
+/// the queue's 10 handlers per consumer.
 /// </summary>
 public sealed record Settings
 {
     public required string QueueId { get; init; }
+    /// <summary>queue: competing consumers of one queue. sessions: session consumers of many sessions.</summary>
+    public string Workload { get; init; } = "queue";
     public string GatewayHttpUrl { get; init; } = "http://daprmq-gateway:8080";
     public string GatewayGrpcAddress { get; init; } = "http://daprmq-gateway:8081";
     /// <summary>The DaprMQ operator's KEDA external scaler: the run reads depth exactly as KEDA does.</summary>
@@ -34,6 +40,20 @@ public sealed record Settings
     public int Window { get; init; } = 40;
     public int ItemDelayMs { get; init; } = 200;
     public int LockTtlSeconds { get; init; } = 60;
+
+    // The session consumers (sessions workload). ItemDelayMs is the work per message for both.
+    public int Sessions { get; init; } = 1000;
+    public int MessagesPerSession => Messages / Sessions;
+    /// <summary>SessionQueueConsumerOptions.MaxConcurrentSessions: sessions each consumer holds at once.</summary>
+    public int ConcurrentSessions { get; init; } = 10;
+    public int Prefetch { get; init; } = 1;
+    public int LeaseSeconds { get; init; } = 30;
+    /// <summary>
+    /// How long a slot waits on its emptied session before claiming another. The server's default is the
+    /// lease, which here would hold each drained session for 30s.
+    /// </summary>
+    public int SessionIdleTimeoutSeconds { get; init; } = 1;
+
     /// <summary>Most consumer replicas (keda), or exactly this many (fixed).</summary>
     public int Replicas { get; init; } = 20;
     public string ScalingMode { get; init; } = "keda";
@@ -75,15 +95,29 @@ public sealed record Settings
             throw new ArgumentException("QUEUE_ID is required");
         }
 
+        var workload = Text("WORKLOAD", defaults.Workload);
+        if (workload is not ("queue" or "sessions"))
+        {
+            throw new ArgumentException($"WORKLOAD must be queue or sessions, got '{workload}'");
+        }
+
+        var messages = Int("MESSAGES", defaults.Messages, 1);
+        var sessions = Int("SESSIONS", defaults.Sessions, 1);
+        if (workload == "sessions" && messages % sessions != 0)
+        {
+            throw new ArgumentException($"SESSIONS ({sessions}) must divide MESSAGES ({messages}) evenly");
+        }
+
         return new Settings
         {
             QueueId = queueId,
+            Workload = workload,
             GatewayHttpUrl = Text("DAPRMQ_HTTP_BASE_URL", defaults.GatewayHttpUrl),
             GatewayGrpcAddress = Text("DAPRMQ_GRPC_ADDRESS", defaults.GatewayGrpcAddress),
             ScalerAddress = Text("SCALER_ADDRESS", defaults.ScalerAddress),
             ScaledObjectName = Text("SCALED_OBJECT_NAME", defaults.ScaledObjectName),
             ScaledObjectNamespace = Text("POD_NAMESPACE", defaults.ScaledObjectNamespace),
-            Messages = Int("MESSAGES", defaults.Messages, 1),
+            Messages = messages,
             Publishers = Int("PUBLISHERS", defaults.Publishers, 1),
             PublishBatch = Int("PUBLISH_BATCH", defaults.PublishBatch, 1),
             TimeoutSeconds = Int("TIMEOUT_SECONDS", defaults.TimeoutSeconds, 1),
@@ -92,6 +126,11 @@ public sealed record Settings
             Window = Int("WINDOW", defaults.Window, 1),
             ItemDelayMs = Int("ITEM_DELAY_MS", defaults.ItemDelayMs, 0),
             LockTtlSeconds = Int("LOCK_TTL_SECONDS", defaults.LockTtlSeconds, 1),
+            Sessions = sessions,
+            ConcurrentSessions = Int("CONCURRENT_SESSIONS", defaults.ConcurrentSessions, 1),
+            Prefetch = Int("PREFETCH", defaults.Prefetch, 1),
+            LeaseSeconds = Int("LEASE_SECONDS", defaults.LeaseSeconds, 1),
+            SessionIdleTimeoutSeconds = Int("SESSION_IDLE_TIMEOUT_SECONDS", defaults.SessionIdleTimeoutSeconds, 0),
             Replicas = Int("REPLICAS", defaults.Replicas, 1),
             ScalingMode = Text("SCALING_MODE", defaults.ScalingMode),
             EnvLabel = Text("ENV_LABEL", defaults.EnvLabel),

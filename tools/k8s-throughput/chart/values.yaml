@@ -3,6 +3,10 @@
 # Required. Names the queue (tp-<runId>) and the Job, so every run starts on an empty queue and a new Job.
 runId: ""
 
+# queue: competing consumers (QueueConsumer) drain one queue.
+# sessions: session consumers (SessionQueueConsumer) drain the backlog spread over `sessions.count` sessions.
+workload: queue
+
 image:
   repository: daprmq-throughput-test
   tag: dev
@@ -45,12 +49,25 @@ consumer:
     limits:
       memory: 256Mi
 
+# The session consumers (SessionQueueConsumer), for workload: sessions. consumer.itemDelayMs and
+# consumer.resources apply to them too; handlers, window and lockTtlSeconds don't.
+sessions:
+  # run.messages is spread evenly over them, so it must divide it.
+  count: 1000
+  # MaxConcurrentSessions per consumer. KEDA aims for this many sessions with work per replica.
+  concurrent: 10
+  prefetch: 1
+  leaseSeconds: 30
+  # Not the server default (the lease), which would hold every drained session for 30s.
+  idleTimeoutSeconds: 1
+
 scaling:
   # keda: a ScaledObject scales the consumers 0..maxReplicas from queue depth, as in production.
   # fixed: exactly `replicas` consumers, for a comparison without autoscaling in the way.
   mode: keda
   maxReplicas: 20
   replicas: 20
+  # Ready + locked messages per replica (queue). For sessions, sessions.concurrent is used instead.
   targetValue: 50
   pollingInterval: 5
   cooldownPeriod: 30

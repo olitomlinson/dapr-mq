@@ -2,9 +2,11 @@
 # In-cluster throughput runs: competing consumers (a Deployment, KEDA-scaled by default) drain a
 # backlog that a Job publishes and times. Both are the compiled ThroughputTest app; nothing is
 # port-forwarded - the Job talks to the gateway and the operator's scaler inside the cluster.
+# --workload sessions spreads the backlog over sessions, drained by session consumers instead.
 #
 # Each run's result is a record in the shared SDK harness schema (sdks/testing/perf/result.schema.json),
-# a P-05 queue drain with profile k8s-queue-drain-r<replicas>, saved where the harnesses save theirs:
+# a P-05 queue drain with profile k8s-queue-drain-r<replicas> (or for sessions, a P-04 session drain with
+# profile k8s-session-drain-r<replicas>), saved where the harnesses save theirs:
 # <out>/sdk-dotnet-k8s/runs/<runId>.json and a line in <out>/sdk-dotnet-k8s/history.jsonl. So
 # `DaprMQ.PerfReport report` charts it with the rest, and CI publishes it to the perf-results branch.
 #
@@ -20,10 +22,16 @@
 #   --replicas N[,N...]   max consumer replicas (or the exact count with --fixed); a list runs each in
 #                         turn (default: 2,5,10,20, the standard series)
 #   --fixed               run exactly --replicas consumers instead of scaling with KEDA
+#   --workload NAME       queue (default) or sessions
 #   --handlers N          handlers per consumer (default: 10)
 #   --window N            MaxActiveMessages per consumer (default: 40)
 #   --delay-ms N          simulated work per message (default: 200)
 #   --lock-ttl N          lock TTL in seconds (default: 60)
+#   --sessions N          sessions workload: sessions the backlog is spread over; must divide --messages (default: 1000)
+#   --concurrent-sessions N  sessions workload: sessions each consumer holds at once (default: 10)
+#   --prefetch N          sessions workload: messages in flight per session (default: 1)
+#   --lease N             sessions workload: session lease in seconds (default: 30)
+#   --session-idle-timeout N  sessions workload: seconds a slot waits on an emptied session (default: 1)
 #   --messages N          backlog size (default: 100000)
 #   --publishers N        concurrent publishers in the Job (default: 10)
 #   --timeout N           seconds to wait for each drain (default: 1800)
@@ -35,8 +43,9 @@
 
 set -euo pipefail
 
-CONTEXT=""; NS="daprmq-throughput"; DAPRMQ_NS="daprmq"; REPLICAS_LIST="2,5,10,20"; MODE="keda"
+CONTEXT=""; NS="daprmq-throughput"; DAPRMQ_NS="daprmq"; REPLICAS_LIST="2,5,10,20"; MODE="keda"; WORKLOAD="queue"
 HANDLERS=10; WINDOW=40; DELAY_MS=200; LOCK_TTL=60; MESSAGES=100000; PUBLISHERS=10; TIMEOUT=1800
+SESSIONS=1000; CONCURRENT_SESSIONS=10; PREFETCH=1; LEASE=30; SESSION_IDLE_TIMEOUT=1
 ENV_LABEL="local"; OUT=""; SKIP_BUILD="false"; KEEP="false"
 IMAGE="daprmq-throughput-test:dev"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -51,6 +60,12 @@ while [[ $# -gt 0 ]]; do
         --daprmq-namespace) DAPRMQ_NS="$2"; shift 2 ;;
         --replicas) REPLICAS_LIST="$2"; shift 2 ;;
         --fixed) MODE="fixed"; shift ;;
+        --workload) WORKLOAD="$2"; shift 2 ;;
+        --sessions) SESSIONS="$2"; shift 2 ;;
+        --concurrent-sessions) CONCURRENT_SESSIONS="$2"; shift 2 ;;
+        --prefetch) PREFETCH="$2"; shift 2 ;;
+        --lease) LEASE="$2"; shift 2 ;;
+        --session-idle-timeout) SESSION_IDLE_TIMEOUT="$2"; shift 2 ;;
         --handlers) HANDLERS="$2"; shift 2 ;;
         --window) WINDOW="$2"; shift 2 ;;
         --delay-ms) DELAY_MS="$2"; shift 2 ;;
@@ -66,6 +81,11 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown option: $1" >&2; show_help >&2; exit 1 ;;
     esac
 done
+
+case "$WORKLOAD" in
+    queue|sessions) ;;
+    *) echo "--workload must be queue or sessions, got: $WORKLOAD" >&2; exit 1 ;;
+esac
 
 CONTEXT="${CONTEXT:-$(kubectl config current-context)}"
 OUT="${OUT:-$REPO_ROOT/perf-results}"
@@ -96,13 +116,19 @@ run_one() {
     local replicas="$1" run_id job peak=0 deadline ready succeeded failed record
     run_id="$(date -u +%Y%m%d%H%M%S)"
     job="tp-$run_id"
-    echo "== run $run_id: $MESSAGES messages, $MODE consumers (up to $replicas) x $HANDLERS handlers, window $WINDOW, ${DELAY_MS}ms per message, lock TTL ${LOCK_TTL}s" >&2
+    if [[ "$WORKLOAD" == "sessions" ]]; then
+        echo "== run $run_id: $MESSAGES messages over $SESSIONS sessions, $MODE session consumers (up to $replicas) x $CONCURRENT_SESSIONS sessions, prefetch $PREFETCH, ${DELAY_MS}ms per message, lease ${LEASE}s, idle timeout ${SESSION_IDLE_TIMEOUT}s" >&2
+    else
+        echo "== run $run_id: $MESSAGES messages, $MODE consumers (up to $replicas) x $HANDLERS handlers, window $WINDOW, ${DELAY_MS}ms per message, lock TTL ${LOCK_TTL}s" >&2
+    fi
     uninstall
     helm --kube-context "$CONTEXT" upgrade --install throughput "$CHART" -n "$NS" --create-namespace \
-        --set-string runId="$run_id" --set daprmq.namespace="$DAPRMQ_NS" \
+        --set-string runId="$run_id" --set daprmq.namespace="$DAPRMQ_NS" --set workload="$WORKLOAD" \
         --set scaling.mode="$MODE" --set scaling.maxReplicas="$replicas" --set scaling.replicas="$replicas" \
         --set consumer.handlers="$HANDLERS" --set consumer.window="$WINDOW" \
         --set consumer.itemDelayMs="$DELAY_MS" --set consumer.lockTtlSeconds="$LOCK_TTL" \
+        --set sessions.count="$SESSIONS" --set sessions.concurrent="$CONCURRENT_SESSIONS" --set sessions.prefetch="$PREFETCH" \
+        --set sessions.leaseSeconds="$LEASE" --set sessions.idleTimeoutSeconds="$SESSION_IDLE_TIMEOUT" \
         --set run.messages="$MESSAGES" --set run.publishers="$PUBLISHERS" --set run.timeoutSeconds="$TIMEOUT" \
         --set-string run.envLabel="$ENV_LABEL" --set run.gatewayReplicas="$GATEWAY_REPLICAS" \
         --set-string run.serverLabel="kubernetes $CONTEXT" --set-string run.gitSha="$GIT_SHA" \
@@ -158,13 +184,15 @@ echo "== results ($RESULTS_DIR)"
 python3 - "${PATHS[@]}" <<'PY'
 import json, sys
 def f(v, d=1): return "-" if v is None else f"{v:,.{d}f}"
-print(f"   {'profile':<22} {'drained':<8} {'wall s':>8} {'msg/s':>7} {'efficiency':>10} {'delivery p95 ms':>15} {'peak handlers':>13} {'dead-lettered':>13}  checks")
+# Sessions records have no dead-letter count (each session has its own DLQ) but do count FIFO violations.
+print(f"   {'profile':<24} {'drained':<8} {'wall s':>8} {'msg/s':>7} {'efficiency':>10} {'delivery p95 ms':>15} {'peak handlers':>13} {'dead-lettered':>13} {'fifo':>5}  checks")
 for path in sys.argv[1:]:
-    r = json.load(open(path)); m = r["metrics"]
-    checks = "pass" if r["checks"]["passed"] else "FAIL: " + "; ".join(r["checks"]["failures"])
-    print(f"   {r['scenario']['profile']:<22} {str('the queue did not drain' not in r['checks']['failures']):<8} {f(m['wallClockSeconds']):>8} "
+    r = json.load(open(path)); m = r["metrics"]; failures = r["checks"]["failures"]
+    checks = "pass" if r["checks"]["passed"] else "FAIL: " + "; ".join(failures)
+    drained = not any(f_.endswith("did not drain") for f_ in failures)
+    print(f"   {r['scenario']['profile']:<24} {str(drained):<8} {f(m['wallClockSeconds']):>8} "
           f"{f(m['messagesPerSecond'], 0):>7} {f(m['efficiency'], 2):>10} {f(m['deliveryLatencyMs']['p95'], 0):>15} "
-          f"{m['peakConcurrentHandlers']:>13} {f(m['deadLettered'], 0):>13}  {checks}")
+          f"{m['peakConcurrentHandlers']:>13} {f(m.get('deadLettered'), 0):>13} {f(m.get('fifoViolations'), 0):>5}  {checks}")
 PY
 for path in "${PATHS[@]}"; do
     python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["checks"]["passed"] else 1)' "$path" || status=1
