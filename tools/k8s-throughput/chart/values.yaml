@@ -73,5 +73,8 @@ scaling:
   replicas: 20
   # Ready + locked messages per replica (queue). For sessions, sessions.concurrent is used instead.
   targetValue: 50
+  # keda: let the HPA go straight to maxReplicas rather than its default +100% (or +4 pods) per 15s,
+  # so a run isn't mostly measuring the ramp. Recorded in the result's key as +fastscale.
+  fastScaleUp: false
   pollingInterval: 5
   cooldownPeriod: 30

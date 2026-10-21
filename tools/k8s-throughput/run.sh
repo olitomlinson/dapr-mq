@@ -22,6 +22,7 @@
 #   --replicas N[,N...]   max consumer replicas (or the exact count with --fixed); a list runs each in
 #                         turn (default: 2,5,10,20, the standard series)
 #   --fixed               run exactly --replicas consumers instead of scaling with KEDA
+#   --fast-scale-up       with KEDA, let the HPA go straight to --replicas instead of ramping (+100% per 15s)
 #   --workload NAME       queue (default) or sessions
 #   --handlers N          handlers per consumer (default: 10)
 #   --window N            MaxActiveMessages per consumer (default: 40)
@@ -45,7 +46,7 @@
 
 set -euo pipefail
 
-CONTEXT=""; NS="daprmq-throughput"; DAPRMQ_NS="daprmq"; REPLICAS_LIST="2,5,10,20"; MODE="keda"; WORKLOAD="queue"
+CONTEXT=""; NS="daprmq-throughput"; DAPRMQ_NS="daprmq"; REPLICAS_LIST="2,5,10,20"; MODE="keda"; FAST_SCALE_UP="false"; WORKLOAD="queue"
 HANDLERS=10; WINDOW=40; DELAY_MS=200; LOCK_TTL=60; MESSAGES=100000; PUBLISHERS=10; TIMEOUT=1800
 SESSIONS=1000; CONCURRENT_SESSIONS=10; PREFETCH=1; LEASE=30; SESSION_IDLE_TIMEOUT=1; LENGTH_JITTER=0; PUBLISH_JITTER=0
 ENV_LABEL="local"; OUT=""; SKIP_BUILD="false"; KEEP="false"
@@ -62,6 +63,7 @@ while [[ $# -gt 0 ]]; do
         --daprmq-namespace) DAPRMQ_NS="$2"; shift 2 ;;
         --replicas) REPLICAS_LIST="$2"; shift 2 ;;
         --fixed) MODE="fixed"; shift ;;
+        --fast-scale-up) FAST_SCALE_UP="true"; shift ;;
         --workload) WORKLOAD="$2"; shift 2 ;;
         --sessions) SESSIONS="$2"; shift 2 ;;
         --concurrent-sessions) CONCURRENT_SESSIONS="$2"; shift 2 ;;
@@ -129,6 +131,7 @@ run_one() {
     helm --kube-context "$CONTEXT" upgrade --install throughput "$CHART" -n "$NS" --create-namespace \
         --set-string runId="$run_id" --set daprmq.namespace="$DAPRMQ_NS" --set workload="$WORKLOAD" \
         --set scaling.mode="$MODE" --set scaling.maxReplicas="$replicas" --set scaling.replicas="$replicas" \
+        --set scaling.fastScaleUp="$FAST_SCALE_UP" \
         --set consumer.handlers="$HANDLERS" --set consumer.window="$WINDOW" \
         --set consumer.itemDelayMs="$DELAY_MS" --set consumer.lockTtlSeconds="$LOCK_TTL" \
         --set sessions.count="$SESSIONS" --set sessions.concurrent="$CONCURRENT_SESSIONS" --set sessions.prefetch="$PREFETCH" \

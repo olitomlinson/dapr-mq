@@ -101,6 +101,13 @@ public class SettingsTests
     }
 
     [Fact]
+    public void FastScaleUp_IsOffByDefault()
+    {
+        Assert.False(Parse(("QUEUE_ID", "tp-1")).FastScaleUp);
+        Assert.True(Parse(("QUEUE_ID", "tp-1"), ("FAST_SCALE_UP", "true")).FastScaleUp);
+    }
+
+    [Fact]
     public void QueueId_IsRequired()
     {
         var error = Assert.Throws<ArgumentException>(() => Parse());

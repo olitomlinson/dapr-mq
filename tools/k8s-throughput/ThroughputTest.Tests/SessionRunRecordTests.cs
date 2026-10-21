@@ -76,6 +76,13 @@ public class SessionRunRecordTests
     }
 
     [Fact]
+    public void Key_NamesAFastScaleUp()
+    {
+        Assert.Equal("k8s-sessions:1000x100@200ms/10slots/prefetch1/lease30s/idle1s/replicas20+fastscale",
+            Build(TwentyReplicas() with { FastScaleUp = true }, Drained())["scenario"]!["key"]!.GetValue<string>());
+    }
+
+    [Fact]
     public void Params_DescribeTheSessions()
     {
         var parameters = Build(TwentyReplicas(), Drained())["scenario"]!["params"]!;

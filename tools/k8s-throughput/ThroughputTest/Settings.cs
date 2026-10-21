@@ -64,6 +64,11 @@ public sealed record Settings
     /// <summary>Most consumer replicas (keda), or exactly this many (fixed).</summary>
     public int Replicas { get; init; } = 20;
     public string ScalingMode { get; init; } = "keda";
+    /// <summary>
+    /// keda only: the HPA may go straight to Replicas instead of its default +100% (or +4 pods) per 15s,
+    /// so the run measures DaprMQ rather than the ramp. The chart sets the policy; this records it.
+    /// </summary>
+    public bool FastScaleUp { get; init; }
 
     // Where the run happened, for the shared result record (sdks/testing/perf/result.schema.json).
     public string EnvLabel { get; init; } = "local";
@@ -147,6 +152,7 @@ public sealed record Settings
             PublishJitterSeconds = Int("PUBLISH_JITTER_SECONDS", 0, 0),
             Replicas = Int("REPLICAS", defaults.Replicas, 1),
             ScalingMode = Text("SCALING_MODE", defaults.ScalingMode),
+            FastScaleUp = env.TryGetValue("FAST_SCALE_UP", out var fast) && fast == "true",
             EnvLabel = Text("ENV_LABEL", defaults.EnvLabel),
             GatewayReplicas = Int("GATEWAY_REPLICAS", defaults.GatewayReplicas, 1),
             ServerLabel = Text("SERVER_LABEL", defaults.ServerLabel),

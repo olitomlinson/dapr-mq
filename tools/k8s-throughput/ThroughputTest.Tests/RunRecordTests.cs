@@ -49,6 +49,19 @@ public class RunRecordTests
     }
 
     [Fact]
+    public void Key_NamesAFastScaleUp_OnlyWithKeda()
+    {
+        // The HPA's ramp is part of every KEDA run's wall clock, so runs that skip it aren't comparable
+        // with those that don't. A fixed run has no ramp either way.
+        Settings With(string mode) => TwentyReplicas(mode) with { FastScaleUp = true };
+
+        Assert.Equal("k8s-queue:100000@200ms/active40/handlers10/replicas20+fastscale",
+            Build(With("keda"), Drained())["scenario"]!["key"]!.GetValue<string>());
+        Assert.Equal("k8s-queue:100000@200ms/active40/handlers10/replicas20+fixed",
+            Build(With("fixed"), Drained())["scenario"]!["key"]!.GetValue<string>());
+    }
+
+    [Fact]
     public void Metrics_AreTheQueueDrainHeadlines()
     {
         var metrics = Build(TwentyReplicas(), Drained(wallClockSeconds: 250))["metrics"]!;

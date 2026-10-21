@@ -59,4 +59,6 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   value: {{ ternary .Values.scaling.replicas .Values.scaling.maxReplicas (eq .Values.scaling.mode "fixed") | quote }}
 - name: SCALING_MODE
   value: {{ .Values.scaling.mode | quote }}
+- name: FAST_SCALE_UP
+  value: {{ .Values.scaling.fastScaleUp | quote }}
 {{- end }}
