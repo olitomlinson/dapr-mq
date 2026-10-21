@@ -488,6 +488,96 @@ public class DaprMQGrpcServiceConsumeSessionTests
             It.IsAny<ActorId>(), "ReleaseSession", It.IsAny<ActorModels.ReleaseSessionRequest>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    /// <summary>Records every write, and the most writes it ever saw running at once.</summary>
+    private sealed class OverlapDetectingWriter<T> : IServerStreamWriter<T>
+    {
+        private readonly ConcurrentQueue<T> _written = new();
+        private int _active;
+        private int _maxConcurrent;
+
+        public IReadOnlyCollection<T> Written => _written;
+        public int MaxConcurrent => Volatile.Read(ref _maxConcurrent);
+        public Action<T>? OnWrite { get; init; }
+        public WriteOptions? WriteOptions { get; set; }
+
+        public async Task WriteAsync(T message)
+        {
+            var active = Interlocked.Increment(ref _active);
+            int seen;
+            while (active > (seen = Volatile.Read(ref _maxConcurrent)) && Interlocked.CompareExchange(ref _maxConcurrent, active, seen) != seen)
+            {
+            }
+
+            try
+            {
+                _written.Enqueue(message);
+                OnWrite?.Invoke(message);
+                await Task.Delay(20); // a write that takes a while, as a slow client's would
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _active);
+            }
+        }
+    }
+
+    private static void SetupAccepted(Mock<ISessionCoordinatorActorInvoker> sessionInvoker) =>
+        sessionInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.AcceptSessionRequest, ActorModels.AcceptSessionResponse>(
+                It.IsAny<ActorId>(), "AcceptSession", It.IsAny<ActorModels.AcceptSessionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.AcceptSessionResponse { Success = true, SessionId = "s1", LeaseId = "lease-1", LeaseExpiresAt = 12345 });
+
+    /// <summary>
+    /// gRPC forbids overlapping writes on one stream. The reader writes settle errors while the
+    /// delivery loop writes deliveries, so every write goes through one lock.
+    /// </summary>
+    [Fact]
+    public async Task ConsumeSession_SettleErrorsDuringDeliveries_WritesNeverOverlap()
+    {
+        var mockQueueInvoker = new Mock<IQueueActorInvoker>();
+        var mockSessionInvoker = new Mock<ISessionCoordinatorActorInvoker>();
+        SetupAccepted(mockSessionInvoker);
+
+        var next = 0;
+        mockQueueInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.DequeueLockedRequest, ActorModels.DequeueLockedResponse>(
+                It.IsAny<ActorId>(), "DequeueLocked", It.IsAny<ActorModels.DequeueLockedRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => new ActorModels.DequeueLockedResponse
+            {
+                Items = [new() { ItemJson = "{}", Priority = 1, LockId = $"lock-{Interlocked.Increment(ref next)}", LockExpiresAt = 999 }]
+            });
+
+        // Every ack is rejected, so the reader writes an error frame for each one.
+        mockQueueInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.AcknowledgeRequest, ActorModels.AcknowledgeResponse>(
+                It.IsAny<ActorId>(), "Acknowledge", It.IsAny<ActorModels.AcknowledgeRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.AcknowledgeResponse { Success = false, ErrorCode = "LOCK_EXPIRED", Message = "expired" });
+
+        mockSessionInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.ReleaseSessionRequest, ActorModels.ReleaseSessionResponse>(
+                It.IsAny<ActorId>(), "ReleaseSession", It.IsAny<ActorModels.ReleaseSessionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.ReleaseSessionResponse { Success = true });
+
+        var reader = new FakeAsyncStreamReader<ConsumeSessionRequest>();
+        // The client acks each delivery as soon as it arrives.
+        var writer = new OverlapDetectingWriter<ConsumeSessionResponse>
+        {
+            OnWrite = r =>
+            {
+                if (r.PayloadCase == ConsumeSessionResponse.PayloadOneofCase.Delivered)
+                {
+                    reader.Add(new ConsumeSessionRequest { Ack = new ConsumeSessionAck { LockId = r.Delivered.LockId } });
+                }
+            }
+        };
+        var service = CreateService(mockQueueInvoker.Object, mockSessionInvoker.Object);
+        reader.Add(StartRequest("test-queue", "s1", prefetchCount: 2));
+
+        var task = service.ConsumeSession(reader, writer, _mockContext.Object);
+        await WaitUntilAsync(() => writer.Written.Count(r => r.PayloadCase == ConsumeSessionResponse.PayloadOneofCase.Error) >= 10, 5000);
+
+        reader.Complete();
+        await task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(1, writer.MaxConcurrent);
+    }
+
     // --- Prefetch refill: acks that half-drain the window wake the poll loop early ---
 
     private sealed class RefillHarness

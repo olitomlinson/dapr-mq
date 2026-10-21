@@ -800,7 +800,22 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         var leaseId = acceptResult.LeaseId!;
         var sessionActorId = new ActorId(ResolveTargetActorId(start.QueueId, sessionId));
 
-        await responseStream.WriteAsync(new ConsumeSessionResponse
+        // The reader and the poll loop both write, and gRPC forbids overlapping writes on one stream.
+        using var writeLock = new SemaphoreSlim(1, 1);
+        async Task WriteAsync(ConsumeSessionResponse response)
+        {
+            await writeLock.WaitAsync();
+            try
+            {
+                await responseStream.WriteAsync(response);
+            }
+            finally
+            {
+                writeLock.Release();
+            }
+        }
+
+        await WriteAsync(new ConsumeSessionResponse
         {
             SessionAssigned = new SessionAssigned { SessionId = sessionId, LeaseExpiresAt = acceptResult.LeaseExpiresAt!.Value }
         });
@@ -856,7 +871,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                                 "Acknowledge rejected for lock {LockId} on session {SessionId}: {ErrorCode} {Message}",
                                 req.Ack.LockId, sessionId, ackResult.ErrorCode, ackResult.Message);
 
-                            await responseStream.WriteAsync(new ConsumeSessionResponse
+                            await WriteAsync(new ConsumeSessionResponse
                             {
                                 Error = new SessionError
                                 {
@@ -883,7 +898,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                                 "DeadLetter rejected for lock {LockId} on session {SessionId}: {ErrorCode} {Message}",
                                 req.DeadLetter.LockId, sessionId, dlqResult.ErrorCode, dlqResult.Message);
 
-                            await responseStream.WriteAsync(new ConsumeSessionResponse
+                            await WriteAsync(new ConsumeSessionResponse
                             {
                                 Error = new SessionError
                                 {
@@ -912,7 +927,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                                 "Nack rejected for lock {LockId} on session {SessionId}: {ErrorCode} {Message}",
                                 req.Nack.LockId, sessionId, nackResult.ErrorCode, nackResult.Message);
 
-                            await responseStream.WriteAsync(new ConsumeSessionResponse
+                            await WriteAsync(new ConsumeSessionResponse
                             {
                                 Error = new SessionError
                                 {
@@ -960,7 +975,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
 
                     if (!renewResult.Success)
                     {
-                        await responseStream.WriteAsync(new ConsumeSessionResponse
+                        await WriteAsync(new ConsumeSessionResponse
                         {
                             SessionLost = new SessionLost { Message = renewResult.ErrorMessage ?? "Failed to renew session lease" }
                         });
@@ -988,7 +1003,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
 
                     if (dequeueResult.ErrorCode != null)
                     {
-                        await responseStream.WriteAsync(new ConsumeSessionResponse
+                        await WriteAsync(new ConsumeSessionResponse
                         {
                             SessionLost = new SessionLost { Message = dequeueResult.Message ?? "Session lease lost" }
                         });
@@ -1001,7 +1016,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                         foreach (var item in dequeueResult.Items)
                         {
                             Interlocked.Increment(ref outstanding);
-                            await responseStream.WriteAsync(new ConsumeSessionResponse
+                            await WriteAsync(new ConsumeSessionResponse
                             {
                                 Delivered = new SessionDelivered
                                 {
@@ -1027,7 +1042,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                     emptySince ??= now;
                     if (now - emptySince >= sessionIdleTimeoutSeconds)
                     {
-                        await responseStream.WriteAsync(new ConsumeSessionResponse
+                        await WriteAsync(new ConsumeSessionResponse
                         {
                             SessionDrained = new SessionDrained { SessionId = sessionId }
                         });
