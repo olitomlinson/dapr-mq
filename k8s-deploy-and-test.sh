@@ -462,13 +462,23 @@ fi
 
 log_section "Ensuring Postgres State Store"
 
+# Resources (and any other shared settings) for the chart: see postgres-values.yaml.
+POSTGRES_VALUES="$SCRIPT_DIR/postgres-values.yaml"
+
 if helm status "$POSTGRES_RELEASE" -n "$NAMESPACE" >/dev/null 2>&1; then
     log_info "Release '$POSTGRES_RELEASE' already installed in '$NAMESPACE' - leaving it as-is (not upgrading a stateful database dependency)."
+    cpu_limit="$(kubectl get statefulset "$POSTGRES_RELEASE-postgresql" -n "$NAMESPACE" \
+        -o jsonpath='{.spec.template.spec.containers[0].resources.limits.cpu}' 2>/dev/null || true)"
+    if [[ "$cpu_limit" =~ ^([0-9]+)m$ ]] && (( BASH_REMATCH[1] < 1000 )); then
+        log_warning "Its CPU limit is $cpu_limit, which throttles DaprMQ. To raise it (Postgres restarts, data is kept):"
+        log_warning "  helm upgrade $POSTGRES_RELEASE bitnami/postgresql -n $NAMESPACE --reuse-values --version <installed chart version> -f $POSTGRES_VALUES"
+    fi
 else
     helm install "$POSTGRES_RELEASE" bitnami/postgresql \
         -n "$NAMESPACE" \
         --set auth.postgresPassword="$POSTGRES_PASSWORD" \
         --set auth.database=actor_state \
+        -f "$POSTGRES_VALUES" \
         --wait --timeout 5m0s
     log_success "Postgres installed in namespace $NAMESPACE"
 fi
