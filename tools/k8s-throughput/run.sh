@@ -12,6 +12,10 @@
 #
 # Every run gets a fresh queue (tp-<runId>), so runs need no reset between them.
 #
+# Each record also carries metrics.diagnostics (diagnostics.py), read from the DaprMQ release around the
+# run: the gateways' actor calls and their mean latency, coordinator and queue actors apart, and the share
+# of CFS periods the worker and gateway containers spent CPU-throttled.
+#
 # Usage:
 #   tools/k8s-throughput/run.sh [options]
 #
@@ -38,6 +42,7 @@
 #   --messages N          backlog size (default: 100000)
 #   --publishers N        concurrent publishers in the Job (default: 10)
 #   --timeout N           seconds to wait for each drain (default: 1800)
+#   --repeats N           run each replica count N times in a row, for a spread rather than one sample (default: 1)
 #   --env-label NAME      the result's environment.label; runs are only compared within one (default: local)
 #   --out DIR             results root (default: <repo>/perf-results)
 #   --skip-build          use the daprmq-throughput-test:dev image already built
@@ -47,12 +52,13 @@
 set -euo pipefail
 
 CONTEXT=""; NS="daprmq-throughput"; DAPRMQ_NS="daprmq"; REPLICAS_LIST="2,5,10,20"; MODE="keda"; FAST_SCALE_UP="false"; WORKLOAD="queue"
-HANDLERS=10; WINDOW=40; DELAY_MS=200; LOCK_TTL=60; MESSAGES=100000; PUBLISHERS=10; TIMEOUT=1800
+REPEATS=1; HANDLERS=10; WINDOW=40; DELAY_MS=200; LOCK_TTL=60; MESSAGES=100000; PUBLISHERS=10; TIMEOUT=1800
 SESSIONS=1000; CONCURRENT_SESSIONS=10; PREFETCH=1; LEASE=30; SESSION_IDLE_TIMEOUT=1; LENGTH_JITTER=0; PUBLISH_JITTER=0
 ENV_LABEL="local"; OUT=""; SKIP_BUILD="false"; KEEP="false"
 IMAGE="daprmq-throughput-test:dev"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CHART="$REPO_ROOT/tools/k8s-throughput/chart"
+TOOL_DIR="$REPO_ROOT/tools/k8s-throughput"
+CHART="$TOOL_DIR/chart"
 
 show_help() { sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
 
@@ -83,10 +89,15 @@ while [[ $# -gt 0 ]]; do
         --out) OUT="$2"; shift 2 ;;
         --skip-build) SKIP_BUILD="true"; shift ;;
         --keep) KEEP="true"; shift ;;
+        --repeats) REPEATS="$2"; shift 2 ;;
         -h|--help) show_help; exit 0 ;;
         *) echo "Unknown option: $1" >&2; show_help >&2; exit 1 ;;
     esac
 done
+
+if ! [[ "$REPEATS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "--repeats must be a whole number of at least 1, got: $REPEATS" >&2; exit 1
+fi
 
 case "$WORKLOAD" in
     queue|sessions) ;;
@@ -128,6 +139,10 @@ run_one() {
         echo "== run $run_id: $MESSAGES messages, $MODE consumers (up to $replicas) x $HANDLERS handlers, window $WINDOW, ${DELAY_MS}ms per message, lock TTL ${LOCK_TTL}s" >&2
     fi
     uninstall
+    # Diagnostics are best effort: a failed snapshot leaves them out of the record, not the run.
+    local before after diagnostics=null
+    before="$(mktemp)"; after="$(mktemp)"
+    python3 "$TOOL_DIR/diagnostics.py" snapshot "$CONTEXT" "$DAPRMQ_NS" "$before" 2>/dev/null || : > "$before"
     helm --kube-context "$CONTEXT" upgrade --install throughput "$CHART" -n "$NS" --create-namespace \
         --set-string runId="$run_id" --set daprmq.namespace="$DAPRMQ_NS" --set workload="$WORKLOAD" \
         --set scaling.mode="$MODE" --set scaling.maxReplicas="$replicas" --set scaling.replicas="$replicas" \
@@ -154,6 +169,11 @@ run_one() {
         sleep 5
     done
 
+    if [[ -s "$before" ]] && python3 "$TOOL_DIR/diagnostics.py" snapshot "$CONTEXT" "$DAPRMQ_NS" "$after" 2>/dev/null; then
+        diagnostics="$(python3 "$TOOL_DIR/diagnostics.py" diff "$before" "$after")" || diagnostics=null
+    fi
+    rm -f "$before" "$after"
+
     k logs "job/$job" | grep -v '^RESULT ' | sed 's/^/   /' >&2
     record="$(k logs "job/$job" | sed -n 's/^RESULT //p' | tail -1)"
     if [[ -z "$record" ]]; then
@@ -162,10 +182,11 @@ run_one() {
     fi
 
     # Saved exactly as the harnesses' PerfResults.Save does: the run in full, and a history line without its timeline.
-    python3 - "$record" "$RESULTS_DIR" "$peak" <<'PY'
+    python3 - "$record" "$RESULTS_DIR" "$peak" "$diagnostics" <<'PY'
 import json, os, sys
 run = json.loads(sys.argv[1]); out = sys.argv[2]
 run["metrics"]["peakReplicas"] = int(sys.argv[3])
+run["metrics"]["diagnostics"] = json.loads(sys.argv[4])
 os.makedirs(os.path.join(out, "runs"), exist_ok=True)
 path = os.path.join(out, "runs", run["runId"] + ".json")
 with open(path, "w") as f:
@@ -181,11 +202,14 @@ IFS=',' read -r -a REPLICAS <<< "$REPLICAS_LIST"
 PATHS=()
 status=0
 for replicas in "${REPLICAS[@]}"; do
-    if path="$(run_one "$replicas")"; then
-        PATHS+=("$path")
-    else
-        status=1
-    fi
+    for (( repeat = 1; repeat <= REPEATS; repeat++ )); do
+        (( REPEATS > 1 )) && echo "== replicas $replicas, repeat $repeat of $REPEATS" >&2
+        if path="$(run_one "$replicas")"; then
+            PATHS+=("$path")
+        else
+            status=1
+        fi
+    done
 done
 
 echo "== results ($RESULTS_DIR)"
@@ -193,14 +217,16 @@ python3 - "${PATHS[@]}" <<'PY'
 import json, sys
 def f(v, d=1): return "-" if v is None else f"{v:,.{d}f}"
 # Sessions records have no dead-letter count (each session has its own DLQ) but do count FIFO violations.
-print(f"   {'profile':<24} {'drained':<8} {'wall s':>8} {'msg/s':>7} {'efficiency':>10} {'delivery p95 ms':>15} {'peak handlers':>13} {'dead-lettered':>13} {'fifo':>5}  checks")
+print(f"   {'profile':<24} {'drained':<8} {'wall s':>8} {'msg/s':>7} {'efficiency':>10} {'delivery p95 ms':>15} {'peak handlers':>13} {'dead-lettered':>13} {'fifo':>5} {'coord ms':>8} {'actor ms':>8} {'thr wkr%':>8} {'thr gw%':>7}  checks")
 for path in sys.argv[1:]:
     r = json.load(open(path)); m = r["metrics"]; failures = r["checks"]["failures"]
     checks = "pass" if r["checks"]["passed"] else "FAIL: " + "; ".join(failures)
     drained = not any(f_.endswith("did not drain") for f_ in failures)
+    d = m.get("diagnostics") or {}; lat = d.get("actorCallLatencyMs") or {}; thr = d.get("cpuThrottledPercent") or {}
     print(f"   {r['scenario']['profile']:<24} {str(drained):<8} {f(m['wallClockSeconds']):>8} "
           f"{f(m['messagesPerSecond'], 0):>7} {f(m['efficiency'], 2):>10} {f(m['deliveryLatencyMs']['p95'], 0):>15} "
-          f"{m['peakConcurrentHandlers']:>13} {f(m.get('deadLettered'), 0):>13} {f(m.get('fifoViolations'), 0):>5}  {checks}")
+          f"{m['peakConcurrentHandlers']:>13} {f(m.get('deadLettered'), 0):>13} {f(m.get('fifoViolations'), 0):>5} "
+          f"{f(lat.get('coordinator'), 0):>8} {f(lat.get('queueActor'), 0):>8} {f(thr.get('worker')):>8} {f(thr.get('gateway')):>7}  {checks}")
 PY
 for path in "${PATHS[@]}"; do
     python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["checks"]["passed"] else 1)' "$path" || status=1
