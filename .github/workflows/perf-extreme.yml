@@ -57,6 +57,18 @@ on:
         description: 'Backlog per throughput run (queue and sessions; sessions spread it over 1,000 sessions)'
         required: false
         default: '100000'
+      k8s_repeats:
+        description: 'Runs of each replica count, for a spread rather than one sample'
+        required: false
+        default: '1'
+      k8s_fast_scale_up:
+        description: 'Let the HPA go straight to the replica count, so runs measure DaprMQ rather than the ramp (key +fastscale)'
+        type: boolean
+        default: true
+      k8s_session_args:
+        description: 'Extra run.sh options for the session series, for example "--publish-jitter 30 --session-length-jitter 50"'
+        required: false
+        default: ''
       publish:
         description: 'Commit results to the perf-results branch'
         type: boolean
@@ -320,12 +332,14 @@ jobs:
         env:
           REPLICAS: ${{ inputs.k8s_replicas }}
           MESSAGES: ${{ inputs.k8s_messages }}
+          REPEATS: ${{ inputs.k8s_repeats }}
+          FAST: ${{ inputs.k8s_fast_scale_up && '--fast-scale-up' || '' }}
           ENV_LABEL: ci-k8s-${{ inputs.runner }}
         run: |
           set -o pipefail
           status=0
           tools/k8s-throughput/run.sh --context kind-daprmq --replicas "$REPLICAS" --messages "$MESSAGES" \
-            --env-label "$ENV_LABEL" --out perf-results | tee throughput.log || status=$?
+            --repeats "$REPEATS" $FAST --env-label "$ENV_LABEL" --out perf-results | tee throughput.log || status=$?
           # Written whatever happened: a failed check is when the table matters most.
           {
             echo '## Kubernetes throughput'
@@ -342,12 +356,17 @@ jobs:
         env:
           REPLICAS: ${{ inputs.k8s_replicas }}
           MESSAGES: ${{ inputs.k8s_messages }}
+          REPEATS: ${{ inputs.k8s_repeats }}
+          FAST: ${{ inputs.k8s_fast_scale_up && '--fast-scale-up' || '' }}
+          SESSION_ARGS: ${{ inputs.k8s_session_args }}
           ENV_LABEL: ci-k8s-${{ inputs.runner }}
         run: |
           set -o pipefail
           status=0
+          # SESSION_ARGS is word-split on purpose: it's a list of run.sh options.
           tools/k8s-throughput/run.sh --context kind-daprmq --workload sessions --replicas "$REPLICAS" \
-            --messages "$MESSAGES" --env-label "$ENV_LABEL" --out perf-results | tee session-throughput.log || status=$?
+            --messages "$MESSAGES" --repeats "$REPEATS" $FAST $SESSION_ARGS --env-label "$ENV_LABEL" --out perf-results \
+            | tee session-throughput.log || status=$?
           {
             echo '## Kubernetes session throughput'
             echo '```'
