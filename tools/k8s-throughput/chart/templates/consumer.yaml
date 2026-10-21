@@ -47,6 +47,18 @@ spec:
   maxReplicaCount: {{ .Values.scaling.maxReplicas }}
   pollingInterval: {{ .Values.scaling.pollingInterval }}
   cooldownPeriod: {{ .Values.scaling.cooldownPeriod }}
+  {{- if .Values.scaling.fastScaleUp }}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          selectPolicy: Max
+          policies:
+          - type: Pods
+            value: {{ .Values.scaling.maxReplicas }}
+            periodSeconds: 1
+  {{- end }}
   triggers:
   - type: external-push
     metadata:
