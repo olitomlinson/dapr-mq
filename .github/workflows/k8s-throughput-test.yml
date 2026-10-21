@@ -43,6 +43,9 @@ jobs:
       - name: Unit tests
         run: dotnet test tools/k8s-throughput/ThroughputTest.Tests
 
+      - name: Diagnostics tests
+        run: python3 -m unittest discover -s tools/k8s-throughput -p 'test_*.py'
+
       - uses: azure/setup-helm@v4
         with:
           version: v4.1.3
