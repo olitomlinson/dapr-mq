@@ -33,10 +33,14 @@ helm install postgres bitnami/postgresql \
   -n daprmq \
   --set auth.postgresPassword=daprmq_secret_123 \
   --set auth.database=actor_state \
+  --set primary.resources.requests.cpu=500m --set primary.resources.requests.memory=512Mi \
+  --set primary.resources.limits.cpu=2 --set primary.resources.limits.memory=1Gi \
   --wait
 ```
 
 Replace `daprmq_secret_123` with a real secret for anything beyond a quick trial - anyone who can read Secrets in the `daprmq` namespace can otherwise see it in plain text via `--set`. This creates a `postgres-postgresql` Service in the `daprmq` namespace, which the Component CR below points at.
+
+**Size Postgres explicitly.** Without `primary.resources` the bitnami chart applies its `nano` preset (150m CPU, 192Mi). Every DaprMQ actor call waits on the state store, so that preset becomes DaprMQ's ceiling: in the session throughput test it held 10 consumer replicas to about a third of their throughput and was OOMKilled under load. The values above are the ones this repo's own scripts use ([postgres-values.yaml](../postgres-values.yaml)); size up from there for production. The same applies to a Postgres you already run.
 
 Already have a Postgres, Redis, or CosmosDB instance you'd rather use? Skip this step and adjust the `connectionString`/`type` in the Component CR below to match yours instead - see [Dapr's state store docs](https://docs.dapr.io/reference/components-reference/supported-state-stores/) for other store types.
 

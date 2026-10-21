@@ -1,0 +1,15 @@
+# Values for every Bitnami Postgres this repo installs (k8s-base-deploy.sh, k8s-deploy-and-test.sh), passed
+# with -f so they can't drift apart.
+#
+# Without resources the chart applies its "nano" preset, 150m CPU and 192Mi. Every DaprMQ actor call
+# waits on Postgres, so on kind that preset capped the session throughput test at about a third (87
+# against 253 msg/s at 10 replicas), stretched coordinator calls to 9-10s, and got Postgres OOMKilled
+# under load. See tools/k8s-throughput/README.md.
+primary:
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
