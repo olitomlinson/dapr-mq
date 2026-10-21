@@ -53,6 +53,13 @@ public sealed record Settings
     /// lease, which here would hold each drained session for 30s.
     /// </summary>
     public int SessionIdleTimeoutSeconds { get; init; } = 1;
+    /// <summary>
+    /// Each session's message count is drawn within this percentage either side of MessagesPerSession
+    /// (0-90; the total stays MESSAGES). 0 makes every session the same length. See SessionPlan.
+    /// </summary>
+    public int SessionLengthJitterPercent { get; init; }
+    /// <summary>Each session is published at a random time in the first this-many seconds. 0 publishes them all at once.</summary>
+    public int PublishJitterSeconds { get; init; }
 
     /// <summary>Most consumer replicas (keda), or exactly this many (fixed).</summary>
     public int Replicas { get; init; } = 20;
@@ -102,6 +109,11 @@ public sealed record Settings
         }
 
         var messages = Int("MESSAGES", defaults.Messages, 1);
+        var lengthJitter = Int("SESSION_LENGTH_JITTER_PERCENT", 0, 0);
+        if (lengthJitter > 90)
+        {
+            throw new ArgumentException($"SESSION_LENGTH_JITTER_PERCENT must be at most 90, got '{lengthJitter}'");
+        }
         var sessions = Int("SESSIONS", defaults.Sessions, 1);
         if (workload == "sessions" && messages % sessions != 0)
         {
@@ -131,6 +143,8 @@ public sealed record Settings
             Prefetch = Int("PREFETCH", defaults.Prefetch, 1),
             LeaseSeconds = Int("LEASE_SECONDS", defaults.LeaseSeconds, 1),
             SessionIdleTimeoutSeconds = Int("SESSION_IDLE_TIMEOUT_SECONDS", defaults.SessionIdleTimeoutSeconds, 0),
+            SessionLengthJitterPercent = lengthJitter,
+            PublishJitterSeconds = Int("PUBLISH_JITTER_SECONDS", 0, 0),
             Replicas = Int("REPLICAS", defaults.Replicas, 1),
             ScalingMode = Text("SCALING_MODE", defaults.ScalingMode),
             EnvLabel = Text("ENV_LABEL", defaults.EnvLabel),

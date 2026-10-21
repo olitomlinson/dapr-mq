@@ -62,6 +62,27 @@ public class SettingsTests
     }
 
     [Fact]
+    public void SessionJitter_IsOffByDefault()
+    {
+        var settings = Parse(("QUEUE_ID", "tp-1"), ("WORKLOAD", "sessions"));
+
+        Assert.Equal(0, settings.SessionLengthJitterPercent);
+        Assert.Equal(0, settings.PublishJitterSeconds);
+    }
+
+    [Theory]
+    [InlineData("SESSION_LENGTH_JITTER_PERCENT", "91")]
+    [InlineData("SESSION_LENGTH_JITTER_PERCENT", "-1")]
+    [InlineData("PUBLISH_JITTER_SECONDS", "-1")]
+    public void SessionJitter_OutOfRange_IsRejected(string key, string value)
+    {
+        // Above 90% a session could be drawn with no messages at all.
+        var error = Assert.Throws<ArgumentException>(() => Parse(("QUEUE_ID", "tp-1"), ("WORKLOAD", "sessions"), (key, value)));
+
+        Assert.Contains(key, error.Message);
+    }
+
+    [Fact]
     public void AnUnknownWorkload_IsRejected()
     {
         var error = Assert.Throws<ArgumentException>(() => Parse(("QUEUE_ID", "tp-1"), ("WORKLOAD", "topics")));

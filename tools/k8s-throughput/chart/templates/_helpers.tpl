@@ -51,6 +51,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   value: {{ .Values.sessions.leaseSeconds | quote }}
 - name: SESSION_IDLE_TIMEOUT_SECONDS
   value: {{ .Values.sessions.idleTimeoutSeconds | quote }}
+- name: SESSION_LENGTH_JITTER_PERCENT
+  value: {{ .Values.sessions.lengthJitterPercent | quote }}
+- name: PUBLISH_JITTER_SECONDS
+  value: {{ .Values.sessions.publishJitterSeconds | quote }}
 - name: REPLICAS
   value: {{ ternary .Values.scaling.replicas .Values.scaling.maxReplicas (eq .Values.scaling.mode "fixed") | quote }}
 - name: SCALING_MODE

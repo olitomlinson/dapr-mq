@@ -260,7 +260,7 @@ public static class Program
         }
 
         Log(sessions
-            ? $"publishing {settings.Sessions} sessions of {settings.MessagesPerSession} to {settings.QueueId} from {settings.Publishers} publishers, {settings.PublishBatch} per call"
+            ? $"publishing {settings.Sessions} sessions of {settings.MessagesPerSession} (length jitter {settings.SessionLengthJitterPercent}%, over {settings.PublishJitterSeconds}s) to {settings.QueueId} from {settings.Publishers} publishers, {settings.PublishBatch} per call"
             : $"publishing {settings.Messages} messages to {settings.QueueId} from {settings.Publishers} publishers, {settings.PublishBatch} per call");
         var startedAt = DateTimeOffset.UtcNow;
         var startedAtMs = startedAt.ToUnixTimeMilliseconds();
@@ -381,16 +381,27 @@ public static class Program
         }));
 
     /// <summary>
-    /// Publisher p takes sessions p, p + publishers, ..., each in order: seq 0..n-1, in calls of
+    /// Publisher p takes sessions p, p + publishers, ... in the order the plan publishes them (SessionPlan),
+    /// waiting for each one's publish time. A session's messages go in order, seq 0..n-1, in calls of
     /// PublishBatch to that one session, so every message's place in its session is known.
     /// </summary>
-    private static Task PublishSessionsAsync(Settings settings, DaprMQClient client) =>
-        Task.WhenAll(Enumerable.Range(0, settings.Publishers).Select(async publisher =>
+    private static Task PublishSessionsAsync(Settings settings, DaprMQClient client)
+    {
+        var plan = SessionPlan.Build(settings);
+        var clock = Stopwatch.StartNew();
+        return Task.WhenAll(Enumerable.Range(0, settings.Publishers).Select(async publisher =>
         {
-            foreach (var session in Enumerable.Range(0, settings.Sessions).Where(s => s % settings.Publishers == publisher))
+            foreach (var planned in plan.Where(p => p.Index % settings.Publishers == publisher).OrderBy(p => p.PublishAtSeconds))
             {
+                var wait = TimeSpan.FromSeconds(planned.PublishAtSeconds) - clock.Elapsed;
+                if (wait > TimeSpan.Zero)
+                {
+                    await Task.Delay(wait);
+                }
+
+                var session = planned.Index;
                 var sessionId = $"s{session}";
-                foreach (var batch in Enumerable.Range(0, settings.MessagesPerSession).Chunk(settings.PublishBatch))
+                foreach (var batch in Enumerable.Range(0, planned.Messages).Chunk(settings.PublishBatch))
                 {
                     var publishedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                     var items = batch.Select(seq => new EnqueueItemDto(new { session, seq, publishedAt }, SessionId: sessionId)).ToList();
@@ -410,4 +421,5 @@ public static class Program
                 }
             }
         }));
+    }
 }

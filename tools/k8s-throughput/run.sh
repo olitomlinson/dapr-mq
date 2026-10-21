@@ -32,6 +32,8 @@
 #   --prefetch N          sessions workload: messages in flight per session (default: 1)
 #   --lease N             sessions workload: session lease in seconds (default: 30)
 #   --session-idle-timeout N  sessions workload: seconds a slot waits on an emptied session (default: 1)
+#   --session-length-jitter N  sessions workload: draw each session's length within N% of the mean, 0-90 (default: 0)
+#   --publish-jitter N    sessions workload: publish each session at a random time in the first N seconds (default: 0)
 #   --messages N          backlog size (default: 100000)
 #   --publishers N        concurrent publishers in the Job (default: 10)
 #   --timeout N           seconds to wait for each drain (default: 1800)
@@ -45,7 +47,7 @@ set -euo pipefail
 
 CONTEXT=""; NS="daprmq-throughput"; DAPRMQ_NS="daprmq"; REPLICAS_LIST="2,5,10,20"; MODE="keda"; WORKLOAD="queue"
 HANDLERS=10; WINDOW=40; DELAY_MS=200; LOCK_TTL=60; MESSAGES=100000; PUBLISHERS=10; TIMEOUT=1800
-SESSIONS=1000; CONCURRENT_SESSIONS=10; PREFETCH=1; LEASE=30; SESSION_IDLE_TIMEOUT=1
+SESSIONS=1000; CONCURRENT_SESSIONS=10; PREFETCH=1; LEASE=30; SESSION_IDLE_TIMEOUT=1; LENGTH_JITTER=0; PUBLISH_JITTER=0
 ENV_LABEL="local"; OUT=""; SKIP_BUILD="false"; KEEP="false"
 IMAGE="daprmq-throughput-test:dev"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -66,6 +68,8 @@ while [[ $# -gt 0 ]]; do
         --prefetch) PREFETCH="$2"; shift 2 ;;
         --lease) LEASE="$2"; shift 2 ;;
         --session-idle-timeout) SESSION_IDLE_TIMEOUT="$2"; shift 2 ;;
+        --session-length-jitter) LENGTH_JITTER="$2"; shift 2 ;;
+        --publish-jitter) PUBLISH_JITTER="$2"; shift 2 ;;
         --handlers) HANDLERS="$2"; shift 2 ;;
         --window) WINDOW="$2"; shift 2 ;;
         --delay-ms) DELAY_MS="$2"; shift 2 ;;
@@ -117,7 +121,7 @@ run_one() {
     run_id="$(date -u +%Y%m%d%H%M%S)"
     job="tp-$run_id"
     if [[ "$WORKLOAD" == "sessions" ]]; then
-        echo "== run $run_id: $MESSAGES messages over $SESSIONS sessions, $MODE session consumers (up to $replicas) x $CONCURRENT_SESSIONS sessions, prefetch $PREFETCH, ${DELAY_MS}ms per message, lease ${LEASE}s, idle timeout ${SESSION_IDLE_TIMEOUT}s" >&2
+        echo "== run $run_id: $MESSAGES messages over $SESSIONS sessions, $MODE session consumers (up to $replicas) x $CONCURRENT_SESSIONS sessions, prefetch $PREFETCH, ${DELAY_MS}ms per message, lease ${LEASE}s, idle timeout ${SESSION_IDLE_TIMEOUT}s, length jitter ${LENGTH_JITTER}%, publish jitter ${PUBLISH_JITTER}s" >&2
     else
         echo "== run $run_id: $MESSAGES messages, $MODE consumers (up to $replicas) x $HANDLERS handlers, window $WINDOW, ${DELAY_MS}ms per message, lock TTL ${LOCK_TTL}s" >&2
     fi
@@ -129,6 +133,7 @@ run_one() {
         --set consumer.itemDelayMs="$DELAY_MS" --set consumer.lockTtlSeconds="$LOCK_TTL" \
         --set sessions.count="$SESSIONS" --set sessions.concurrent="$CONCURRENT_SESSIONS" --set sessions.prefetch="$PREFETCH" \
         --set sessions.leaseSeconds="$LEASE" --set sessions.idleTimeoutSeconds="$SESSION_IDLE_TIMEOUT" \
+        --set sessions.lengthJitterPercent="$LENGTH_JITTER" --set sessions.publishJitterSeconds="$PUBLISH_JITTER" \
         --set run.messages="$MESSAGES" --set run.publishers="$PUBLISHERS" --set run.timeoutSeconds="$TIMEOUT" \
         --set-string run.envLabel="$ENV_LABEL" --set run.gatewayReplicas="$GATEWAY_REPLICAS" \
         --set-string run.serverLabel="kubernetes $CONTEXT" --set-string run.gitSha="$GIT_SHA" \

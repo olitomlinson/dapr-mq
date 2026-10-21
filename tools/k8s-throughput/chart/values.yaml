@@ -60,6 +60,10 @@ sessions:
   leaseSeconds: 30
   # Not the server default (the lease), which would hold every drained session for 30s.
   idleTimeoutSeconds: 1
+  # Each session's length drawn within this percentage of the mean (0-90; the total stays run.messages).
+  lengthJitterPercent: 0
+  # Each session published at a random time in the first this-many seconds (0: all at once).
+  publishJitterSeconds: 0
 
 scaling:
   # keda: a ScaledObject scales the consumers 0..maxReplicas from queue depth, as in production.
