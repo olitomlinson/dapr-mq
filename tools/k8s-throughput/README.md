@@ -84,6 +84,14 @@ The consumers are `SessionQueueConsumer`s:
 - `--lease` seconds per session lease (default 30)
 - `--session-idle-timeout` seconds a slot waits on an emptied session before claiming another (default 1).
   Not the server's default (the lease), which would hold every drained session for 30s.
+- `--session-length-jitter` draws each session's message count within that percentage of the mean (0–90,
+  default 0). The counts are rounded so they still add up to `--messages`.
+- `--publish-jitter` publishes each session at a random time in the first that-many seconds (default 0, all at
+  once). With every session the same length and all of them available at the start, consumers claim, finish
+  and claim again in waves. A window of about one session's length spreads them out.
+
+Both draws use fixed seeds, so every run with the same settings publishes the same sessions at the same
+times.
 
 KEDA scales them with the scaler's `sessions` mode: the metric is the number of sessions with work, aiming for
 `--concurrent-sessions` per replica. The drain is decided from that count, as KEDA sees it, but timed from the
@@ -93,14 +101,14 @@ out after the session directory's empty debounce (30s by default).
 A run is a P-04 session drain by the .NET SDK, with profile `k8s-session-drain-r<replicas>`.
 
 - **Key:** `k8s-sessions:<sessions>x<per session>@<delay>ms/<concurrent>slots/prefetch<p>/lease<l>s/idle<i>s/replicas<replicas>`,
-  with `+fixed` without KEDA.
+  with `+len<percent>` and `+pubjitter<seconds>s` when those are on, and `+fixed` without KEDA.
 - **Metrics:** the queue run's headlines, except that a few differ:
 
 | Metric | Meaning |
 |---|---|
 | `wallClockSeconds` | From the first publish to the last message handled, once the scaler's session count has read 0 twice |
 | `scalerDrainSeconds` | When that count first read 0. Close to the wall clock when consumers release their sessions; up to the debounce later when they don't |
-| `idealSeconds`, `efficiency` | The work spread over every slot with a session to run (min(replicas × concurrent sessions, sessions)), but never less than one session's own work, and ideal ÷ wall clock |
+| `idealSeconds`, `efficiency` | A lower bound on the drain: the work spread over every slot with a session to run (min(replicas × concurrent sessions, sessions)), or the session that finishes last at best (its publish time plus its own messages, one after another), whichever is later. Sessions can't be split, so no run quite reaches it. Efficiency is ideal ÷ wall clock |
 | `peakConcurrentHandlers` | The most sessions being handled at once |
 | `peakDepth` | The most sessions with work at once |
 | `fifoViolations` | Messages a consumer handled after a later message of their session. A message seen before is a redelivery, not a violation. Each consumer checks what it handled, so a session that moves between consumers is checked within each |

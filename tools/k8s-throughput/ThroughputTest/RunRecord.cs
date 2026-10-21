@@ -47,6 +47,8 @@ public static class RunRecord
         (IsSessions(s)
             ? $"k8s-sessions:{s.Sessions}x{s.MessagesPerSession}@{s.ItemDelayMs}ms/{s.ConcurrentSessions}slots/prefetch{s.Prefetch}"
               + $"/lease{s.LeaseSeconds}s/idle{s.SessionIdleTimeoutSeconds}s/replicas{s.Replicas}"
+              + (s.SessionLengthJitterPercent > 0 ? $"+len{s.SessionLengthJitterPercent}" : "")
+              + (s.PublishJitterSeconds > 0 ? $"+pubjitter{s.PublishJitterSeconds}s" : "")
             : $"k8s-queue:{s.Messages}@{s.ItemDelayMs}ms/active{s.Window}/handlers{s.Handlers}/replicas{s.Replicas}")
         + (s.ScalingMode == "fixed" ? "+fixed" : "");
 
@@ -103,11 +105,7 @@ public static class RunRecord
     /// </summary>
     private static JsonObject BuildSessions(Settings s, RunMeasurements m, DateTimeOffset timestamp)
     {
-        // The work spread over every slot that has a session to run, but never less than one session's own work.
-        var slots = Math.Min(s.Replicas * s.ConcurrentSessions, s.Sessions);
-        double? ideal = s.ItemDelayMs > 0
-            ? Math.Max(s.Messages * s.ItemDelayMs / 1000.0 / slots, s.MessagesPerSession * s.ItemDelayMs / 1000.0)
-            : null;
+        var ideal = SessionPlan.IdealSeconds(s, SessionPlan.Build(s));
         var missing = Math.Max(0, s.Messages - m.MessagesHandled);
 
         var failures = new List<string>();
@@ -128,7 +126,8 @@ public static class RunRecord
         {
             ["sessions"] = s.Sessions, ["messagesPerSession"] = s.MessagesPerSession, ["settleMs"] = s.ItemDelayMs,
             ["maxConcurrentSessions"] = s.ConcurrentSessions, ["prefetchCount"] = s.Prefetch, ["leaseSeconds"] = s.LeaseSeconds,
-            ["sessionIdleTimeoutSeconds"] = s.SessionIdleTimeoutSeconds, ["replicas"] = s.Replicas, ["scaling"] = s.ScalingMode,
+            ["sessionIdleTimeoutSeconds"] = s.SessionIdleTimeoutSeconds, ["sessionLengthJitterPercent"] = s.SessionLengthJitterPercent,
+            ["publishJitterSeconds"] = s.PublishJitterSeconds, ["replicas"] = s.Replicas, ["scaling"] = s.ScalingMode,
             ["publishers"] = s.Publishers
         };
         var metrics = Headlines(m, ideal, s.Messages);

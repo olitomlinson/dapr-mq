@@ -47,6 +47,35 @@ public class SessionRunRecordTests
     }
 
     [Fact]
+    public void Key_NamesTheJitter_OnlyWhenItIsOn()
+    {
+        var settings = Settings.Parse(new Dictionary<string, string>
+        {
+            ["QUEUE_ID"] = "tp-1", ["WORKLOAD"] = "sessions", ["REPLICAS"] = "20",
+            ["SESSION_LENGTH_JITTER_PERCENT"] = "50", ["PUBLISH_JITTER_SECONDS"] = "30"
+        });
+
+        Assert.Equal("k8s-sessions:1000x100@200ms/10slots/prefetch1/lease30s/idle1s/replicas20+len50+pubjitter30s",
+            Build(settings, Drained())["scenario"]!["key"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void IdealSeconds_WithJitter_IsTheLowerBound_OverThePlannedSessions()
+    {
+        // The work spread over every slot, or the session that finishes last at best - published at its
+        // offset, then handled one message after another - whichever is later.
+        var settings = Settings.Parse(new Dictionary<string, string>
+        {
+            ["QUEUE_ID"] = "tp-1", ["WORKLOAD"] = "sessions", ["REPLICAS"] = "20",
+            ["SESSION_LENGTH_JITTER_PERCENT"] = "50", ["PUBLISH_JITTER_SECONDS"] = "30"
+        });
+        var plan = SessionPlan.Build(settings);
+        var expected = Math.Max(100_000 * 0.2 / 200, plan.Max(s => s.PublishAtSeconds + s.Messages * 0.2));
+
+        Assert.Equal(expected, Build(settings, Drained())["metrics"]!["idealSeconds"]!.GetValue<double>(), 6);
+    }
+
+    [Fact]
     public void Params_DescribeTheSessions()
     {
         var parameters = Build(TwentyReplicas(), Drained())["scenario"]!["params"]!;
