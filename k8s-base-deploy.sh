@@ -79,12 +79,27 @@ fi
 
 k create namespace "$NAMESPACE" --dry-run=client -o yaml | k apply -f - >/dev/null
 
+# Without explicit resources the chart applies its "nano" preset (150m CPU, 192Mi). Every actor call
+# waits on Postgres, so that preset capped session throughput at about a third and got it OOMKilled
+# under load - see tools/k8s-throughput/README.md.
+POSTGRES_RESOURCES=(
+    --set primary.resources.requests.cpu=500m --set primary.resources.requests.memory=512Mi
+    --set primary.resources.limits.cpu=2 --set primary.resources.limits.memory=1Gi
+)
+
 echo "== Postgres (${NAMESPACE})"
 if h status postgres -n "$NAMESPACE" >/dev/null 2>&1; then
     echo "   already installed, leaving it as-is"
+    cpu_limit="$(k get statefulset postgres-postgresql -n "$NAMESPACE" \
+        -o jsonpath='{.spec.template.spec.containers[0].resources.limits.cpu}' 2>/dev/null || true)"
+    if [[ "$cpu_limit" =~ ^([0-9]+)m$ ]] && (( BASH_REMATCH[1] < 1000 )); then
+        echo "   its CPU limit is $cpu_limit, which throttles DaprMQ. To raise it (Postgres restarts, data is kept):" >&2
+        echo "     helm upgrade postgres bitnami/postgresql -n $NAMESPACE --reuse-values --version <installed chart version> ${POSTGRES_RESOURCES[*]}" >&2
+    fi
 else
     h install postgres bitnami/postgresql -n "$NAMESPACE" \
         --set auth.postgresPassword="$POSTGRES_PASSWORD" --set auth.database=actor_state \
+        "${POSTGRES_RESOURCES[@]}" \
         --wait --timeout 5m0s >/dev/null
 fi
 
