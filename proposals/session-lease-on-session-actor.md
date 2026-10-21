@@ -1,5 +1,13 @@
 # Session leases on the session actor
 
+> **Status: deferred (2026-10-21).** The coordinator latencies this proposal was written against were
+> measured on a kind cluster whose Postgres was throttled to 0.15 CPU (the Bitnami chart's default
+> preset). With Postgres at 2 CPU, coordinator calls dropped from 9–10s to 186–436ms. At 10 replicas
+> the session test then fills every slot, so the coordinator isn't the limit at the scale tested (see
+> [What the session throughput test measured](#what-the-session-throughput-test-measured)). The
+> design is kept for when it is: much higher claim rates (many short sessions), or more consumers than
+> tested. Revisit if coordinator calls average over 1s on an unthrottled cluster.
+
 ## Context
 
 Every session of a queue converges on one `SessionCoordinatorActor`. It does two jobs:
@@ -46,10 +54,22 @@ From daprd's latency metrics during those runs:
 | The same calls on the worker | 1.3–2.9 s |
 | Session-actor calls (`DequeueLocked`, `Acknowledge`), seen from the gateway | 149–372 ms |
 
-The coordinator can only do about 3–7 calls a second, so they queue. A longer lease means fewer
-renewals, which alone gave +23%. The rest of the gap is per-message settle cost (each ack is its own
-actor call and Postgres commit), which this proposal doesn't change. See the follow-ups in
-[Related work](#related-work).
+Those numbers were taken with Postgres limited to 0.15 CPU and 192Mi. The same benchmark (10
+replicas, 20k messages over 200 sessions, 30s lease) with Postgres at 2 CPU / 1Gi:
+
+| | Postgres 0.15 CPU | Postgres 2 CPU |
+|---|---|---|
+| Prefetch 1 | 57 msg/s, coordinator 10.2 s, session actor 259 ms | **229 msg/s**, coordinator **186 ms**, session actor **10 ms** |
+| Prefetch 10 | 87 msg/s, coordinator 9.3 s, session actor 338 ms | **253 msg/s**, coordinator **436 ms**, session actor **14 ms** |
+
+Peak busy slots went from 24–39 of 100 to 97–100. So the coordinator's cost per call, about five
+round trips each, matters mostly when every round trip is slow. It's still the one central actor on
+the session path, and its load still grows with streams × time, which is why the design below is
+kept for higher scale.
+
+Moving renewal out of `ConsumeSession`'s delivery loop on its own (phase 2) was also tried on the
+throttled cluster. It gave no throughput gain (88–90 msg/s against 87), and with 15s coordinator
+calls, renewals landed after their leases had expired. It was reverted.
 
 ## Proposal
 
