@@ -466,35 +466,11 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
             };
         }
 
+        // The claim's expiry reminder is left as it is: when it fires, it finds the later expiry and
+        // re-arms for the time left (ExpireLeaseAsync), so a renewal makes no scheduler calls.
         var updated = lockData with { ExpiresAt = newExpiresAt };
         await StateManager.SetStateAsync($"session-lock_{request.SessionId}", updated);
         await StateManager.SaveStateAsync();
-
-        try
-        {
-            await UnregisterReminderAsync(LeaseReminderPrefix + request.SessionId);
-        }
-        catch (Exception ex)
-        {
-            Logger.LogDebug(ex, "Failed to unregister old reminder for session {SessionId}", request.SessionId);
-        }
-
-        try
-        {
-            double newTtlSeconds = newExpiresAt - now;
-            if (newTtlSeconds > 0)
-            {
-                await RegisterReminderAsync(
-                    LeaseReminderPrefix + request.SessionId,
-                    null,
-                    TimeSpan.FromSeconds(newTtlSeconds),
-                    TimeSpan.FromMilliseconds(-1));
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.LogDebug(ex, "Failed to register updated reminder for session {SessionId}", request.SessionId);
-        }
 
         Logger.LogDebug("Renewed session {SessionId} lease, new expiry {NewExpiresAt}", request.SessionId, newExpiresAt);
 
@@ -596,6 +572,22 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
         {
             // Already released - the release did the lease-end bookkeeping.
             Logger.LogDebug("Session {SessionId} lease already released, skipping cleanup", sessionId);
+            return;
+        }
+
+        double timeLeft = existing.Value.ExpiresAt - Now();
+        if (timeLeft > 0)
+        {
+            // Renewed since this reminder was set: wait for the new expiry instead. If the scheduler
+            // is unavailable, the eviction pass requeues the session once the lease lapses.
+            try
+            {
+                await RegisterReminderAsync(LeaseReminderPrefix + sessionId, null, TimeSpan.FromSeconds(timeLeft), TimeSpan.FromMilliseconds(-1));
+            }
+            catch (Exception ex)
+            {
+                Logger.LogDebug(ex, "Failed to re-arm the expiry reminder for renewed session {SessionId}", sessionId);
+            }
             return;
         }
 

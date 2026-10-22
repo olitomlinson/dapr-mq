@@ -20,6 +20,7 @@ public class SessionCoordinatorActorTests
         public required Mock<IQueueActorStateReader> Reader { get; init; }
         public List<string> RegisteredReminders { get; } = [];
         public List<string> UnregisteredReminders { get; } = [];
+        public Dictionary<string, TimeSpan> ReminderDueTimes { get; } = [];
 
         public SessionCoordinatorMetadata Metadata => (SessionCoordinatorMetadata)Data["metadata"];
         public DirectorySummary Summary => (DirectorySummary)Data["dir_summary"];
@@ -123,7 +124,11 @@ public class SessionCoordinatorActorTests
         registered.Clear();
         mockTimerManager.Invocations.Clear();
         mockTimerManager.Setup(m => m.RegisterReminderAsync(It.IsAny<ActorReminder>()))
-            .Callback<ActorReminder>(r => harness.RegisteredReminders.Add(r.Name))
+            .Callback<ActorReminder>(r =>
+            {
+                harness.RegisteredReminders.Add(r.Name);
+                harness.ReminderDueTimes[r.Name] = r.DueTime;
+            })
             .Returns(Task.CompletedTask);
         mockTimerManager.Setup(m => m.UnregisterReminderAsync(It.IsAny<ActorReminderToken>()))
             .Callback<ActorReminderToken>(t => harness.UnregisteredReminders.Add(t.Name))
@@ -162,6 +167,9 @@ public class SessionCoordinatorActorTests
         };
 
     private void PastDeferralWindow() => _time.Advance(TimeSpan.FromSeconds(31));
+
+    // Past the longest lease a claim can take, so a lease-expiry reminder finds its lease lapsed.
+    private void PastLease() => _time.Advance(TimeSpan.FromSeconds(301));
 
     /// <summary>Registers then reports the session empty after the deferral window: an Idle entry.</summary>
     private async Task MakeIdleAsync(Harness h, string sessionId)
@@ -582,6 +590,20 @@ public class SessionCoordinatorActorTests
     }
 
     [Fact]
+    public async Task RenewSessionLease_Success_LeavesTheLeaseReminderAlone()
+    {
+        var h = await CreateAsync();
+        await RegisterAsync(h, "order-42");
+        var claim = await h.Actor.AcceptSession(new AcceptSessionRequest { SessionId = "order-42", LeaseSeconds = 30 });
+        h.RegisteredReminders.Clear();
+
+        await h.Actor.RenewSessionLease(new RenewSessionLeaseRequest { SessionId = "order-42", LeaseId = claim.LeaseId!, AdditionalSeconds = 30 });
+
+        Assert.DoesNotContain("session-order-42", h.RegisteredReminders);
+        Assert.DoesNotContain("session-order-42", h.UnregisteredReminders);
+    }
+
+    [Fact]
     public async Task RenewSessionLease_MissingLease_ReturnsSessionLeaseExpired()
     {
         var h = await CreateAsync();
@@ -721,6 +743,7 @@ public class SessionCoordinatorActorTests
         await h.Actor.AcceptSession(new AcceptSessionRequest());
         SessionReads(h, "order-42", items: 0, locks: 2);
 
+        PastLease();
         await h.Actor.ReceiveReminderAsync("session-order-42", [], TimeSpan.Zero, TimeSpan.Zero);
 
         Assert.False(h.Data.ContainsKey("session-lock_order-42"));
@@ -734,6 +757,7 @@ public class SessionCoordinatorActorTests
         await RegisterAsync(h, "order-42");
         await h.Actor.AcceptSession(new AcceptSessionRequest());
 
+        PastLease();
         await h.Actor.ReceiveReminderAsync("session-order-42", [], TimeSpan.Zero, TimeSpan.Zero);
 
         Assert.False(h.Entry("order-42").Active);
@@ -749,9 +773,28 @@ public class SessionCoordinatorActorTests
         h.Reader.Setup(r => r.ReadSessionStateAsync(It.IsAny<ActorId>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new HttpRequestException("sidecar down"));
 
+        PastLease();
         await h.Actor.ReceiveReminderAsync("session-order-42", [], TimeSpan.Zero, TimeSpan.Zero);
 
         Assert.Equal(["order-42"], h.Metadata.ReadyQueue);
+    }
+
+    [Fact]
+    public async Task LeaseExpiry_LeaseRenewedSinceTheReminderWasSet_RearmsForTheTimeLeft_AndKeepsTheLease()
+    {
+        var h = await CreateAsync();
+        await RegisterAsync(h, "order-42");
+        var claim = await h.Actor.AcceptSession(new AcceptSessionRequest { SessionId = "order-42", LeaseSeconds = 30 });
+        await h.Actor.RenewSessionLease(new RenewSessionLeaseRequest { SessionId = "order-42", LeaseId = claim.LeaseId!, AdditionalSeconds = 30 });
+        _time.Advance(TimeSpan.FromSeconds(30)); // the claim's reminder fires at its original expiry
+        h.RegisteredReminders.Clear();
+
+        await h.Actor.ReceiveReminderAsync("session-order-42", [], TimeSpan.Zero, TimeSpan.Zero);
+
+        Assert.True(h.Data.ContainsKey("session-lock_order-42"));
+        Assert.Equal(["session-order-42"], h.RegisteredReminders);
+        Assert.Equal(TimeSpan.FromSeconds(30), h.ReminderDueTimes["session-order-42"]);
+        h.Reader.Verify(r => r.ReadSessionStateAsync(It.IsAny<ActorId>(), It.IsAny<CancellationToken>()), Times.Never());
     }
 
     [Fact]
