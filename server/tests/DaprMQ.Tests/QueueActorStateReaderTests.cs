@@ -8,7 +8,8 @@ namespace DaprMQ.Tests;
 
 public class QueueActorStateReaderTests
 {
-    private static QueueActorStateReader CreateReader(HttpResponseMessage response, out Mock<HttpMessageHandler> mockHandler)
+    private static QueueActorStateReader CreateReader(HttpResponseMessage response, out Mock<HttpMessageHandler> mockHandler,
+        IReadOnlyDictionary<string, string>? remoteAppIds = null)
     {
         mockHandler = new Mock<HttpMessageHandler>();
         mockHandler.Protected()
@@ -19,7 +20,7 @@ public class QueueActorStateReaderTests
         var mockFactory = new Mock<IHttpClientFactory>();
         mockFactory.Setup(f => f.CreateClient(It.IsAny<string>())).Returns(httpClient);
 
-        return new QueueActorStateReader(mockFactory.Object, "QueueActor", "http://localhost:3500", "SessionCoordinatorActor");
+        return new QueueActorStateReader(mockFactory.Object, "QueueActor", "http://localhost:3500", "SessionCoordinatorActor", remoteAppIds);
     }
 
     private static HttpResponseMessage JsonResponse(ActorMetadata metadata)
@@ -265,6 +266,67 @@ public class QueueActorStateReaderTests
             ItExpr.Is<HttpRequestMessage>(r =>
                 r.RequestUri!.ToString() == "http://localhost:3500/v1.0/actors/CatalogActor/catalog-3/state/entries"),
             ItExpr.IsAny<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ReadStateAsync_TypeOwnedByAnotherApp_ReadsThroughThatAppsEndpoint()
+    {
+        // Dapr keys actor state by the reading sidecar's app-id, so another app's actors can only be
+        // read by asking that app.
+        var json = System.Text.Json.JsonSerializer.Serialize(
+            new DirectorySummary { TotalCount = 8, ActiveCount = 5 },
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+        var reader = CreateReader(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
+        }, out var mockHandler, new Dictionary<string, string> { ["SessionCoordinatorActor"] = "daprmq-control" });
+
+        var summary = await reader.ReadDirectorySummaryAsync("orders");
+
+        Assert.Equal(new DirectorySummary { TotalCount = 8, ActiveCount = 5 }, summary);
+        mockHandler.Protected().Verify(
+            "SendAsync",
+            Times.Once(),
+            ItExpr.Is<HttpRequestMessage>(r =>
+                r.RequestUri!.ToString() ==
+                "http://localhost:3500/v1.0/invoke/daprmq-control/method/internal/actor-state/SessionCoordinatorActor/orders/dir_summary"),
+            ItExpr.IsAny<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ReadStateAsync_TypeNotInRemoteMap_StillReadsLocally()
+    {
+        var metadata = new ActorMetadata { Queues = new Dictionary<int, QueueMetadata>() };
+        var reader = CreateReader(JsonResponse(metadata), out var mockHandler,
+            new Dictionary<string, string> { ["SessionCoordinatorActor"] = "daprmq-control" });
+
+        await reader.ReadSessionStateAsync(new ActorId("orders-session-42"));
+
+        mockHandler.Protected().Verify(
+            "SendAsync",
+            Times.Once(),
+            ItExpr.Is<HttpRequestMessage>(r =>
+                r.RequestUri!.ToString() == "http://localhost:3500/v1.0/actors/QueueActor/orders-session-42/state/metadata"),
+            ItExpr.IsAny<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ReadStateAsync_RemoteNoContent_ReturnsNull()
+    {
+        var reader = CreateReader(new HttpResponseMessage(HttpStatusCode.NoContent), out _,
+            new Dictionary<string, string> { ["CatalogActor"] = "daprmq-control" });
+
+        Assert.Null(await reader.ReadStateAsync<Dictionary<string, CatalogEntry>>("CatalogActor", "catalog-0", "entries"));
+    }
+
+    [Fact]
+    public async Task ReadSessionStateAsync_RemoteFailure_Throws()
+    {
+        // A failed remote read must stay "unknown" to the eviction pass, never "empty".
+        var reader = CreateReader(new HttpResponseMessage(HttpStatusCode.NotFound), out _,
+            new Dictionary<string, string> { ["QueueActor"] = "daprmq-worker" });
+
+        await Assert.ThrowsAnyAsync<Exception>(() => reader.ReadSessionStateAsync(new ActorId("orders-session-42")));
     }
 
     [Fact]

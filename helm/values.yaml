@@ -99,6 +99,55 @@ worker:
   # Affinity rules
   affinity: {}
 
+# Control plane: session coordinators, the catalog and the scaling registry on their own Deployment
+# and Dapr app-id (ACTOR_SET=control), so worker scaling never moves them and a busy worker never
+# delays them. Workers then host only the data plane (ACTOR_SET=data). Each app reads the other's
+# actor state through it, because Dapr keys actor state by app-id.
+# Enabling it on an existing install leaves the coordinator, catalog and registry state behind under
+# the worker app-id: sessions with work become claimable again as they next report, and the catalog
+# refills from activity.
+controlPlane:
+  enabled: false
+  replicaCount: 2
+
+  httpPort: 8080
+  grpcPort: 8081
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8080
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /health/ready
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    successThreshold: 1
+    failureThreshold: 3
+
+  podAnnotations: {}
+  podSecurityContext: {}
+  securityContext: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
 # Gateway configuration (REGISTER_ACTORS=false)
 gateway:
   enabled: true

@@ -53,7 +53,8 @@ A run is a P-05 queue drain by the .NET SDK, at scale `extreme`, with profile `k
 - **Key:** `k8s-queue:<messages>@<delay>ms/active<window>/handlers<handlers>/replicas<replicas>`, with `+fixed`
   without KEDA, or `+fastscale` with `--fast-scale-up`. By default the HPA adds at most 100% (or 4 pods) every 15s,
   so ramping from 1 to 20 replicas takes about a minute of every run; `--fast-scale-up` lets it go straight to
-  `--replicas` once KEDA activates the consumers. The report and regression check compare runs by `(environment.label, topology.apiReplicas,
+  `--replicas` once KEDA activates the consumers. A DaprMQ release deployed with `daprmq-deploy.sh --control-plane true`
+  (its own control-plane Deployment) adds `+controlplane`, and `params.controlPlaneReplicas` records its size. The report and regression check compare runs by `(environment.label, topology.apiReplicas,
   scenario.key)`, so a run is only ever compared with runs of the same shape on the same kind of machine. Set
   the label with `--env-label`; CI uses `ci-k8s-<runner>`.
 - **Topology:** `apiReplicas` is the gateway's replica count, and `server` is `kubernetes <context>`.

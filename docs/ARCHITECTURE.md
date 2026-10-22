@@ -354,6 +354,9 @@ KEDA ──gRPC (externalscaler.proto)──▶ DaprMQ.Operator   (app-id {relea
 silently returns empty (204). The read has no "hosted here" check, though, so any worker can read any queue, and it never
 activates the actor - polling doesn't keep idle queues alive. The workers expose that read as an internal endpoint
 (`QueueDepthEndpoint`, mapped whenever actors are registered), and the operator calls it.
+With `controlPlane.enabled`, the coordinators live under their own app-id, so a worker reads `dir_summary` (and a
+coordinator reads a session's metadata) through the owning app's `GET /internal/actor-state/{type}/{id}/{key}`
+(`ActorStateEndpoint`) instead. The state API can't name another app's keys: Dapr rejects any key containing `||`.
 
 **Metric.** Messages mode: ready + locked items (+ `{queueId}-deadletter` with `includeDeadLetter: "true"`), summed
 across priorities. Locked items always count: they are out of the queue's `Count`, and lock expiry is swept lazily by

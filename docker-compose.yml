@@ -155,6 +155,8 @@ services:
       - DAPR_HTTP_ENDPOINT=http://worker-1-dapr:3500
       - REGISTER_ACTORS=true
       - ENABLE_API=false
+      - ACTOR_SET=data
+      - CONTROL_PLANE_APP_ID=daprmq-control
       - DAPRMQ_BLOB_BINDING_NAME=${DAPRMQ_BLOB_BINDING_NAME:-daprmq-blobstore}
     depends_on:
       worker-1-dapr:
@@ -226,6 +228,8 @@ services:
       - DAPR_HTTP_ENDPOINT=http://worker-2-dapr:3500
       - REGISTER_ACTORS=true
       - ENABLE_API=false
+      - ACTOR_SET=data
+      - CONTROL_PLANE_APP_ID=daprmq-control
       - DAPRMQ_BLOB_BINDING_NAME=${DAPRMQ_BLOB_BINDING_NAME:-daprmq-blobstore}
     depends_on:
       worker-2-dapr:
@@ -284,37 +288,40 @@ services:
       - daprmq-network
 
   ############################
-  # Host 3 + Dapr Sidecar
+  # Control plane (session coordinators, catalog, scaling registry) + Dapr Sidecar
   ############################
 
-  worker-3:
-    container_name: worker-3
+  control-1:
+    container_name: control-1
     build:
       context: ./server
       dockerfile: Dockerfile
     environment:
       - ASPNETCORE_URLS=http://+:8080
-      - DAPR_GRPC_ENDPOINT=http://worker-3-dapr:50001
-      - DAPR_HTTP_ENDPOINT=http://worker-3-dapr:3500
+      - DAPR_GRPC_ENDPOINT=http://control-1-dapr:50001
+      - DAPR_HTTP_ENDPOINT=http://control-1-dapr:3500
       - REGISTER_ACTORS=true
       - ENABLE_API=false
+      # Its own app-id, so the integration tests run across the data/control-plane split
+      - ACTOR_SET=control
+      - DATA_PLANE_APP_ID=daprmq-service
       - DAPRMQ_BLOB_BINDING_NAME=${DAPRMQ_BLOB_BINDING_NAME:-daprmq-blobstore}
     depends_on:
-      worker-3-dapr:
+      control-1-dapr:
         condition: service_started
     networks:
       - daprmq-network
 
-  worker-3-dapr:
-    container_name: worker-3-dapr
+  control-1-dapr:
+    container_name: control-1-dapr
     image: "${DAPR_RUNTIME_VERSION}"
     command:
       [
         "./daprd",
         "-app-id",
-        "daprmq-service",
+        "daprmq-control",
         "-app-channel-address",
-        "worker-3",
+        "control-1",
         "-app-port",
         "8080",
         "-dapr-http-port",

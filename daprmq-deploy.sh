@@ -28,6 +28,8 @@
 #   --examples-namespace NAME   Namespace of the example apps (default: examples)
 #   --skip-examples             Don't build or deploy the example apps
 #   --skip-build                Deploy the images already built locally
+#   --control-plane true|false  Run the session coordinators, catalog and scaling registry on their
+#                                own deployment and app-id (default: keep the release's setting)
 #   -h, --help                  Show this help and exit
 
 set -euo pipefail
@@ -39,6 +41,7 @@ RELEASE="daprmq"
 EXAMPLES_NAMESPACE="examples"
 SKIP_EXAMPLES="false"
 SKIP_BUILD="false"
+CONTROL_PLANE=""
 TAG="dev"
 EXAMPLES_TAG="0.1.0"
 CHART_OCI="oci://ghcr.io/olitomlinson/charts/daprmq"
@@ -54,6 +57,7 @@ while [[ $# -gt 0 ]]; do
         --examples-namespace) EXAMPLES_NAMESPACE="$2"; shift 2 ;;
         --skip-examples) SKIP_EXAMPLES="true"; shift ;;
         --skip-build) SKIP_BUILD="true"; shift ;;
+        --control-plane) CONTROL_PLANE="$2"; shift 2 ;;
         -h|--help) show_help; exit 0 ;;
         *) echo "Unknown option: $1" >&2; show_help >&2; exit 1 ;;
     esac
@@ -112,6 +116,7 @@ restart_all() {
 echo "== DaprMQ ${VERSION:-from source} (${NAMESPACE}/${RELEASE})"
 daprmq_args=(upgrade --install "$RELEASE" -n "$NAMESPACE" --reset-then-reuse-values
     --set dapr.stateStoreName=statestore --set operator.enabled="$KEDA" --wait --timeout 5m0s)
+[[ -n "$CONTROL_PLANE" ]] && daprmq_args+=(--set controlPlane.enabled="$CONTROL_PLANE")
 if [[ -z "$VERSION" ]]; then
     daprmq_args+=(./helm --set image.registry= --set image.tag="$TAG" --set image.pullPolicy=Never
         --set operator.image.tag="$TAG")

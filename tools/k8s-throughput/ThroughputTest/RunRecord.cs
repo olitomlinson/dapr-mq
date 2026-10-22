@@ -50,7 +50,8 @@ public static class RunRecord
               + (s.SessionLengthJitterPercent > 0 ? $"+len{s.SessionLengthJitterPercent}" : "")
               + (s.PublishJitterSeconds > 0 ? $"+pubjitter{s.PublishJitterSeconds}s" : "")
             : $"k8s-queue:{s.Messages}@{s.ItemDelayMs}ms/active{s.Window}/handlers{s.Handlers}/replicas{s.Replicas}")
-        + (s.ScalingMode == "fixed" ? "+fixed" : s.FastScaleUp ? "+fastscale" : "");
+        + (s.ScalingMode == "fixed" ? "+fixed" : s.FastScaleUp ? "+fastscale" : "")
+        + (s.ControlPlaneReplicas > 0 ? "+controlplane" : "");
 
     public static JsonObject Build(Settings s, RunMeasurements m, DateTimeOffset timestamp) =>
         IsSessions(s) ? BuildSessions(s, m, timestamp) : BuildQueue(s, m, timestamp);
@@ -80,7 +81,8 @@ public static class RunRecord
         {
             ["messages"] = s.Messages, ["settleMs"] = s.ItemDelayMs, ["maxActiveMessages"] = s.Window,
             ["maxConcurrentHandlers"] = s.Handlers, ["replicas"] = s.Replicas, ["scaling"] = s.ScalingMode,
-            ["fastScaleUp"] = s.FastScaleUp, ["lockTtlSeconds"] = s.LockTtlSeconds, ["publishers"] = s.Publishers
+            ["fastScaleUp"] = s.FastScaleUp, ["controlPlaneReplicas"] = s.ControlPlaneReplicas,
+            ["lockTtlSeconds"] = s.LockTtlSeconds, ["publishers"] = s.Publishers
         };
         var metrics = Headlines(m, ideal, s.Messages);
         metrics["missing"] = missing;
@@ -128,7 +130,7 @@ public static class RunRecord
             ["maxConcurrentSessions"] = s.ConcurrentSessions, ["prefetchCount"] = s.Prefetch, ["leaseSeconds"] = s.LeaseSeconds,
             ["sessionIdleTimeoutSeconds"] = s.SessionIdleTimeoutSeconds, ["sessionLengthJitterPercent"] = s.SessionLengthJitterPercent,
             ["publishJitterSeconds"] = s.PublishJitterSeconds, ["replicas"] = s.Replicas, ["scaling"] = s.ScalingMode,
-            ["fastScaleUp"] = s.FastScaleUp,
+            ["fastScaleUp"] = s.FastScaleUp, ["controlPlaneReplicas"] = s.ControlPlaneReplicas,
             ["publishers"] = s.Publishers
         };
         var metrics = Headlines(m, ideal, s.Messages);

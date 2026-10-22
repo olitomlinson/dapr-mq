@@ -62,6 +62,18 @@ public class RunRecordTests
     }
 
     [Fact]
+    public void Key_NamesASplitControlPlane()
+    {
+        // Coordinators on their own deployment is a different system under test, so its runs are only
+        // compared with each other.
+        var run = Build(TwentyReplicas() with { ControlPlaneReplicas = 2 }, Drained());
+
+        Assert.Equal("k8s-queue:100000@200ms/active40/handlers10/replicas20+controlplane",
+            run["scenario"]!["key"]!.GetValue<string>());
+        Assert.Equal(2, run["scenario"]!["params"]!["controlPlaneReplicas"]!.GetValue<int>());
+    }
+
+    [Fact]
     public void Metrics_AreTheQueueDrainHeadlines()
     {
         var metrics = Build(TwentyReplicas(), Drained(wallClockSeconds: 250))["metrics"]!;

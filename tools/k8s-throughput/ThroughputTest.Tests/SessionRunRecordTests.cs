@@ -83,6 +83,16 @@ public class SessionRunRecordTests
     }
 
     [Fact]
+    public void Key_NamesASplitControlPlane()
+    {
+        var run = Build(TwentyReplicas() with { FastScaleUp = true, ControlPlaneReplicas = 2 }, Drained());
+
+        Assert.Equal("k8s-sessions:1000x100@200ms/10slots/prefetch1/lease30s/idle1s/replicas20+fastscale+controlplane",
+            run["scenario"]!["key"]!.GetValue<string>());
+        Assert.Equal(2, run["scenario"]!["params"]!["controlPlaneReplicas"]!.GetValue<int>());
+    }
+
+    [Fact]
     public void Params_DescribeTheSessions()
     {
         var parameters = Build(TwentyReplicas(), Drained())["scenario"]!["params"]!;

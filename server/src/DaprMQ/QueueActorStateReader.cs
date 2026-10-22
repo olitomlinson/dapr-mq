@@ -31,8 +31,12 @@ public readonly record struct QueueDepth(long Ready, long Locked);
 /// activating it if it's currently cold, and by the queue-depth read the KEDA scaler relies on.
 ///
 /// Dapr keys actor state by the *calling* sidecar's app-id ({appId}||{type}||{id}||{key}), so this
-/// only sees real data when run on an actor-hosting (worker) instance. From any other app-id every
-/// read silently comes back empty. Any worker can read any actor - there is no "hosted here" check.
+/// only sees real data for actor types hosted under this instance's app-id. From any other app-id every
+/// read silently comes back empty. Types hosted by another app (the data/control-plane split, see
+/// ActorHosting) are listed in the remote app-id map and read through that app's
+/// internal/actor-state endpoint instead; the state API can't name another app's keys, because Dapr
+/// rejects any key containing "||". Any host can read any actor of its own app - there is no
+/// "hosted here" check.
 /// </summary>
 public interface IQueueActorStateReader
 {
@@ -80,14 +84,16 @@ public class QueueActorStateReader : IQueueActorStateReader
     private readonly string _actorType;
     private readonly string _daprHttpEndpoint;
     private readonly string _sessionCoordinatorActorType;
+    private readonly IReadOnlyDictionary<string, string> _remoteAppIds;
 
     public QueueActorStateReader(IHttpClientFactory httpClientFactory, string actorType, string daprHttpEndpoint,
-        string sessionCoordinatorActorType = "SessionCoordinatorActor")
+        string sessionCoordinatorActorType = "SessionCoordinatorActor", IReadOnlyDictionary<string, string>? remoteAppIds = null)
     {
         _httpClientFactory = httpClientFactory ?? throw new ArgumentNullException(nameof(httpClientFactory));
         _actorType = actorType ?? throw new ArgumentNullException(nameof(actorType));
         _daprHttpEndpoint = (daprHttpEndpoint ?? throw new ArgumentNullException(nameof(daprHttpEndpoint))).TrimEnd('/');
         _sessionCoordinatorActorType = sessionCoordinatorActorType ?? throw new ArgumentNullException(nameof(sessionCoordinatorActorType));
+        _remoteAppIds = remoteAppIds ?? new Dictionary<string, string>();
     }
 
     /// <inheritdoc />
@@ -128,7 +134,9 @@ public class QueueActorStateReader : IQueueActorStateReader
     public async Task<T?> ReadStateAsync<T>(string actorType, string actorId, string key, CancellationToken cancellationToken = default) where T : class
     {
         var client = _httpClientFactory.CreateClient();
-        var url = $"{_daprHttpEndpoint}/v1.0/actors/{actorType}/{actorId}/state/{key}";
+        var url = _remoteAppIds.TryGetValue(actorType, out var appId)
+            ? $"{_daprHttpEndpoint}/v1.0/invoke/{appId}/method/internal/actor-state/{actorType}/{Uri.EscapeDataString(actorId)}/{key}"
+            : $"{_daprHttpEndpoint}/v1.0/actors/{actorType}/{actorId}/state/{key}";
 
         var response = await client.GetAsync(url, cancellationToken);
         if (!response.IsSuccessStatusCode)

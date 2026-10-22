@@ -110,6 +110,9 @@ fi
 GATEWAY_REPLICAS="$(kubectl --context "$CONTEXT" -n "$DAPRMQ_NS" get deploy -l app.kubernetes.io/component=gateway \
     -o jsonpath='{.items[0].spec.replicas}' 2>/dev/null || true)"
 GATEWAY_REPLICAS="${GATEWAY_REPLICAS:-1}"
+CONTROL_PLANE_REPLICAS="$(kubectl --context "$CONTEXT" -n "$DAPRMQ_NS" get deploy -l app.kubernetes.io/component=control-plane \
+    -o jsonpath='{.items[0].spec.replicas}' 2>/dev/null || true)"
+CONTROL_PLANE_REPLICAS="${CONTROL_PLANE_REPLICAS:-0}"
 GIT_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
 GIT_BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)}}"
 GIT_DIRTY="false"; [[ -n "$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null)" ]] && GIT_DIRTY="true"
@@ -139,6 +142,7 @@ run_one() {
         --set sessions.lengthJitterPercent="$LENGTH_JITTER" --set sessions.publishJitterSeconds="$PUBLISH_JITTER" \
         --set run.messages="$MESSAGES" --set run.publishers="$PUBLISHERS" --set run.timeoutSeconds="$TIMEOUT" \
         --set-string run.envLabel="$ENV_LABEL" --set run.gatewayReplicas="$GATEWAY_REPLICAS" \
+        --set run.controlPlaneReplicas="$CONTROL_PLANE_REPLICAS" \
         --set-string run.serverLabel="kubernetes $CONTEXT" --set-string run.gitSha="$GIT_SHA" \
         --set-string run.gitBranch="$GIT_BRANCH" --set-string run.gitDirty="$GIT_DIRTY" >/dev/null
 

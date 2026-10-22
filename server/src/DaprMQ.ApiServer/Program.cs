@@ -111,6 +111,14 @@ var actorConfig = new
 
 // builder.Services.AddSingleton(actorConfig);
 
+// Which actor types this instance hosts (ACTOR_SET): all, or the data or control plane of a split
+// deployment. The first type of each plane is the one readiness requires.
+var actorHosting = new ActorHosting(
+    ActorHosting.ParseSet(builder.Configuration.GetValue<string>("ACTOR_SET")),
+    [actorConfig.QueueActorTypeName, actorConfig.HttpSinkActorTypeName, actorConfig.BlobReaperActorTypeName, actorConfig.TopicActorTypeName],
+    [actorConfig.SessionCoordinatorActorTypeName, actorConfig.CatalogActorTypeName, actorConfig.ScalingRegistryActorTypeName]);
+builder.Services.AddSingleton(actorHosting);
+
 // Register QueueActorInvoker invoker (dedicated invoker for QueueActorInvoker operations)
 builder.Services.AddSingleton<IQueueActorInvoker>(sp =>
     new QueueActorInvoker(
@@ -151,14 +159,18 @@ builder.Services.AddSingleton<ICatalogActorInvoker>(sp =>
 // Register QueueActorStateReader (used by SessionCoordinatorActor's eviction pass and lease-expiry
 // check to read a session's item count via Dapr's actor-state data-plane API directly, bypassing
 // actor activation - see QueueActorStateReader for why that matters for reads that specifically
-// target idle, likely-cold sessions)
+// target idle, likely-cold sessions). Types hosted by the other plane are read through that app.
 var daprHttpEndpoint = builder.Configuration.GetValue("DAPR_HTTP_ENDPOINT", "http://localhost:3500") ?? "http://localhost:3500";
+var remoteStateAppIds = actorHosting.RemoteAppIds(
+    builder.Configuration.GetValue<string>("DATA_PLANE_APP_ID"),
+    builder.Configuration.GetValue<string>("CONTROL_PLANE_APP_ID"));
 builder.Services.AddSingleton<DaprMQ.IQueueActorStateReader>(sp =>
     new DaprMQ.QueueActorStateReader(
         sp.GetRequiredService<IHttpClientFactory>(),
         actorConfig.QueueActorTypeName,
         daprHttpEndpoint,
-        actorConfig.SessionCoordinatorActorTypeName));
+        actorConfig.SessionCoordinatorActorTypeName,
+        remoteStateAppIds));
 
 // Queue-depth read behind the worker's internal /internal/queue-depth endpoint (DaprMQ.Operator's
 // KEDA scaler). Only meaningful on workers - see QueueDepthEndpoint.
@@ -266,13 +278,21 @@ if (registerActors)
 {
     builder.Services.AddActors(options =>
     {
-        options.Actors.RegisterActor<DaprMQ.QueueActor>(actorConfig.QueueActorTypeName);
-        options.Actors.RegisterActor<DaprMQ.HttpSinkActor>(actorConfig.HttpSinkActorTypeName);
-        options.Actors.RegisterActor<DaprMQ.BlobReaperActor>(actorConfig.BlobReaperActorTypeName);
-        options.Actors.RegisterActor<DaprMQ.TopicActor>(actorConfig.TopicActorTypeName);
-        options.Actors.RegisterActor<DaprMQ.SessionCoordinatorActor>(actorConfig.SessionCoordinatorActorTypeName);
-        options.Actors.RegisterActor<DaprMQ.CatalogActor>(actorConfig.CatalogActorTypeName);
-        options.Actors.RegisterActor<DaprMQ.ScalingRegistryActor>(actorConfig.ScalingRegistryActorTypeName);
+        void Register<TActor>(string actorType) where TActor : Dapr.Actors.Runtime.Actor
+        {
+            if (actorHosting.Hosts(actorType))
+            {
+                options.Actors.RegisterActor<TActor>(actorType);
+            }
+        }
+
+        Register<DaprMQ.QueueActor>(actorConfig.QueueActorTypeName);
+        Register<DaprMQ.HttpSinkActor>(actorConfig.HttpSinkActorTypeName);
+        Register<DaprMQ.BlobReaperActor>(actorConfig.BlobReaperActorTypeName);
+        Register<DaprMQ.TopicActor>(actorConfig.TopicActorTypeName);
+        Register<DaprMQ.SessionCoordinatorActor>(actorConfig.SessionCoordinatorActorTypeName);
+        Register<DaprMQ.CatalogActor>(actorConfig.CatalogActorTypeName);
+        Register<DaprMQ.ScalingRegistryActor>(actorConfig.ScalingRegistryActorTypeName);
 
         // Configure actor runtime settings. Overridable for tests that need to force actors cold
         // deterministically (e.g. the reentrancy A -> B -> A hazard below only manifests when the
@@ -328,7 +348,7 @@ if (registerActors)
 builder.Services.AddSingleton(new DaprReadinessOptions
 {
     DaprHttpEndpoint = daprHttpEndpoint,
-    RequiredActorType = registerActors ? actorConfig.QueueActorTypeName : null
+    RequiredActorType = registerActors ? actorHosting.ReadinessActorType : null
 });
 var healthChecks = builder.Services.AddHealthChecks()
     .AddCheck<DaprReadinessHealthCheck>("dapr", tags: ["ready"], timeout: TimeSpan.FromSeconds(3));
@@ -401,6 +421,7 @@ if (registerActors)
     app.MapQueueDepthEndpoint();
     app.MapAdminReadEndpoints();
     app.MapScalingRegistryEndpoints();
+    app.MapActorStateEndpoint();
 }
 
 // Readiness is mapped on every instance (workers included), not just API-serving ones

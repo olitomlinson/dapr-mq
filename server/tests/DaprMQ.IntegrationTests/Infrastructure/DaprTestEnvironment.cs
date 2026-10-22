@@ -15,6 +15,8 @@ namespace DaprMQ.IntegrationTests.Infrastructure;
 ///
 /// DAPRMQ_TEST_TOPOLOGY=split puts the API behind a gateway in front of a separate actor-hosting
 /// worker, as Helm deploys it, instead of one process doing both (see <see cref="DaprTopology"/>).
+/// DAPRMQ_TEST_TOPOLOGY=split-control also moves the control-plane actor types to their own host and
+/// app-id, as Helm's controlPlane.enabled does.
 /// </summary>
 public class DaprTestEnvironment : IAsyncLifetime
 {
@@ -34,6 +36,7 @@ public class DaprTestEnvironment : IAsyncLifetime
     private readonly List<(IContainer App, IContainer Sidecar)> _actorHosts = [];
 
     public const string WorkerAppId = "daprmq-api";
+    public const string ControlPlaneAppId = "daprmq-control";
     private const string GatewayAppId = "daprmq-gateway";
 
     // Exposed endpoints and connection strings
@@ -207,7 +210,9 @@ public class DaprTestEnvironment : IAsyncLifetime
             Enumerable.Range(0, topology.ApiReplicas).Select(replica =>
                 StartReplicaAsync(apiRole, replica, topology, apiServerImage, extraApiServerEnvironment, componentsPath, enableContainerLogs))
             .Concat(Enumerable.Range(0, topology.Workers).Select(worker =>
-                StartReplicaAsync(ReplicaRole.Worker, worker, topology, apiServerImage, extraApiServerEnvironment, componentsPath, enableContainerLogs))));
+                StartReplicaAsync(ReplicaRole.Worker, worker, topology, apiServerImage, extraApiServerEnvironment, componentsPath, enableContainerLogs)))
+            .Concat(Enumerable.Range(0, topology.ControlPlanes).Select(host =>
+                StartReplicaAsync(ReplicaRole.ControlPlane, host, topology, apiServerImage, extraApiServerEnvironment, componentsPath, enableContainerLogs))));
 
         var (api, sidecar) = replicas[0];
         ApiServerUrl = $"http://localhost:{api.GetMappedPublicPort(5000)}";
@@ -254,6 +259,9 @@ public class DaprTestEnvironment : IAsyncLifetime
 
         /// <summary>Hosts the actors only (ENABLE_API=false), as the Helm worker.</summary>
         Worker,
+
+        /// <summary>Hosts the control-plane actor types only (ACTOR_SET=control), on its own app-id.</summary>
+        ControlPlane,
     }
 
     /// <summary>Starts one app container and its sidecar.</summary>
@@ -262,8 +270,10 @@ public class DaprTestEnvironment : IAsyncLifetime
     {
         // API replica 0 also answers to the historical single-instance aliases.
         string[] apiAliases = role == ReplicaRole.Worker ? [DaprTopology.WorkerAlias(replica)]
+            : role == ReplicaRole.ControlPlane ? [DaprTopology.ControlPlaneAlias(replica)]
             : replica == 0 ? [DaprTopology.ApiServerAlias(replica), "api-server"] : [DaprTopology.ApiServerAlias(replica)];
         string[] sidecarAliases = role == ReplicaRole.Worker ? [DaprTopology.WorkerSidecarAlias(replica)]
+            : role == ReplicaRole.ControlPlane ? [DaprTopology.ControlPlaneSidecarAlias(replica)]
             : replica == 0 ? [DaprTopology.SidecarAlias(replica), "dapr-sidecar"] : [DaprTopology.SidecarAlias(replica)];
         var sidecarHost = sidecarAliases[0];
 
@@ -276,7 +286,7 @@ public class DaprTestEnvironment : IAsyncLifetime
             .WithPortBinding(5001, true) // HTTP/2 gRPC endpoint
             .WithEnvironment("ASPNETCORE_URLS", "http://+:5000")
             .WithEnvironment("REGISTER_ACTORS", role == ReplicaRole.Gateway ? "false" : "true")
-            .WithEnvironment("ENABLE_API", role == ReplicaRole.Worker ? "false" : "true")
+            .WithEnvironment("ENABLE_API", role is ReplicaRole.Worker or ReplicaRole.ControlPlane ? "false" : "true")
             // Gateways find the workers for the daprmq.DaprMQ.operations signal by app-id.
             .WithEnvironment("WORKER_APP_ID", WorkerAppId)
             // Tell the API server where to find its own Dapr sidecar on the Docker network using FULL endpoint URLs
@@ -293,6 +303,19 @@ public class DaprTestEnvironment : IAsyncLifetime
             // Short reap TTLs so LargeObjectTests can observe deletion within a reasonable test timeout
             .WithEnvironment("DAPRMQ_BLOB_REAP_BACKSTOP_SECONDS", "30")
             .WithEnvironment("DAPRMQ_BLOB_REAP_POST_DOWNLOAD_SECONDS", "30");
+
+        if (role == ReplicaRole.ControlPlane)
+        {
+            apiServerBuilder = apiServerBuilder
+                .WithEnvironment("ACTOR_SET", "control")
+                .WithEnvironment("DATA_PLANE_APP_ID", WorkerAppId);
+        }
+        else if (role == ReplicaRole.Worker && topology.HasControlPlane)
+        {
+            apiServerBuilder = apiServerBuilder
+                .WithEnvironment("ACTOR_SET", "data")
+                .WithEnvironment("CONTROL_PLANE_APP_ID", ControlPlaneAppId);
+        }
 
         if (extraApiServerEnvironment != null)
         {
@@ -327,7 +350,7 @@ public class DaprTestEnvironment : IAsyncLifetime
             .WithNetworkAliases(sidecarAliases)
             .WithCommand("./daprd",
                 // Actor state is keyed by the hosting app-id, so actor hosts keep "daprmq-api".
-                "--app-id", role == ReplicaRole.Gateway ? GatewayAppId : WorkerAppId,
+                "--app-id", role switch { ReplicaRole.Gateway => GatewayAppId, ReplicaRole.ControlPlane => ControlPlaneAppId, _ => WorkerAppId },
                 "--app-channel-address", apiAliases[0],  // Connect to API server via Docker network
                 "--app-port", "5000",
                 "--dapr-http-port", "3500",
@@ -352,7 +375,8 @@ public class DaprTestEnvironment : IAsyncLifetime
         lock (_daprSidecarContainers)
         {
             _daprSidecarContainers.Add(sidecar);
-            if (role != ReplicaRole.Gateway)
+            // The outage helpers take down the data plane; a control-plane host stays up.
+            if (role is ReplicaRole.Combined or ReplicaRole.Worker)
             {
                 _actorHosts.Add((apiServer, sidecar));
             }
@@ -475,7 +499,7 @@ public class DaprTestEnvironment : IAsyncLifetime
     /// </summary>
     public async Task<bool> ActorStateExistsAsync(string actorType, string actorId, string stateName)
     {
-        var key = $"daprmq-api||{actorType}||{actorId}||{stateName}".Replace("'", "''");
+        var key = $"{AppIdHosting(actorType)}||{actorType}||{actorId}||{stateName}".Replace("'", "''");
         var result = await _postgresContainer!.ExecAsync(new[]
         {
             "psql", "-U", "postgres", "-d", "actor_state", "-tAc",
@@ -484,6 +508,12 @@ public class DaprTestEnvironment : IAsyncLifetime
 
         return long.Parse(result.Stdout.Trim()) > 0;
     }
+
+    // Actor state is keyed by the hosting app-id: the control-plane types move to their own under split-control.
+    private static readonly string[] ControlPlaneActorTypes = ["SessionCoordinatorActor", "CatalogActor", "ScalingRegistryActor"];
+
+    private string AppIdHosting(string actorType) =>
+        Topology.HasControlPlane && ControlPlaneActorTypes.Contains(actorType) ? ControlPlaneAppId : WorkerAppId;
 
     /// <summary>
     /// Starts DaprMQ.Operator (KEDA external scaler) with its own Dapr sidecar under a *different*

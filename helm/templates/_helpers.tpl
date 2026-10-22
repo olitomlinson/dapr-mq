@@ -65,6 +65,22 @@ app.kubernetes.io/component: worker
 {{- end }}
 
 {{/*
+Control-plane labels
+*/}}
+{{- define "daprmq.controlPlane.labels" -}}
+{{ include "daprmq.labels" . }}
+app.kubernetes.io/component: control-plane
+{{- end }}
+
+{{/*
+Control-plane selector labels
+*/}}
+{{- define "daprmq.controlPlane.selectorLabels" -}}
+{{ include "daprmq.selectorLabels" . }}
+app.kubernetes.io/component: control-plane
+{{- end }}
+
+{{/*
 Gateway labels
 */}}
 {{- define "daprmq.gateway.labels" -}}

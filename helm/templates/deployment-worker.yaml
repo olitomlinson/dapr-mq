@@ -60,6 +60,12 @@ spec:
           value: "true"
         - name: ENABLE_API
           value: "false"
+        {{- if .Values.controlPlane.enabled }}
+        - name: ACTOR_SET
+          value: "data"
+        - name: CONTROL_PLANE_APP_ID
+          value: "{{ .Release.Name }}-daprmq-control"
+        {{- end }}
         - name: QUEUE_ACTOR_TYPE_NAME
           value: "{{ .Release.Name }}-daprmq-QueueActor"
         - name: HTTP_SINK_ACTOR_TYPE_NAME

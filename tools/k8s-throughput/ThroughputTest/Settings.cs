@@ -73,6 +73,8 @@ public sealed record Settings
     // Where the run happened, for the shared result record (sdks/testing/perf/result.schema.json).
     public string EnvLabel { get; init; } = "local";
     public int GatewayReplicas { get; init; } = 1;
+    /// <summary>Replicas of DaprMQ's control-plane deployment; 0 when the workers host every actor type.</summary>
+    public int ControlPlaneReplicas { get; init; }
     public string ServerLabel { get; init; } = "kubernetes";
     public string? GitSha { get; init; }
     public string? GitBranch { get; init; }
@@ -155,6 +157,7 @@ public sealed record Settings
             FastScaleUp = env.TryGetValue("FAST_SCALE_UP", out var fast) && fast == "true",
             EnvLabel = Text("ENV_LABEL", defaults.EnvLabel),
             GatewayReplicas = Int("GATEWAY_REPLICAS", defaults.GatewayReplicas, 1),
+            ControlPlaneReplicas = Int("CONTROL_PLANE_REPLICAS", 0, 0),
             ServerLabel = Text("SERVER_LABEL", defaults.ServerLabel),
             GitSha = env.TryGetValue("GIT_SHA", out var sha) && sha.Length > 0 ? sha : null,
             GitBranch = env.TryGetValue("GIT_BRANCH", out var branch) && branch.Length > 0 ? branch : null,

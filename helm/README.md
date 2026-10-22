@@ -201,6 +201,23 @@ helm install daprmq-app2 ./helm \
 | `worker.resources.limits.cpu` | CPU limit | `500m` |
 | `worker.resources.limits.memory` | Memory limit | `512Mi` |
 
+### Control Plane Configuration
+
+`controlPlane.enabled` moves the session coordinators, the catalog and the scaling registry off the workers onto
+their own Deployment and Dapr app-id (`<release>-daprmq-control`). Worker scaling then never rebalances them, and a
+busy or throttled worker never delays them. Each app reads the other's actor state through it (`GET
+/internal/actor-state/...` over Dapr service invocation), because Dapr keys actor state by app-id.
+
+Enabling it on an existing install leaves the coordinator, catalog and registry state behind under the worker
+app-id: sessions with work become claimable again as they next report, and the catalog refills from activity.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `controlPlane.enabled` | Deploy the control plane (requires `worker.enabled`); workers then host only the data plane | `false` |
+| `controlPlane.replicaCount` | Number of control-plane replicas (fixed; not autoscaled) | `2` |
+| `controlPlane.resources.*` | Resource limits (same as worker) | See values.yaml |
+| `controlPlane.nodeSelector` / `affinity` / `tolerations` | Placement of control-plane pods | `{}` / `{}` / `[]` |
+
 ### Gateway Configuration
 
 | Parameter | Description | Default |

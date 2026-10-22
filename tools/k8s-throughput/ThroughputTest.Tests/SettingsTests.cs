@@ -108,6 +108,13 @@ public class SettingsTests
     }
 
     [Fact]
+    public void ControlPlaneReplicas_IsZeroByDefault()
+    {
+        Assert.Equal(0, Parse(("QUEUE_ID", "tp-1")).ControlPlaneReplicas);
+        Assert.Equal(2, Parse(("QUEUE_ID", "tp-1"), ("CONTROL_PLANE_REPLICAS", "2")).ControlPlaneReplicas);
+    }
+
+    [Fact]
     public void QueueId_IsRequired()
     {
         var error = Assert.Throws<ArgumentException>(() => Parse());

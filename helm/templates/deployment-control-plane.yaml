@@ -1,0 +1,89 @@
+{{- if .Values.controlPlane.enabled }}
+{{- if not .Values.worker.enabled }}
+{{- fail "controlPlane.enabled requires worker.enabled: the control plane reads session state through the workers" }}
+{{- end }}
+# Session coordinators, catalog and scaling registry (ACTOR_SET=control), on their own app-id so
+# worker scaling never rebalances them. See controlPlane in values.yaml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "daprmq.fullname" . }}-control-plane
+  labels:
+    {{- include "daprmq.controlPlane.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.controlPlane.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "daprmq.controlPlane.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id: "{{ .Release.Name }}-daprmq-control"
+        dapr.io/app-port: "{{ .Values.controlPlane.httpPort }}"
+        dapr.io/app-protocol: "http"
+        dapr.io/config: {{ include "daprmq.fullname" . }}-dapr-config
+        dapr.io/log-level: {{ .Values.dapr.logLevel | quote }}
+        {{- with .Values.controlPlane.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "daprmq.controlPlane.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.controlPlane.podSecurityContext | nindent 8 }}
+      containers:
+      - name: daprmq
+        image: {{ include "daprmq.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.controlPlane.httpPort }}
+          protocol: TCP
+        - name: grpc
+          containerPort: {{ .Values.controlPlane.grpcPort }}
+          protocol: TCP
+        env:
+        - name: ASPNETCORE_URLS
+          value: "http://+:{{ .Values.controlPlane.httpPort }}"
+        - name: ASPNETCORE_ENVIRONMENT
+          value: "Production"
+        - name: REGISTER_ACTORS
+          value: "true"
+        - name: ENABLE_API
+          value: "false"
+        - name: ACTOR_SET
+          value: "control"
+        - name: DATA_PLANE_APP_ID
+          value: "{{ .Release.Name }}-daprmq-worker"
+        - name: QUEUE_ACTOR_TYPE_NAME
+          value: "{{ .Release.Name }}-daprmq-QueueActor"
+        - name: HTTP_SINK_ACTOR_TYPE_NAME
+          value: "{{ .Release.Name }}-daprmq-HttpSinkActor"
+        - name: BLOB_REAPER_ACTOR_TYPE_NAME
+          value: "{{ .Release.Name }}-daprmq-BlobReaperActor"
+        livenessProbe:
+          {{- toYaml .Values.controlPlane.livenessProbe | nindent 10 }}
+        readinessProbe:
+          {{- toYaml .Values.controlPlane.readinessProbe | nindent 10 }}
+        resources:
+          {{- toYaml .Values.controlPlane.resources | nindent 10 }}
+        securityContext:
+          {{- toYaml .Values.controlPlane.securityContext | nindent 10 }}
+      {{- with .Values.controlPlane.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controlPlane.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controlPlane.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
