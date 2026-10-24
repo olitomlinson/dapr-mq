@@ -29,7 +29,9 @@
 
 ## Key Architecture Rules
 
-**Use segmented storage pattern:** 100 items per segment. Batch state changes, single `SaveStateAsync()` call.
+**Use segmented storage pattern:** 100 items per segment.
+
+**Atomic by default:** an actor turn stages all its state changes and saves them with one `SaveStateAsync()` at the end, so the turn commits as one transaction. Helpers stage; they don't save. More than one save in a turn needs a reason: weigh it against keeping the turn atomic before deciding, and give the reason in a comment at the save.
 
 **Error handling:** Actor results carry `ErrorCode` as a string (null on success); check it first and map it to an HTTP status in the controller ([QueueController.cs](server/src/DaprMQ.ApiServer/Controllers/QueueController.cs)) and a gRPC status in [DaprMQGrpcService.cs](server/src/DaprMQ.ApiServer/Services/DaprMQGrpcService.cs). Transport failures of the actor call itself arrive as `ActorCallException` and map via [DeliveryFailures.cs](server/src/DaprMQ.ApiServer/Services/DeliveryFailures.cs).
 
