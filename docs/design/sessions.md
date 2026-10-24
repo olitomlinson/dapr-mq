@@ -157,8 +157,12 @@ an idle stream, and its lease, indefinitely.
 **Fix:** the loop tracks how long it's been continuously empty (`DequeueLocked` returned nothing
 *and* nothing is outstanding/unacked). Once that exceeds `session_idle_timeout_seconds` (new
 `ConsumeSessionStart` field; 0/unset defaults to `lease_seconds`), the server writes a
-`SessionDrained` frame and ends the stream normally — not an error. `ReleaseSession` fires in the
-existing `finally` block exactly as it does on any other stream end, so no new cleanup path exists.
+`SessionDrained` frame and ends the stream normally — not an error. The release then goes through
+the gateway's `SessionReleaseHandoff`: the lease is parked for up to `DAPRMQ_SESSION_RELEASE_HANDOFF_MS`
+(default 500ms, 0 turns it off). If the consumer's next any-available stream for that queue starts on the
+same gateway within that time, its claim and this release run as one coordinator turn
+(`ReleaseAndAcceptSession`). If no stream arrives, the lease is released on its own, as on any other
+stream end. Targeted streams, and streams ending any other way, release straight away.
 Client SDKs don't need special handling: `SessionQueueConsumer`/`sessionQueueConsumer.ts` already
 treat a clean stream end as "claim another" (the doc comment on `SessionQueueConsumer` already
 promised this before it was actually implemented).

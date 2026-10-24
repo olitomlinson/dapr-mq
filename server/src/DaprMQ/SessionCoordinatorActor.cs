@@ -542,6 +542,13 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
         return new ReleaseSessionResponse { Success = true };
     }
 
+    public async Task<ReleaseAndAcceptSessionResponse> ReleaseAndAcceptSession(ReleaseAndAcceptSessionRequest request)
+    {
+        var release = await ReleaseSession(new ReleaseSessionRequest { SessionId = request.SessionId, LeaseId = request.LeaseId });
+        var accept = await AcceptSession(new AcceptSessionRequest { LeaseSeconds = request.LeaseSeconds });
+        return new ReleaseAndAcceptSessionResponse { Release = release, Accept = accept };
+    }
+
     /// <summary>
     /// Reminder callback: lease expiry ("session-{id}"), and the eviction pass (periodic and
     /// catch-up).

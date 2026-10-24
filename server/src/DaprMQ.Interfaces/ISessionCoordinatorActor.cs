@@ -41,4 +41,11 @@ public interface ISessionCoordinatorActor : IActor
     /// Explicitly give up a claimed lease, freeing the session immediately.
     /// </summary>
     Task<ReleaseSessionResponse> ReleaseSession(ReleaseSessionRequest request);
+
+    /// <summary>
+    /// ReleaseSession then an any-available AcceptSession, in one turn: what a consumer moving from
+    /// a drained session to the next one needs, for one coordinator call instead of two. The claim
+    /// runs whether or not the release succeeded.
+    /// </summary>
+    Task<ReleaseAndAcceptSessionResponse> ReleaseAndAcceptSession(ReleaseAndAcceptSessionRequest request);
 }

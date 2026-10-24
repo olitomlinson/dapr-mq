@@ -733,6 +733,59 @@ public class SessionCoordinatorActorTests
         Assert.True(h.Entry("order-42").Active);
     }
 
+    // --- ReleaseAndAcceptSession ---
+
+    [Fact]
+    public async Task ReleaseAndAccept_ReleasesTheLease_AndClaimsTheNextReadySession()
+    {
+        var h = await CreateAsync();
+        await RegisterAsync(h, "order-1", "order-2");
+        var first = await h.Actor.AcceptSession(new AcceptSessionRequest());
+
+        var result = await h.Actor.ReleaseAndAcceptSession(new ReleaseAndAcceptSessionRequest
+        {
+            SessionId = "order-1",
+            LeaseId = first.LeaseId!,
+            LeaseSeconds = 45
+        });
+
+        Assert.True(result.Release.Success);
+        Assert.False(h.Data.ContainsKey("session-lock_order-1"));
+        Assert.False(h.Entry("order-1").Active);
+        Assert.True(result.Accept.Success);
+        Assert.Equal("order-2", result.Accept.SessionId);
+        var lease = (SessionLockState)h.Data["session-lock_order-2"];
+        Assert.Equal(45, lease.ExpiresAt - lease.CreatedAt, precision: 3);
+    }
+
+    [Fact]
+    public async Task ReleaseAndAccept_ReleaseRejected_StillClaims()
+    {
+        var h = await CreateAsync();
+        await RegisterAsync(h, "order-1", "order-2");
+        await h.Actor.AcceptSession(new AcceptSessionRequest());
+
+        var result = await h.Actor.ReleaseAndAcceptSession(new ReleaseAndAcceptSessionRequest { SessionId = "order-1", LeaseId = "wrong-lease" });
+
+        Assert.Equal("INVALID_LEASE_ID", result.Release.ErrorCode);
+        Assert.True(h.Data.ContainsKey("session-lock_order-1"));
+        Assert.Equal("order-2", result.Accept.SessionId);
+    }
+
+    [Fact]
+    public async Task ReleaseAndAccept_NothingElseReady_ReleasesAndReturnsNoSessionsAvailable()
+    {
+        var h = await CreateAsync();
+        await RegisterAsync(h, "order-1");
+        var first = await h.Actor.AcceptSession(new AcceptSessionRequest());
+
+        var result = await h.Actor.ReleaseAndAcceptSession(new ReleaseAndAcceptSessionRequest { SessionId = "order-1", LeaseId = first.LeaseId! });
+
+        Assert.True(result.Release.Success);
+        Assert.False(h.Data.ContainsKey("session-lock_order-1"));
+        Assert.Equal("NO_SESSIONS_AVAILABLE", result.Accept.ErrorCode);
+    }
+
     // --- Lease-expiry reminder (lease end) ---
 
     [Fact]

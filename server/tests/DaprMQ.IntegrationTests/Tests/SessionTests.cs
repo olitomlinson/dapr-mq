@@ -455,6 +455,72 @@ public class SessionTests(DaprTestFixture fixture)
         Assert.Equal(sessionId, reclaimed.SessionId);
     }
 
+    /// <summary>Runs one any-available stream until it drains; returns the session it was given.</summary>
+    private async Task<string> DrainAnyAvailableStreamAsync(GrpcService.DaprMQClient client, string queueId)
+    {
+        using var call = client.ConsumeSession();
+        await call.RequestStream.WriteAsync(new ConsumeSessionRequest
+        {
+            Start = new ConsumeSessionStart { QueueId = queueId, LeaseSeconds = 30, PrefetchCount = 1, SessionIdleTimeoutSeconds = 1 }
+        });
+
+        string? assigned = null;
+        var readTask = Task.Run(async () =>
+        {
+            await foreach (var response in call.ResponseStream.ReadAllAsync())
+            {
+                if (response.PayloadCase == ConsumeSessionResponse.PayloadOneofCase.SessionAssigned)
+                {
+                    assigned = response.SessionAssigned.SessionId;
+                }
+                else if (response.PayloadCase == ConsumeSessionResponse.PayloadOneofCase.Delivered)
+                {
+                    await call.RequestStream.WriteAsync(new ConsumeSessionRequest { Ack = new ConsumeSessionAck { LockId = response.Delivered.LockId } });
+                }
+                else
+                {
+                    Assert.Equal(ConsumeSessionResponse.PayloadOneofCase.SessionDrained, response.PayloadCase);
+                }
+            }
+        });
+
+        var completed = await Task.WhenAny(readTask, Task.Delay(TimeSpan.FromSeconds(15))) == readTask;
+        Assert.True(completed, "ConsumeSession stream did not drain within timeout");
+        await readTask;
+        Assert.NotNull(assigned);
+        return assigned!;
+    }
+
+    [Fact]
+    public async Task ConsumeSession_AnyAvailableStreamsInTurn_EachGetsTheNextSession_AndDrainedOnesAreReleased()
+    {
+        var queueId = NewQueueId();
+        await EnqueueAsync(queueId, "first", new { seq = 1 });
+        await EnqueueAsync(queueId, "second", new { seq = 1 });
+        var client = CreateGrpcClient();
+
+        // The second stream starts as the first drains: on one gateway, its claim also ends the
+        // first stream's lease (ReleaseAndAcceptSession).
+        var claimed = new[] { await DrainAnyAvailableStreamAsync(client, queueId), await DrainAnyAvailableStreamAsync(client, queueId) };
+
+        Assert.Equal(["first", "second"], claimed.Order());
+        foreach (var sessionId in claimed)
+        {
+            // Released within the handoff window (500ms), well before the 30s lease would lapse.
+            HttpResponseMessage? response = null;
+            for (int attempt = 0; attempt < 20; attempt++)
+            {
+                response = await AcceptSessionAsync(queueId, sessionId);
+                if (response.StatusCode == HttpStatusCode.OK)
+                {
+                    break;
+                }
+                await Task.Delay(100);
+            }
+            Assert.Equal(HttpStatusCode.OK, response!.StatusCode);
+        }
+    }
+
     [Fact]
     public async Task SessionLease_ExpiresAfterDirectorySweepSawItAbsent_ExpiryReminderStillReapsLockRecord()
     {
