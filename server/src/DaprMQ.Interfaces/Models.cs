@@ -167,6 +167,22 @@ public record ReleaseSessionResponse
 }
 
 /// <summary>
+/// Ends one lease and claims any available session, in one coordinator turn.
+/// </summary>
+public record ReleaseAndAcceptSessionRequest
+{
+    public required string SessionId { get; init; }
+    public required string LeaseId { get; init; }
+    public int LeaseSeconds { get; init; } = 30;
+}
+
+public record ReleaseAndAcceptSessionResponse
+{
+    public required ReleaseSessionResponse Release { get; init; }
+    public required AcceptSessionResponse Accept { get; init; }
+}
+
+/// <summary>
 /// Response model for Enqueue operation.
 /// </summary>
 public record EnqueueResponse

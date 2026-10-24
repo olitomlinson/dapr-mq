@@ -17,6 +17,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
     private readonly ILogger<DaprMQGrpcService> _logger;
     private readonly ActorModels.IQueueActorInvoker _queueActorInvoker;
     private readonly ActorModels.ISessionCoordinatorActorInvoker _sessionCoordinatorActorInvoker;
+    private readonly SessionReleaseHandoff? _releaseHandoff;
 
     /// <summary>
     /// ConsumeSession's fallback wait between polls, when the window is full or the queue is empty.
@@ -41,11 +42,13 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
     public DaprMQGrpcService(
         ILogger<DaprMQGrpcService> logger,
         ActorModels.IQueueActorInvoker queueActorInvoker,
-        ActorModels.ISessionCoordinatorActorInvoker sessionCoordinatorActorInvoker)
+        ActorModels.ISessionCoordinatorActorInvoker sessionCoordinatorActorInvoker,
+        SessionReleaseHandoff? releaseHandoff = null)
     {
         _logger = logger;
         _queueActorInvoker = queueActorInvoker;
         _sessionCoordinatorActorInvoker = sessionCoordinatorActorInvoker;
+        _releaseHandoff = releaseHandoff;
     }
 
     /// <summary>
@@ -781,11 +784,15 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
 
         _logger.LogDebug($"gRPC ConsumeSession request for queue {start.QueueId}, sessionId={requestedSessionId ?? "<any>"}");
 
-        var acceptResult = await _sessionCoordinatorActorInvoker.InvokeMethodAsync<ActorModels.AcceptSessionRequest, ActorModels.AcceptSessionResponse>(
-            new ActorId(start.QueueId),
-            ActorMethodNames.AcceptSession,
-            new ActorModels.AcceptSessionRequest { SessionId = requestedSessionId, LeaseSeconds = leaseSeconds },
-            context.CancellationToken);
+        // A drained stream's lease parked on this gateway is ended by the same turn as this claim.
+        var parked = requestedSessionId == null ? _releaseHandoff?.TryTake(start.QueueId) : null;
+        var acceptResult = parked != null
+            ? await ReleaseAndAcceptAsync(parked, leaseSeconds, context.CancellationToken)
+            : await _sessionCoordinatorActorInvoker.InvokeMethodAsync<ActorModels.AcceptSessionRequest, ActorModels.AcceptSessionResponse>(
+                new ActorId(start.QueueId),
+                ActorMethodNames.AcceptSession,
+                new ActorModels.AcceptSessionRequest { SessionId = requestedSessionId, LeaseSeconds = leaseSeconds },
+                context.CancellationToken);
 
         if (!acceptResult.Success)
         {
@@ -958,6 +965,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         double lastRenewalAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var renewIntervalSeconds = Math.Max(1, leaseSeconds / 2.0);
         double? emptySince = null;
+        bool drained = false;
 
         try
         {
@@ -1046,6 +1054,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                         {
                             SessionDrained = new SessionDrained { SessionId = sessionId }
                         });
+                        drained = true;
                         break;
                     }
                 }
@@ -1083,18 +1092,54 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                 _logger.LogWarning(ex, "Error awaiting ConsumeSession reader task for session {SessionId}", sessionId);
             }
 
-            try
+            // A drained any-available stream's consumer opens its next stream straight away, so its
+            // lease waits briefly for that stream's claim (see SessionReleaseHandoff).
+            if (!(drained && requestedSessionId == null && _releaseHandoff?.Park(start.QueueId, sessionId, leaseId) == true))
             {
-                await _sessionCoordinatorActorInvoker.InvokeMethodAsync<ActorModels.ReleaseSessionRequest, ActorModels.ReleaseSessionResponse>(
-                    new ActorId(start.QueueId),
-                    ActorMethodNames.ReleaseSession,
-                    new ActorModels.ReleaseSessionRequest { SessionId = sessionId, LeaseId = leaseId },
-                    CancellationToken.None);
+                await ReleaseQuietlyAsync(start.QueueId, sessionId, leaseId);
             }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to release session {SessionId} after ConsumeSession stream ended", sessionId);
-            }
+        }
+    }
+
+    private async Task<ActorModels.AcceptSessionResponse> ReleaseAndAcceptAsync(
+        SessionReleaseHandoff.ParkedRelease parked, int leaseSeconds, CancellationToken cancellationToken)
+    {
+        ActorModels.ReleaseAndAcceptSessionResponse result;
+        try
+        {
+            result = await _sessionCoordinatorActorInvoker.InvokeMethodAsync<ActorModels.ReleaseAndAcceptSessionRequest, ActorModels.ReleaseAndAcceptSessionResponse>(
+                new ActorId(parked.QueueId),
+                ActorMethodNames.ReleaseAndAcceptSession,
+                new ActorModels.ReleaseAndAcceptSessionRequest { SessionId = parked.SessionId, LeaseId = parked.LeaseId, LeaseSeconds = leaseSeconds },
+                cancellationToken);
+        }
+        catch
+        {
+            // The release may not have run; a second one is rejected harmlessly if it did.
+            await ReleaseQuietlyAsync(parked.QueueId, parked.SessionId, parked.LeaseId);
+            throw;
+        }
+
+        if (!result.Release.Success)
+        {
+            _logger.LogWarning("Failed to release drained session {SessionId}: {ErrorCode}", parked.SessionId, result.Release.ErrorCode);
+        }
+        return result.Accept;
+    }
+
+    private async Task ReleaseQuietlyAsync(string queueId, string sessionId, string leaseId)
+    {
+        try
+        {
+            await _sessionCoordinatorActorInvoker.InvokeMethodAsync<ActorModels.ReleaseSessionRequest, ActorModels.ReleaseSessionResponse>(
+                new ActorId(queueId),
+                ActorMethodNames.ReleaseSession,
+                new ActorModels.ReleaseSessionRequest { SessionId = sessionId, LeaseId = leaseId },
+                CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to release session {SessionId} after ConsumeSession stream ended", sessionId);
         }
     }
 
