@@ -246,6 +246,15 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
     /// <inheritdoc />
     public async Task<AcceptSessionResponse> AcceptSession(AcceptSessionRequest request)
     {
+        var result = await AcceptCoreAsync(request);
+        await StateManager.SaveStateAsync();
+        return result;
+    }
+
+    // Every state change a turn makes is saved together, once, at the end of the turn (see CLAUDE.md:
+    // one save per turn). The cores below stage changes but never save.
+    private async Task<AcceptSessionResponse> AcceptCoreAsync(AcceptSessionRequest request)
+    {
         int leaseSeconds = Math.Max(MinLeaseSeconds, Math.Min(MaxLeaseSeconds, request.LeaseSeconds));
 
         if (!string.IsNullOrEmpty(request.SessionId))
@@ -293,7 +302,6 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
     private async Task<AcceptSessionResponse> AcceptAnyAvailableAsync(int leaseSeconds)
     {
         var tried = new HashSet<string>();
-        bool dirty = false;
         string? unreachable = null;
 
         for (int attempt = 0; attempt < MaxClaimAttempts; attempt++)
@@ -314,7 +322,6 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
             if (entry is not { Active: true } || await IsLeasedAsync(sessionId, Now()))
             {
                 await SetMetadataAsync(RemoveFromReady(metadata, sessionId));
-                dirty = true;
                 continue;
             }
 
@@ -331,13 +338,7 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
                 SessionDirectory = WithEntry(current.SessionDirectory, sessionId, e => e with { Queued = true }),
                 ReadyQueue = [.. current.ReadyQueue, sessionId]
             });
-            dirty = true;
             unreachable = sessionId;
-        }
-
-        if (dirty)
-        {
-            await StateManager.SaveStateAsync();
         }
 
         if (unreachable != null)
@@ -354,8 +355,8 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
     }
 
     /// <summary>
-    /// Syncs a new lease onto the session actor, then records it. Returns null if the sync failed,
-    /// in which case nothing is written.
+    /// Syncs a new lease onto the session actor, then stages it for the turn's save. Returns null if
+    /// the sync failed, in which case nothing is staged.
     /// </summary>
     private async Task<AcceptSessionResponse?> ClaimAsync(string sessionId, int leaseSeconds)
     {
@@ -384,10 +385,9 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
             await SetMetadataAsync(RemoveFromReady(metadata, sessionId));
         }
 
-        await StateManager.SaveStateAsync();
-
         try
         {
+            // Before the turn's save: if that save fails, the reminder finds no lease and does nothing.
             await RegisterReminderAsync(
                 LeaseReminderPrefix + sessionId,
                 null,
@@ -484,6 +484,13 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
     /// <inheritdoc />
     public async Task<ReleaseSessionResponse> ReleaseSession(ReleaseSessionRequest request)
     {
+        var result = await ReleaseCoreAsync(request);
+        await StateManager.SaveStateAsync();
+        return result;
+    }
+
+    private async Task<ReleaseSessionResponse> ReleaseCoreAsync(ReleaseSessionRequest request)
+    {
         var existing = await StateManager.TryGetStateAsync<SessionLockState>($"session-lock_{request.SessionId}");
         if (!existing.HasValue)
         {
@@ -503,7 +510,6 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
         }
 
         await StateManager.RemoveStateAsync($"session-lock_{request.SessionId}");
-        await StateManager.SaveStateAsync();
 
         try
         {
@@ -544,8 +550,9 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
 
     public async Task<ReleaseAndAcceptSessionResponse> ReleaseAndAcceptSession(ReleaseAndAcceptSessionRequest request)
     {
-        var release = await ReleaseSession(new ReleaseSessionRequest { SessionId = request.SessionId, LeaseId = request.LeaseId });
-        var accept = await AcceptSession(new AcceptSessionRequest { LeaseSeconds = request.LeaseSeconds });
+        var release = await ReleaseCoreAsync(new ReleaseSessionRequest { SessionId = request.SessionId, LeaseId = request.LeaseId });
+        var accept = await AcceptCoreAsync(new AcceptSessionRequest { LeaseSeconds = request.LeaseSeconds });
+        await StateManager.SaveStateAsync();
         return new ReleaseAndAcceptSessionResponse { Release = release, Accept = accept };
     }
 
@@ -599,7 +606,6 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
         }
 
         await StateManager.RemoveStateAsync($"session-lock_{sessionId}");
-        await StateManager.SaveStateAsync();
         Logger.LogDebug("Session {SessionId} lease auto-expired and cleaned up", sessionId);
 
         long? remaining = null;
@@ -615,11 +621,13 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
         }
 
         await ApplyLeaseEndAsync(sessionId, remaining);
+        await StateManager.SaveStateAsync();
     }
 
     /// <summary>
     /// A lease has ended. Nothing left makes the entry Idle; items left (or an unknown count, which
-    /// errs toward availability) put the session back on the ReadyQueue.
+    /// errs toward availability) put the session back on the ReadyQueue. Stages the change; the
+    /// caller's turn saves it.
     /// </summary>
     private async Task ApplyLeaseEndAsync(string sessionId, long? remaining)
     {
@@ -657,7 +665,6 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
         }
 
         await SetDirectoryAsync(metadata with { SessionDirectory = directory, ReadyQueue = ready }, summary);
-        await StateManager.SaveStateAsync();
         await EnsureEvictionReminderAsync();
     }
 

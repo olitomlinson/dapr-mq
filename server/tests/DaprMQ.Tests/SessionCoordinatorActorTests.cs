@@ -786,6 +786,66 @@ public class SessionCoordinatorActorTests
         Assert.Equal("NO_SESSIONS_AVAILABLE", result.Accept.ErrorCode);
     }
 
+    // --- One save per turn: each lease end, and a lease end plus a claim, is one transaction ---
+
+    private static void VerifySavedOnce(Harness h) =>
+        h.State.Verify(m => m.SaveStateAsync(It.IsAny<CancellationToken>()), Times.Once());
+
+    [Fact]
+    public async Task ReleaseSession_SavesOnce()
+    {
+        var h = await CreateAsync();
+        await RegisterAsync(h, "order-1");
+        var claim = await h.Actor.AcceptSession(new AcceptSessionRequest());
+        h.State.Invocations.Clear();
+
+        await h.Actor.ReleaseSession(new ReleaseSessionRequest { SessionId = "order-1", LeaseId = claim.LeaseId! });
+
+        VerifySavedOnce(h);
+    }
+
+    [Fact]
+    public async Task ReleaseAndAccept_Claiming_SavesOnce()
+    {
+        var h = await CreateAsync();
+        await RegisterAsync(h, "order-1", "order-2");
+        var claim = await h.Actor.AcceptSession(new AcceptSessionRequest());
+        h.State.Invocations.Clear();
+
+        var result = await h.Actor.ReleaseAndAcceptSession(new ReleaseAndAcceptSessionRequest { SessionId = "order-1", LeaseId = claim.LeaseId! });
+
+        Assert.True(result.Accept.Success);
+        VerifySavedOnce(h);
+    }
+
+    [Fact]
+    public async Task ReleaseAndAccept_NothingReady_SavesOnce()
+    {
+        var h = await CreateAsync();
+        await RegisterAsync(h, "order-1");
+        var claim = await h.Actor.AcceptSession(new AcceptSessionRequest());
+        h.State.Invocations.Clear();
+
+        var result = await h.Actor.ReleaseAndAcceptSession(new ReleaseAndAcceptSessionRequest { SessionId = "order-1", LeaseId = claim.LeaseId! });
+
+        Assert.Equal("NO_SESSIONS_AVAILABLE", result.Accept.ErrorCode);
+        VerifySavedOnce(h);
+    }
+
+    [Fact]
+    public async Task LeaseExpiry_SavesOnce()
+    {
+        var h = await CreateAsync();
+        await RegisterAsync(h, "order-42");
+        await h.Actor.AcceptSession(new AcceptSessionRequest());
+        PastLease();
+        h.State.Invocations.Clear();
+
+        await h.Actor.ReceiveReminderAsync("session-order-42", [], TimeSpan.Zero, TimeSpan.Zero);
+
+        VerifySavedOnce(h);
+    }
+
     // --- Lease-expiry reminder (lease end) ---
 
     [Fact]
