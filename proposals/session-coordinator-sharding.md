@@ -1,6 +1,6 @@
 # Sharding the session coordinator
 
-> **Status: phase 1 built (PR #103, 2026-10-24); phase 2 proposed, not yet needed.** Phase 1 raised
+> **Status: phase 1 built (PR #103, 2026-10-24); phase 1b proposed (2026-10-25); phase 2 proposed, not yet needed.** Phase 1 raised
 > r20 session throughput on kind by about 27%, and the coordinator is now busy about a third of the
 > drain (see [Phase 1 results](#phase-1-results)). Phase 2 is for workloads that make it the limit
 > again: short sessions, or many more consumers. All numbers are from kind (a laptop). Confirm them
@@ -145,6 +145,70 @@ Same test and diagnostic build as above, on kind. All runs at r20.
   `--publish-jitter` smooths.
 - **The next limits are elsewhere.** At efficiency 0.58 they are the KEDA ramp (`--fast-scale-up`),
   the tail, and the per-message round trip at prefetch 1.
+
+### Short sessions: where the coordinator is the limit again
+
+The same test at r20 with 100k messages over 10,000 sessions of 10, on phase 1 with the timing build:
+
+| | Phase 1 | Phase 1 + one save per turn |
+|---|---|---|
+| Throughput | ~131 msg/s (timed out at 600s; 80,199 handled) | 141 msg/s (drained in 708s) |
+| Publishing | 8,040 of 10,000 sessions in 600s | all 10,000 in 706s |
+| Coordinator busy | 602 of 614 s | 692 of 708 s |
+| `ReleaseAndAcceptSession`, inside the turn | 46 ms (two directory writes) | 33 ms (one) |
+
+"One save per turn" is PR #103's later commit: accept, release, release-and-accept and lease
+expiry each save once, at the end of the turn. Before it, a combined call wrote the directory twice.
+
+- **Throughput is the publish rate.** The drain ended 2s after the last publish, so consumers
+  waited on publishers the whole run.
+- **Publishing waits on the coordinator.** A session's first enqueue makes its session actor call
+  `RegisterSession` inside the actor's own turn, and the enqueue waits for that call. With the
+  coordinator saturated, those calls waited about 0.8–1.1s each, against a 2s timeout. About 30%
+  timed out and fell back to the worker's batched report.
+- **Writing the directory dominates every call.** The directory and `ReadyQueue` are one blob holding
+  every session, so each save rewrites all 10,000 entries: 12–25 ms however small the change.
+
+  | Call | At 1,000 sessions | At 10,000 sessions |
+  |---|---|---|
+  | `RegisterSession` | 3 ms | 21 ms |
+  | A claim's save | 15 ms | 25 ms |
+
+  Saves made up 75–85% of the time inside each call.
+- **Empty accepts fill any capacity freed.** While publishing is slow, consumers with nothing to
+  claim poll: 8,500 accepts (18% of coordinator time).
+
+Cutting the cost of a call (one save per turn, −28% on the combined call) didn't raise throughput,
+because publishing and polling took up the capacity it freed. What's needed is fewer, smaller
+writes per session. Phase 1b comes before sharding: it fixes causes that sharding would only divide
+by N.
+
+### Phase 1b: smaller directory writes, registration off the enqueue path
+
+1. **Store the directory in segments** (CLAUDE.md's segmented-storage rule), with the `ReadyQueue` in
+   its own key. A turn rewrites only the segments it touched, plus the `ReadyQueue` and
+   `dir_summary`, so a save's cost stops growing with the number of sessions.
+   - **The ReadyQueue is still one key.** It holds only ready, unleased session ids, so it stays
+     small even when the directory is large.
+   - **Segment by hash of the session id.** Then a session's entry is always in a known segment.
+   - **Readers merge the segments:** the console's session list and `ReadSessionIdsAsync`.
+2. **Take `RegisterSession` off the enqueue path.** The session actor tells the worker's
+   `SessionActivityReporter` it has work, as it already does after every method. It no longer calls
+   the coordinator inside its own turn.
+   - **One call per queue per tick.** The reporter sends new sessions as one `ReportSessionChanges`
+     call per queue each tick, so a burst of 1,000 new sessions is one coordinator turn, not 1,000.
+   - **Enqueues stop waiting on the coordinator.**
+   - **The cost is claim latency.** A new session is claimable only after the next tick, which is
+     10s today (`DAPRMQ_SESSION_REPORT_TICK_MS`). Sessions with new work need a short tick, about
+     250 ms. Changes to Empty keep the existing debounce.
+3. **Back off on empty accepts in the gateway** (the item dropped from phase 1). After
+   `NO_SESSIONS_AVAILABLE`, the gateway answers further accepts for that queue itself for about
+   250 ms. It's worth doing only while publishing is slower than consuming, as here. Measure 1 and
+   2 first.
+
+Expected: with 1 and 2, a combined call costs roughly its two lease syncs and one small save, about
+10 ms. Registration becomes about one turn per tick per worker. That would put the 10-per-session
+ceiling well above 141 msg/s; measure it.
 
 ### Phase 2: shard the coordinator
 
@@ -327,7 +391,8 @@ Phase 2:
 
 ## Measuring it
 
-Phase 1 is measured above.
+Phase 1 is measured above. The 10-per-session runs above are the workload where the coordinator is
+the limit again. Measure phase 1b against them first.
 
 Before phase 2, find a workload where the coordinator is the limit again. Either:
 
