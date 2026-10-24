@@ -82,8 +82,127 @@ public class DaprMQGrpcServiceConsumeSessionTests
 
     private DaprMQGrpcService CreateService(
         IQueueActorInvoker queueActorInvoker,
-        ISessionCoordinatorActorInvoker sessionCoordinatorActorInvoker) =>
-        new(_mockLogger.Object, queueActorInvoker, sessionCoordinatorActorInvoker);
+        ISessionCoordinatorActorInvoker sessionCoordinatorActorInvoker,
+        SessionReleaseHandoff? releaseHandoff = null) =>
+        new(_mockLogger.Object, queueActorInvoker, sessionCoordinatorActorInvoker, releaseHandoff);
+
+    private static SessionReleaseHandoff CreateHandoff(ISessionCoordinatorActorInvoker invoker) =>
+        new(invoker, TimeSpan.FromSeconds(30), TimeProvider.System, Microsoft.Extensions.Logging.Abstractions.NullLogger<SessionReleaseHandoff>.Instance);
+
+    /// <summary>Every session reads as empty, so a stream with a 1s idle timeout drains.</summary>
+    private static (Mock<IQueueActorInvoker> queue, Mock<ISessionCoordinatorActorInvoker> sessions) DrainingMocks()
+    {
+        var queue = new Mock<IQueueActorInvoker>();
+        queue.Setup(i => i.InvokeMethodAsync<ActorModels.DequeueLockedRequest, ActorModels.DequeueLockedResponse>(
+                It.IsAny<ActorId>(), "DequeueLocked", It.IsAny<ActorModels.DequeueLockedRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.DequeueLockedResponse { IsEmpty = true });
+        var sessions = new Mock<ISessionCoordinatorActorInvoker>();
+        sessions.Setup(i => i.InvokeMethodAsync<ActorModels.AcceptSessionRequest, ActorModels.AcceptSessionResponse>(
+                It.IsAny<ActorId>(), "AcceptSession", It.IsAny<ActorModels.AcceptSessionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.AcceptSessionResponse { Success = true, SessionId = "s1", LeaseId = "lease-1", LeaseExpiresAt = 12345 });
+        sessions.Setup(i => i.InvokeMethodAsync<ActorModels.ReleaseSessionRequest, ActorModels.ReleaseSessionResponse>(
+                It.IsAny<ActorId>(), "ReleaseSession", It.IsAny<ActorModels.ReleaseSessionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.ReleaseSessionResponse { Success = true });
+        return (queue, sessions);
+    }
+
+    private async Task DrainOneStreamAsync(DaprMQGrpcService service, ConsumeSessionRequest start)
+    {
+        var reader = new FakeAsyncStreamReader<ConsumeSessionRequest>();
+        var writer = new FakeServerStreamWriter<ConsumeSessionResponse>();
+        reader.Add(start);
+        await service.ConsumeSession(reader, writer, _mockContext.Object).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Contains(writer.Written, r => r.PayloadCase == ConsumeSessionResponse.PayloadOneofCase.SessionDrained);
+    }
+
+    private static void VerifyReleased(Mock<ISessionCoordinatorActorInvoker> sessions, string sessionId, Func<Times> times) =>
+        sessions.Verify(i => i.InvokeMethodAsync<ActorModels.ReleaseSessionRequest, ActorModels.ReleaseSessionResponse>(
+            It.IsAny<ActorId>(), "ReleaseSession", It.Is<ActorModels.ReleaseSessionRequest>(r => r.SessionId == sessionId), It.IsAny<CancellationToken>()), times);
+
+    [Fact]
+    public async Task ConsumeSession_AnyAvailableDrained_NextStreamReleasesAndAcceptsInOneCall()
+    {
+        var (queue, sessions) = DrainingMocks();
+        sessions.Setup(i => i.InvokeMethodAsync<ActorModels.ReleaseAndAcceptSessionRequest, ActorModels.ReleaseAndAcceptSessionResponse>(
+                It.IsAny<ActorId>(), "ReleaseAndAcceptSession", It.IsAny<ActorModels.ReleaseAndAcceptSessionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.ReleaseAndAcceptSessionResponse
+            {
+                Release = new ActorModels.ReleaseSessionResponse { Success = true },
+                Accept = new ActorModels.AcceptSessionResponse { Success = true, SessionId = "s2", LeaseId = "lease-2", LeaseExpiresAt = 12345 }
+            });
+        var service = CreateService(queue.Object, sessions.Object, CreateHandoff(sessions.Object));
+
+        await DrainOneStreamAsync(service, StartRequest("test-queue", leaseSeconds: 40, sessionIdleTimeoutSeconds: 1));
+        VerifyReleased(sessions, "s1", Times.Never);
+
+        var reader = new FakeAsyncStreamReader<ConsumeSessionRequest>();
+        var writer = new FakeServerStreamWriter<ConsumeSessionResponse>();
+        reader.Add(StartRequest("test-queue", leaseSeconds: 40));
+        var second = service.ConsumeSession(reader, writer, _mockContext.Object);
+        await WaitUntilAsync(() => writer.Written.Any(r => r.PayloadCase == ConsumeSessionResponse.PayloadOneofCase.SessionAssigned));
+
+        Assert.Equal("s2", writer.Written.First().SessionAssigned.SessionId);
+        sessions.Verify(i => i.InvokeMethodAsync<ActorModels.ReleaseAndAcceptSessionRequest, ActorModels.ReleaseAndAcceptSessionResponse>(
+            It.Is<ActorId>(a => a.GetId() == "test-queue"), "ReleaseAndAcceptSession",
+            It.Is<ActorModels.ReleaseAndAcceptSessionRequest>(r => r.SessionId == "s1" && r.LeaseId == "lease-1" && r.LeaseSeconds == 40),
+            It.IsAny<CancellationToken>()), Times.Once);
+        sessions.Verify(i => i.InvokeMethodAsync<ActorModels.AcceptSessionRequest, ActorModels.AcceptSessionResponse>(
+            It.IsAny<ActorId>(), "AcceptSession", It.IsAny<ActorModels.AcceptSessionRequest>(), It.IsAny<CancellationToken>()), Times.Once);
+        VerifyReleased(sessions, "s1", Times.Never);
+
+        reader.Complete();
+        await second.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task ConsumeSession_TargetedDrained_ReleasesImmediately()
+    {
+        var (queue, sessions) = DrainingMocks();
+        var handoff = CreateHandoff(sessions.Object);
+        var service = CreateService(queue.Object, sessions.Object, handoff);
+
+        await DrainOneStreamAsync(service, StartRequest("test-queue", "s1", sessionIdleTimeoutSeconds: 1));
+
+        VerifyReleased(sessions, "s1", Times.Once);
+        Assert.Null(handoff.TryTake("test-queue"));
+    }
+
+    [Fact]
+    public async Task ConsumeSession_AnyAvailableEndedByClient_ReleasesImmediately()
+    {
+        var (queue, sessions) = DrainingMocks();
+        var handoff = CreateHandoff(sessions.Object);
+        var service = CreateService(queue.Object, sessions.Object, handoff);
+        var reader = new FakeAsyncStreamReader<ConsumeSessionRequest>();
+        var writer = new FakeServerStreamWriter<ConsumeSessionResponse>();
+        reader.Add(StartRequest("test-queue"));
+
+        var task = service.ConsumeSession(reader, writer, _mockContext.Object);
+        await WaitUntilAsync(() => writer.Written.Any(r => r.PayloadCase == ConsumeSessionResponse.PayloadOneofCase.SessionAssigned));
+        reader.Complete();
+        await task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        VerifyReleased(sessions, "s1", Times.Once);
+        Assert.Null(handoff.TryTake("test-queue"));
+    }
+
+    [Fact]
+    public async Task ConsumeSession_ReleaseAndAcceptFails_ReleasesTheTakenLease()
+    {
+        var (queue, sessions) = DrainingMocks();
+        sessions.Setup(i => i.InvokeMethodAsync<ActorModels.ReleaseAndAcceptSessionRequest, ActorModels.ReleaseAndAcceptSessionResponse>(
+                It.IsAny<ActorId>(), "ReleaseAndAcceptSession", It.IsAny<ActorModels.ReleaseAndAcceptSessionRequest>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ActorCallException(DeliveryOutcome.Unknown, new TimeoutException()));
+        var service = CreateService(queue.Object, sessions.Object, CreateHandoff(sessions.Object));
+        await DrainOneStreamAsync(service, StartRequest("test-queue", sessionIdleTimeoutSeconds: 1));
+
+        var reader = new FakeAsyncStreamReader<ConsumeSessionRequest>();
+        var writer = new FakeServerStreamWriter<ConsumeSessionResponse>();
+        reader.Add(StartRequest("test-queue"));
+        await Assert.ThrowsAsync<ActorCallException>(() => service.ConsumeSession(reader, writer, _mockContext.Object));
+
+        VerifyReleased(sessions, "s1", Times.Once);
+    }
 
     private static ConsumeSessionRequest StartRequest(
         string queueId, string? sessionId = null, int leaseSeconds = 30, int prefetchCount = 5, int sessionIdleTimeoutSeconds = 0)

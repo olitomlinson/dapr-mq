@@ -142,6 +142,15 @@ builder.Services.AddSingleton<ISessionCoordinatorActorInvoker>(sp =>
         sp.GetRequiredService<Dapr.Actors.Client.IActorProxyFactory>(),
         actorConfig.SessionCoordinatorActorTypeName));
 
+// A drained ConsumeSession stream's lease waits this long for the consumer's next stream, which then
+// ends it and claims in one coordinator turn (see SessionReleaseHandoff). 0 turns it off.
+builder.Services.AddSingleton(sp => new SessionReleaseHandoff(
+    sp.GetRequiredService<ISessionCoordinatorActorInvoker>(),
+    TimeSpan.FromMilliseconds(builder.Configuration.GetValue("DAPRMQ_SESSION_RELEASE_HANDOFF_MS", 500)),
+    TimeProvider.System,
+    sp.GetRequiredService<ILogger<SessionReleaseHandoff>>()));
+builder.Services.AddHostedService(sp => sp.GetRequiredService<SessionReleaseHandoff>());
+
 // Register CatalogActor invoker (dedicated invoker for CatalogActor operations, used by CatalogRegistrar)
 builder.Services.AddSingleton<ICatalogActorInvoker>(sp =>
     new CatalogActorInvoker(
