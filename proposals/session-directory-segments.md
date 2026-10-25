@@ -1,7 +1,8 @@
 # A segmented session directory
 
-> **Status: proposed (2026-10-25).** This is the detailed design for phase 1b, item 1, of
-> [session-coordinator-sharding.md](session-coordinator-sharding.md). All measurements are from kind (a laptop).
+> **Status: built (2026-10-25)**, as the detailed design for phase 1b, item 1, of
+> [session-coordinator-sharding.md](session-coordinator-sharding.md). Measured on kind (a laptop):
+> 10,000 sessions of 10 went from 171 to 395–453 msg/s. See [Results](#results).
 
 ## Context
 
@@ -266,6 +267,45 @@ hold work, so losing it strands their messages.
    - an old `metadata` becomes buckets and segments in one save, with order and counts kept
    - `metadata` is deleted
 7. **Reader:** `ReadSessionDirectoryAsync` merges 64 buckets and treats a missing bucket as empty.
+
+## Results
+
+r20, prefetch 1, lease 30 s, with each coordinator call timed. Before is `main` after
+[async registration](async-session-registration.md), which registers every session up front, so
+every save writes the whole directory from the start.
+
+| | Before (one blob) | Segmented |
+|---|---|---|
+| 10,000 sessions of 10: throughput | 171 msg/s | **395, 453 msg/s** (two runs) |
+| Combined release and claim, inside the turn | 56 ms | 21.5 ms |
+| Its save | 44 ms | 5.1 ms |
+| Gateway's wait per combined call | 8.1 s | 1.4 s |
+| 1,000 sessions of 100: throughput | 576 msg/s | 588 msg/s |
+| 1,000 sessions: the combined call's save | 11.4 ms | 4.7 ms |
+
+At 10,000 sessions the coordinator is still close to saturated: combined calls took 215 s of the
+253 s run. What's left of each 21.5 ms is mostly calls out of the turn:
+- registering the lease reminder (4.2 ms)
+- the lease sync to the new session's actor (3.7 ms)
+- clearing the old session's lease (3.4 ms)
+- unregistering the old reminder (a few ms)
+- the save (5.1 ms)
+
+Of those, the lease reminders are the cheapest to remove: a lapsed lease could be left to the
+eviction pass, at the cost of up to 30 s before its session is offered again. Sharding is what
+scales past a single coordinator's turn rate.
+
+**Activation cost.** 120 s into a 10,000-session drain, the worker pod hosting the coordinator was
+deleted. The coordinator reactivated on the other worker, then moved again when the replacement pod
+joined.
+- **Claims resumed within about 10 s.** For the next 10 s, combined calls averaged 44.6 ms (max
+  421 ms) while buckets were read cold, then settled at about 20–25 ms.
+- **The first eviction pass took 380 ms in one turn,** over its 250 ms budget, because it reads all 64
+  buckets cold. The catch-up passes that followed averaged 25 ms. That's acceptable as a one-off per
+  activation, so no mitigation is needed yet.
+- **The run drained fully.** All 100,000 messages, 0 FIFO violations, and 7 redeliveries: messages
+  in flight on the deleted worker, delivered at least once as designed. Throughput for that run was
+  274 msg/s: half the session actors also moved, and their in-flight leases had to lapse.
 
 ## Measuring it
 
