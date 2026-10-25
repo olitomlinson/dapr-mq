@@ -155,7 +155,7 @@ public class DaprTestEnvironment : IAsyncLifetime
 
         // 3. Start Dapr placement service
         _daprPlacementContainer = new ContainerBuilder()
-            .WithImage("ghcr.io/dapr/dapr:1.18.4")
+            .WithImage("ghcr.io/dapr/dapr:1.19.0")
             .WithNetwork(_network)
             .WithNetworkAliases("dapr-placement")
             .WithCommand("./placement", "-port", "50005")
@@ -174,7 +174,7 @@ public class DaprTestEnvironment : IAsyncLifetime
         for (var member = 0; member < topology.SchedulerReplicas; member++)
         {
             var schedulerBuilder = new ContainerBuilder()
-                .WithImage("ghcr.io/dapr/dapr:1.18.4")
+                .WithImage("ghcr.io/dapr/dapr:1.19.0")
                 .WithNetwork(_network)
                 .WithNetworkAliases(topology.SchedulerAlias(member))
                 .WithPortBinding(DaprTopology.SchedulerPort, true);
@@ -322,7 +322,7 @@ public class DaprTestEnvironment : IAsyncLifetime
         // Dapr sidecar (connects to its API server via Docker network). Mounts the components
         // directory from the project root (3 levels up from bin/Debug/net10.0).
         var daprSidecarBuilder = new ContainerBuilder()
-            .WithImage("ghcr.io/dapr/daprd:1.18.4")
+            .WithImage("ghcr.io/dapr/daprd:1.19.0")
             .WithNetwork(_network)
             .WithNetworkAliases(sidecarAliases)
             .WithCommand("./daprd",
@@ -517,7 +517,7 @@ public class DaprTestEnvironment : IAsyncLifetime
         await _operatorContainer.StartAsync();
 
         _operatorSidecarContainer = new ContainerBuilder()
-            .WithImage("ghcr.io/dapr/daprd:1.18.4")
+            .WithImage("ghcr.io/dapr/daprd:1.19.0")
             .WithNetwork(_network)
             .WithNetworkAliases(operatorSidecarAlias)
             .WithCommand("./daprd",

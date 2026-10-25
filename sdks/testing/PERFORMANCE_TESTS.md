@@ -26,10 +26,11 @@ can put the SDKs side by side.
 Each SDK's own Testcontainers fixture builds the perf stack. It's the integration stack
 ([INTEGRATION_TESTS.md](INTEGRATION_TESTS.md)) with these changes:
 
-- **Scheduler HA.** Three `ghcr.io/dapr/dapr:1.18.4` containers, aliases `dapr-scheduler-0..2`, each run as
+- **Scheduler HA.** Three `ghcr.io/dapr/dapr:1.19.0` containers, aliases `dapr-scheduler-0..2`, each run as
   `./scheduler --port 50006 --id dapr-scheduler-<i> --etcd-initial-cluster dapr-scheduler-0=http://dapr-scheduler-0:2380,dapr-scheduler-1=http://dapr-scheduler-1:2380,dapr-scheduler-2=http://dapr-scheduler-2:2380 --etcd-client-listen-address 0.0.0.0 --etcd-data-dir /tmp/etcd --override-broadcast-host-port dapr-scheduler-<i>:50006`.
   Every daprd gets `--scheduler-host-address dapr-scheduler-0:50006,dapr-scheduler-1:50006,dapr-scheduler-2:50006`.
-  This matches production. Placement stays as one container, since Dapr 1.19 folds it into the scheduler.
+  This matches production. Placement stays as one container. Dapr 1.19 can serve placement from the scheduler
+  (`--placement-enabled`), but that is opt-in, and measured no different on 2026-10-25.
 - **API replicas.** Replica *i* is `api-server-<i>` with its own sidecar `dapr-sidecar-<i>`
   (`--app-channel-address api-server-<i>`, same `--app-id daprmq-api`). The API server's
   `DAPR_HTTP_ENDPOINT`/`DAPR_GRPC_ENDPOINT` point at its own sidecar. Dapr spreads queue actors across
@@ -281,8 +282,8 @@ consumer and stream along the way, which the P-04 profiles need.
 - [ ] **Scheduler-heavy load.** The scheduler isn't on DaprMQ's hot paths today, so HA mostly matters
   for production parity. If a reminder- or job-driven feature (e.g. topic relay) becomes performance-relevant,
   add a profile for it, and include `schedulerReplicas` in the series key then.
-- [ ] **Dapr 1.19:** placement folds into the scheduler. When the images move to 1.19, drop the
-  placement container and `--placement-host-address` from every fixture.
+- [ ] **Scheduler-served placement.** Dapr 1.19 can serve placement from the scheduler (opt-in). If production
+  moves to it, drop the placement container and `--placement-host-address` from every fixture.
 
 ### Open decisions
 
