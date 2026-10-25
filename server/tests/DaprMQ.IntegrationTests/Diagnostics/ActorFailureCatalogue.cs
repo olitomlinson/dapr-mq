@@ -29,7 +29,7 @@ public class ActorFailureCatalogue(SplitTopologyFixture fixture)
 
         var env = fixture.Environment;
         _report.AppendLine("# Actor-call failure catalogue").AppendLine()
-            .AppendLine($"daprd 1.18.4, split topology (gateway `daprmq-gateway` → worker `daprmq-api`), {DateTime.UtcNow:u}").AppendLine();
+            .AppendLine($"daprd 1.19.0, split topology (gateway `daprmq-gateway` → worker `daprmq-api`), {DateTime.UtcNow:u}").AppendLine();
 
         await ModeAsync("0. Control: worker healthy", null, () => EnqueueAsync(NewQueue()));
 

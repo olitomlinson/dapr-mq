@@ -36,7 +36,7 @@ import java.util.function.Supplier;
  */
 public final class DaprMQServer implements AutoCloseable {
     public static final String API_IMAGE = System.getenv().getOrDefault("DAPRMQ_API_IMAGE", "daprmq-api:test");
-    private static final String DAPR_VERSION = "1.18.4";
+    private static final String DAPR_VERSION = "1.19.0";
     private static final String POSTGRES_PASSWORD = "test_password";
     private static final Duration STARTUP_TIMEOUT = Duration.ofSeconds(90);
 

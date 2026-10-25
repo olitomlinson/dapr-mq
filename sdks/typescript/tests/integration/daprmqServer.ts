@@ -18,7 +18,7 @@ import { join, resolve } from "node:path";
 import { GenericContainer, Network, type StartedNetwork, type StartedTestContainer } from "testcontainers";
 
 export const API_IMAGE = process.env.DAPRMQ_API_IMAGE ?? "daprmq-api:test";
-const DAPR_VERSION = "1.18.4";
+const DAPR_VERSION = "1.19.0";
 const POSTGRES_PASSWORD = "test_password";
 const COMPONENTS_DIR = resolve(import.meta.dirname, "../../../../server/tests/DaprMQ.IntegrationTests/dapr-components");
 const STARTUP_TIMEOUT_MS = 90_000;
