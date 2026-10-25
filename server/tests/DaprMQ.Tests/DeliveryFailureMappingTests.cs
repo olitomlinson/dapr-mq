@@ -200,14 +200,18 @@ public class DeliveryFailureMappingTests
     }
 
     [Fact]
-    public async Task Rest_EnqueueResultUnavailable_Returns503_WithRetryAfter()
+    public async Task Rest_EnqueueResultUnavailable_Returns503_WithRetryAfterAndTheNotDeliveredMarker()
     {
+        // Every SDK retries on the not-delivered marker (sdks/testing/RETRIES_AND_READINESS.md), so a
+        // session enqueue refused for want of its registration backstop is retried, not surfaced.
         var result = await CreateController(EnqueueReturnsUnavailable().Object).Enqueue("q", OneItem());
 
         var objectResult = Assert.IsType<DeliveryFailureResult>(result);
         Assert.Equal(503, objectResult.StatusCode);
         Assert.Equal("UNAVAILABLE", Assert.IsType<ApiErrorResponse>(objectResult.Value).ErrorCode);
-        Assert.Equal("1", Headers(result).RetryAfter);
+        var headers = Headers(result);
+        Assert.Equal("1", headers.RetryAfter);
+        Assert.Equal("not-delivered", headers["daprmq-delivery"]);
     }
 
     [Fact]
