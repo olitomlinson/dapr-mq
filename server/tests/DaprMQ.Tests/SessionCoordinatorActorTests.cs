@@ -22,9 +22,45 @@ public class SessionCoordinatorActorTests
         public List<string> UnregisteredReminders { get; } = [];
         public Dictionary<string, TimeSpan> ReminderDueTimes { get; } = [];
 
-        public SessionCoordinatorMetadata Metadata => (SessionCoordinatorMetadata)Data["metadata"];
         public DirectorySummary Summary => (DirectorySummary)Data["dir_summary"];
-        public SessionEntry Entry(string sessionId) => Metadata.SessionDirectory[sessionId];
+
+        /// <summary>Every entry, across the buckets.</summary>
+        public Dictionary<string, SessionEntry> Directory => Data
+            .Where(kv => kv.Key.StartsWith("dir_") && kv.Key != "dir_summary")
+            .SelectMany(kv => (Dictionary<string, SessionEntry>)kv.Value)
+            .ToDictionary(kv => kv.Key, kv => kv.Value);
+
+        public SessionEntry Entry(string sessionId) => Directory[sessionId];
+
+        /// <summary>The ReadyQueue's live ids, head first (stale items left out).</summary>
+        public List<string> ReadyQueue
+        {
+            get
+            {
+                var meta = Data.TryGetValue("ready_meta", out var m) ? (ReadyMeta)m : new ReadyMeta();
+                var directory = Directory;
+                var live = new List<string>();
+                for (long k = meta.Head; k <= meta.Tail; k++)
+                {
+                    if (Data.TryGetValue($"ready_{k}", out var segment))
+                    {
+                        live.AddRange(((List<ReadyItem>)segment)
+                            .Where(i => directory.TryGetValue(i.SessionId, out var e) && e.ReadySeq == i.Seq)
+                            .Select(i => i.SessionId));
+                    }
+                }
+                return live;
+            }
+        }
+
+        /// <summary>Takes the session out of the ReadyQueue the way the coordinator does: its item goes stale.</summary>
+        public void Unqueue(string sessionId)
+        {
+            var key = SessionDirectoryKeys.BucketKeyFor(sessionId);
+            var bucket = new Dictionary<string, SessionEntry>((Dictionary<string, SessionEntry>)Data[key]);
+            bucket[sessionId] = bucket[sessionId] with { ReadySeq = null };
+            Data[key] = bucket;
+        }
     }
 
     private static (Mock<IActorStateManager> mock, Dictionary<string, object> stateData) CreateMockStateManager()
@@ -34,6 +70,9 @@ public class SessionCoordinatorActorTests
 
         SetupTryGet<SessionCoordinatorMetadata>(mock, stateData);
         SetupTryGet<DirectorySummary>(mock, stateData);
+        SetupTryGet<Dictionary<string, SessionEntry>>(mock, stateData);
+        SetupTryGet<List<ReadyItem>>(mock, stateData);
+        SetupTryGet<ReadyMeta>(mock, stateData);
         SetupTryGet<SessionLockState>(mock, stateData);
 
         mock.Setup(m => m.SetStateAsync(It.IsAny<string>(), It.IsAny<object>(), It.IsAny<CancellationToken>()))
@@ -49,6 +88,9 @@ public class SessionCoordinatorActorTests
                 stateData.Remove(key);
                 return Task.CompletedTask;
             });
+
+        mock.Setup(m => m.TryRemoveStateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string key, CancellationToken ct) => stateData.Remove(key));
 
         mock.Setup(m => m.SaveStateAsync(It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
@@ -192,12 +234,51 @@ public class SessionCoordinatorActorTests
     }
 
     [Fact]
-    public async Task OnActivate_EmptyDirectory_RegistersNoEvictionReminder()
+    public async Task OnActivate_EmptyDirectory_RegistersNoEvictionReminder_AndWritesNothing()
     {
         var h = await CreateAsync();
 
         Assert.Empty(h.RegisteredReminders);
-        Assert.Equal(new DirectorySummary(), h.Summary);
+        Assert.Empty(h.Data);
+    }
+
+    [Fact]
+    public async Task OnActivate_ReadsOnlyTheSummary_NotTheBuckets()
+    {
+        var h = await CreateAsync();
+        await RegisterAsync(h, "order-1", "order-2");
+        h.State.Invocations.Clear();
+
+        var again = await CreateAsync(state: (h.State, h.Data));
+
+        again.State.Verify(m => m.TryGetStateAsync<Dictionary<string, SessionEntry>>(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never());
+        Assert.Contains(SessionCoordinatorActor.EvictionReminderName, again.RegisteredReminders);
+    }
+
+    [Fact]
+    public async Task OnActivate_OldSingleBlob_IsConvertedInOneSave()
+    {
+        var (mock, data) = CreateMockStateManager();
+        data["metadata"] = new SessionCoordinatorMetadata
+        {
+            SessionDirectory = new()
+            {
+                ["a"] = new SessionEntry { Active = true },
+                ["b"] = new SessionEntry { Active = true },
+                ["idle"] = new SessionEntry { IdleSince = 1 }
+            },
+            ReadyQueue = ["b", "a"]
+        };
+        data["dir_summary"] = new DirectorySummary { TotalCount = 3, ActiveCount = 2 };
+
+        var h = await CreateAsync(state: (mock, data));
+
+        Assert.False(h.Data.ContainsKey("metadata"));
+        Assert.Equal(["a", "b", "idle"], h.Directory.Keys.Order());
+        Assert.Equal(["b", "a"], h.ReadyQueue);
+        h.State.Verify(m => m.SaveStateAsync(It.IsAny<CancellationToken>()), Times.Once());
+        var claim = await h.Actor.AcceptSession(new AcceptSessionRequest());
+        Assert.Equal("b", claim.SessionId);
     }
 
     // --- RegisterSession ---
@@ -212,7 +293,7 @@ public class SessionCoordinatorActorTests
         Assert.True(result.Success);
         Assert.True(h.Entry("order-42").Active);
         Assert.True(h.Entry("order-42").Queued);
-        Assert.Equal(["order-42"], h.Metadata.ReadyQueue);
+        Assert.Equal(["order-42"], h.ReadyQueue);
         Assert.Equal(new DirectorySummary { TotalCount = 1, ActiveCount = 1 }, h.Summary);
     }
 
@@ -225,7 +306,7 @@ public class SessionCoordinatorActorTests
 
         await RegisterAsync(h, "order-42");
 
-        Assert.Equal(["order-42"], h.Metadata.ReadyQueue);
+        Assert.Equal(["order-42"], h.ReadyQueue);
         Assert.Equal(new DirectorySummary { TotalCount = 1, ActiveCount = 1 }, h.Summary);
         h.State.Verify(m => m.SaveStateAsync(It.IsAny<CancellationToken>()), Times.Never());
     }
@@ -238,7 +319,7 @@ public class SessionCoordinatorActorTests
         var result = await h.Actor.RegisterSession(new RegisterSessionRequest { SessionId = "" });
 
         Assert.False(result.Success);
-        Assert.Empty(h.Metadata.SessionDirectory);
+        Assert.Empty(h.Directory);
     }
 
     [Fact]
@@ -258,17 +339,13 @@ public class SessionCoordinatorActorTests
         var h = await CreateAsync();
         await MakeIdleAsync(h, "order-42");
         PlantLease(h, "order-42", secondsFromNow: 60);
-        var withoutStale = h.Metadata with { ReadyQueue = [] };
-        h.Data["metadata"] = withoutStale with
-        {
-            SessionDirectory = new(withoutStale.SessionDirectory) { ["order-42"] = h.Entry("order-42") with { Queued = false } }
-        };
+        h.Unqueue("order-42");
 
         await RegisterAsync(h, "order-42");
 
         Assert.True(h.Entry("order-42").Active);
         Assert.False(h.Entry("order-42").Queued);
-        Assert.Empty(h.Metadata.ReadyQueue);
+        Assert.Empty(h.ReadyQueue);
     }
 
     // --- ReportSessionChanges ---
@@ -316,7 +393,7 @@ public class SessionCoordinatorActorTests
         });
 
         Assert.Empty(response.Deferred);
-        Assert.False(h.Metadata.SessionDirectory.ContainsKey("order-99"));
+        Assert.False(h.Directory.ContainsKey("order-99"));
         h.State.Verify(m => m.SaveStateAsync(It.IsAny<CancellationToken>()), Times.Never());
     }
 
@@ -331,7 +408,7 @@ public class SessionCoordinatorActorTests
         await ReportAsync(h, "order-42", hasWork: true);
 
         Assert.True(h.Entry("order-42").Active);
-        Assert.Equal(["order-43", "order-42"], h.Metadata.ReadyQueue);
+        Assert.Equal(["order-43", "order-42"], h.ReadyQueue);
         Assert.Equal(2, h.Summary.ActiveCount);
     }
 
@@ -377,6 +454,74 @@ public class SessionCoordinatorActorTests
         Assert.False(reactivated.Entry("order-42").Active);
     }
 
+    // --- The ReadyQueue's stale items ---
+
+    [Fact]
+    public async Task AnyAvailable_StaleItemsAhead_AreDroppedWithoutLeaseReads_AndTheLiveOneIsClaimed()
+    {
+        var h = await CreateAsync();
+        await RegisterAsync(h, "gone-1", "gone-2", "live");
+        h.Unqueue("gone-1");
+        h.Unqueue("gone-2");
+        h.State.Invocations.Clear();
+
+        var claim = await h.Actor.AcceptSession(new AcceptSessionRequest());
+
+        Assert.Equal("live", claim.SessionId);
+        h.State.Verify(m => m.TryGetStateAsync<SessionLockState>("session-lock_gone-1", It.IsAny<CancellationToken>()), Times.Never());
+        h.State.Verify(m => m.TryGetStateAsync<SessionLockState>("session-lock_gone-2", It.IsAny<CancellationToken>()), Times.Never());
+    }
+
+    [Fact]
+    public async Task AnyAvailable_StaleDropsDontCountTowardTheClaimAttempts()
+    {
+        // 20 stale items ahead of a live one: more than MaxClaimAttempts (16), still claimed.
+        var h = await CreateAsync();
+        var gone = Enumerable.Range(0, 20).Select(i => $"gone-{i}").ToArray();
+        await RegisterAsync(h, [.. gone, "live"]);
+        foreach (var id in gone)
+        {
+            h.Unqueue(id);
+        }
+
+        var claim = await h.Actor.AcceptSession(new AcceptSessionRequest());
+
+        Assert.Equal("live", claim.SessionId);
+    }
+
+    [Fact]
+    public async Task AnyAvailable_StaleDropsStopAtTheirCap_AndTheNextClaimCarriesOn()
+    {
+        var h = await CreateAsync();
+        var gone = Enumerable.Range(0, 600).Select(i => $"gone-{i}").ToArray();
+        await RegisterAsync(h, [.. gone, "live"]);
+        foreach (var id in gone)
+        {
+            h.Unqueue(id);
+        }
+
+        var first = await h.Actor.AcceptSession(new AcceptSessionRequest());
+        var second = await h.Actor.AcceptSession(new AcceptSessionRequest());
+
+        Assert.Equal("NO_SESSIONS_AVAILABLE", first.ErrorCode);
+        Assert.Equal("live", second.SessionId);
+    }
+
+    [Fact]
+    public async Task AnyAvailable_Claim_WritesOnlyItsOwnBucket()
+    {
+        var h = await CreateAsync();
+        var ids = Enumerable.Range(0, 200).Select(i => $"s{i}").ToArray();
+        await RegisterAsync(h, ids);
+        h.State.Invocations.Clear();
+
+        var claim = await h.Actor.AcceptSession(new AcceptSessionRequest());
+
+        var written = h.State.Invocations.Where(i => i.Method.Name == "SetStateAsync").Select(i => (string)i.Arguments[0]).ToList();
+        Assert.Equal([SessionDirectoryKeys.BucketKeyFor(claim.SessionId!)], written.Where(k => k.StartsWith("dir_") && k != "dir_summary").Distinct());
+        Assert.Contains($"session-lock_{claim.SessionId}", written);
+    }
+
     // --- AcceptSession: targeted ---
 
     [Fact]
@@ -420,7 +565,7 @@ public class SessionCoordinatorActorTests
         var result = await h.Actor.AcceptSession(new AcceptSessionRequest { SessionId = "order-42" });
 
         Assert.Equal("SESSION_NOT_FOUND", result.ErrorCode);
-        Assert.False(h.Metadata.SessionDirectory.ContainsKey("order-42"));
+        Assert.False(h.Directory.ContainsKey("order-42"));
     }
 
     [Fact]
@@ -435,7 +580,7 @@ public class SessionCoordinatorActorTests
             Changes = [new SessionChange { SessionId = "a", HasWork = true }, new SessionChange { SessionId = "b", HasWork = true }]
         });
 
-        Assert.Equal(["a", "b"], h.Metadata.ReadyQueue);
+        Assert.Equal(["a", "b"], h.ReadyQueue);
         h.State.Verify(m => m.TryGetStateAsync<SessionLockState>(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never());
     }
 
@@ -538,8 +683,8 @@ public class SessionCoordinatorActorTests
         }
 
         Assert.Equal(["order-42", "order-43", "order-44"], claimed);
-        Assert.Empty(h.Metadata.ReadyQueue);
-        Assert.All(h.Metadata.SessionDirectory.Values, e => Assert.False(e.Queued));
+        Assert.Empty(h.ReadyQueue);
+        Assert.All(h.Directory.Values, e => Assert.False(e.Queued));
     }
 
     [Fact]
@@ -552,7 +697,7 @@ public class SessionCoordinatorActorTests
         var result = await h.Actor.AcceptSession(new AcceptSessionRequest());
 
         Assert.Equal("NO_SESSIONS_AVAILABLE", result.ErrorCode);
-        Assert.Empty(h.Metadata.ReadyQueue);
+        Assert.Empty(h.ReadyQueue);
         Assert.False(h.Entry("order-42").Queued);
     }
 
@@ -566,7 +711,7 @@ public class SessionCoordinatorActorTests
         var result = await h.Actor.AcceptSession(new AcceptSessionRequest());
 
         Assert.Equal("order-43", result.SessionId);
-        Assert.Empty(h.Metadata.ReadyQueue);
+        Assert.Empty(h.ReadyQueue);
     }
 
     [Fact]
@@ -595,7 +740,7 @@ public class SessionCoordinatorActorTests
         var result = await h.Actor.AcceptSession(new AcceptSessionRequest());
 
         Assert.Equal("order-43", result.SessionId);
-        Assert.Equal(["order-42"], h.Metadata.ReadyQueue);
+        Assert.Equal(["order-42"], h.ReadyQueue);
         Assert.True(h.Entry("order-42").Queued);
     }
 
@@ -613,7 +758,7 @@ public class SessionCoordinatorActorTests
         Assert.Equal("SESSION_ACTOR_UNAVAILABLE", result.ErrorCode);
         h.Invoker.Verify(i => i.InvokeMethodAsync<SetSessionLeaseRequest, SetSessionLeaseResponse>(
             It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<SetSessionLeaseRequest>(), It.IsAny<CancellationToken>()), Times.Once());
-        Assert.Equal(["order-42"], h.Metadata.ReadyQueue);
+        Assert.Equal(["order-42"], h.ReadyQueue);
     }
 
     // --- RenewSessionLease ---
@@ -745,7 +890,7 @@ public class SessionCoordinatorActorTests
         h.Invoker.Verify(i => i.InvokeMethodAsync<ClearSessionLeaseResponse>(
             It.Is<ActorId>(id => id.GetId() == "orders-session-order-42"), "ClearSessionLease", It.IsAny<CancellationToken>()), Times.Once());
         Assert.False(h.Entry("order-42").Active);
-        Assert.Empty(h.Metadata.ReadyQueue);
+        Assert.Empty(h.ReadyQueue);
         Assert.Equal(0, h.Summary.ActiveCount);
     }
 
@@ -761,7 +906,7 @@ public class SessionCoordinatorActorTests
 
         await h.Actor.ReleaseSession(new ReleaseSessionRequest { SessionId = "order-42", LeaseId = claim.LeaseId! });
 
-        Assert.Equal(["order-43", "order-42"], h.Metadata.ReadyQueue);
+        Assert.Equal(["order-43", "order-42"], h.ReadyQueue);
         Assert.True(h.Entry("order-42").Active);
         Assert.Equal(2, h.Summary.ActiveCount);
     }
@@ -778,7 +923,7 @@ public class SessionCoordinatorActorTests
         var result = await h.Actor.ReleaseSession(new ReleaseSessionRequest { SessionId = "order-42", LeaseId = claim.LeaseId! });
 
         Assert.True(result.Success);
-        Assert.Equal(["order-42"], h.Metadata.ReadyQueue);
+        Assert.Equal(["order-42"], h.ReadyQueue);
         Assert.True(h.Entry("order-42").Active);
     }
 
@@ -909,7 +1054,7 @@ public class SessionCoordinatorActorTests
         await h.Actor.ReceiveReminderAsync("session-order-42", [], TimeSpan.Zero, TimeSpan.Zero);
 
         Assert.False(h.Data.ContainsKey("session-lock_order-42"));
-        Assert.Equal(["order-42"], h.Metadata.ReadyQueue);
+        Assert.Equal(["order-42"], h.ReadyQueue);
     }
 
     [Fact]
@@ -923,7 +1068,7 @@ public class SessionCoordinatorActorTests
         await h.Actor.ReceiveReminderAsync("session-order-42", [], TimeSpan.Zero, TimeSpan.Zero);
 
         Assert.False(h.Entry("order-42").Active);
-        Assert.Empty(h.Metadata.ReadyQueue);
+        Assert.Empty(h.ReadyQueue);
     }
 
     [Fact]
@@ -938,7 +1083,7 @@ public class SessionCoordinatorActorTests
         PastLease();
         await h.Actor.ReceiveReminderAsync("session-order-42", [], TimeSpan.Zero, TimeSpan.Zero);
 
-        Assert.Equal(["order-42"], h.Metadata.ReadyQueue);
+        Assert.Equal(["order-42"], h.ReadyQueue);
     }
 
     [Fact]
@@ -980,8 +1125,8 @@ public class SessionCoordinatorActorTests
 
         await PassAsync(h);
 
-        Assert.False(h.Metadata.SessionDirectory.ContainsKey("order-42"));
-        Assert.DoesNotContain("order-42", h.Metadata.ReadyQueue);
+        Assert.False(h.Directory.ContainsKey("order-42"));
+        Assert.DoesNotContain("order-42", h.ReadyQueue);
         Assert.Equal(new DirectorySummary(), h.Summary);
         Assert.Contains(SessionCoordinatorActor.EvictionReminderName, h.UnregisteredReminders);
     }
@@ -996,7 +1141,7 @@ public class SessionCoordinatorActorTests
         await PassAsync(h);
 
         h.Reader.Verify(r => r.ReadSessionStateAsync(It.IsAny<ActorId>(), It.IsAny<CancellationToken>()), Times.Never());
-        Assert.True(h.Metadata.SessionDirectory.ContainsKey("order-42"));
+        Assert.True(h.Directory.ContainsKey("order-42"));
     }
 
     [Fact]
@@ -1004,18 +1149,14 @@ public class SessionCoordinatorActorTests
     {
         var h = await CreateAsync();
         await MakeIdleAsync(h, "order-42");
-        h.Data["metadata"] = h.Metadata with
-        {
-            ReadyQueue = [],
-            SessionDirectory = new(h.Metadata.SessionDirectory) { ["order-42"] = h.Entry("order-42") with { Queued = false } }
-        };
+        h.Unqueue("order-42");
         _time.Advance(TimeSpan.FromMinutes(11));
         SessionReads(h, "order-42", items: 4);
 
         await PassAsync(h);
 
         Assert.True(h.Entry("order-42").Active);
-        Assert.Equal(["order-42"], h.Metadata.ReadyQueue);
+        Assert.Equal(["order-42"], h.ReadyQueue);
         Assert.Equal(1, h.Summary.ActiveCount);
     }
 
@@ -1099,7 +1240,7 @@ public class SessionCoordinatorActorTests
 
         await PassAsync(h);
 
-        Assert.Equal(["order-42"], h.Metadata.ReadyQueue);
+        Assert.Equal(["order-42"], h.ReadyQueue);
         h.Reader.Verify(r => r.ReadSessionStateAsync(It.IsAny<ActorId>(), It.IsAny<CancellationToken>()), Times.Never());
     }
 
@@ -1130,7 +1271,7 @@ public class SessionCoordinatorActorTests
         await PassAsync(h);
 
         h.Reader.Verify(r => r.ReadSessionStateAsync(It.IsAny<ActorId>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
-        Assert.Single(h.Metadata.SessionDirectory);
+        Assert.Single(h.Directory);
         Assert.Contains(SessionCoordinatorActor.CatchUpReminderName, h.RegisteredReminders);
     }
 
@@ -1165,7 +1306,7 @@ public class SessionCoordinatorActorTests
 
         await h.Actor.ReceiveReminderAsync(SessionCoordinatorActor.CatchUpReminderName, [], TimeSpan.Zero, TimeSpan.Zero);
 
-        Assert.Empty(h.Metadata.SessionDirectory);
+        Assert.Empty(h.Directory);
     }
 
     [Fact]

@@ -50,8 +50,9 @@ public interface IQueueActorStateReader
     Task<QueueDepth> ReadQueueDepthAsync(ActorId actorId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Reads the session ids known to <paramref name="queueId"/>'s SessionCoordinatorActor. A missing
-    /// metadata key means no sessions; a failed request throws.
+    /// Reads the session ids known to <paramref name="queueId"/>'s SessionCoordinatorActor, merged
+    /// across its directory buckets (and the old single blob, until it's converted). A missing key
+    /// reads as empty; a failed request throws.
     /// </summary>
     Task<IReadOnlyCollection<string>> ReadSessionDirectoryAsync(string queueId, CancellationToken cancellationToken = default);
 
@@ -115,8 +116,19 @@ public class QueueActorStateReader : IQueueActorStateReader
     /// <inheritdoc />
     public async Task<IReadOnlyCollection<string>> ReadSessionDirectoryAsync(string queueId, CancellationToken cancellationToken = default)
     {
-        var metadata = await ReadStateAsync<SessionCoordinatorMetadata>(_sessionCoordinatorActorType, queueId, "metadata", cancellationToken);
-        return metadata?.SessionDirectory.Keys.ToArray() ?? [];
+        // The 64 buckets in parallel, plus the old single blob of a coordinator that hasn't activated
+        // since the directory was split (it converts on activation).
+        var buckets = Enumerable.Range(0, SessionDirectoryKeys.BucketCount)
+            .Select(n => ReadStateAsync<Dictionary<string, SessionEntry>>(_sessionCoordinatorActorType, queueId, SessionDirectoryKeys.BucketKey(n), cancellationToken))
+            .ToList();
+        var legacy = ReadStateAsync<SessionCoordinatorMetadata>(_sessionCoordinatorActorType, queueId, SessionDirectoryKeys.LegacyMetadataKey, cancellationToken);
+        await Task.WhenAll([.. buckets, legacy]);
+
+        return buckets.SelectMany(b => b.Result?.Keys ?? Enumerable.Empty<string>())
+            .Concat(legacy.Result?.SessionDirectory.Keys ?? Enumerable.Empty<string>())
+            .Distinct()
+            .Order(StringComparer.Ordinal)
+            .ToArray();
     }
 
     /// <inheritdoc />

@@ -121,6 +121,47 @@ public class AdminReadTests(DaprTestFixture fixture)
     }
 
     [Fact]
+    public async Task Queue_ManySessions_AreListedAndClaimableAcrossTheDirectorysBuckets()
+    {
+        // 500 sessions spread over all 64 directory buckets and five ReadyQueue segments.
+        var queueId = $"admin-many-{Guid.NewGuid():N}";
+        var ids = Enumerable.Range(0, 500).Select(i => $"s{i:D3}").ToList();
+        foreach (var chunk in ids.Chunk(50))
+        {
+            await Task.WhenAll(chunk.Select(id => EnqueueAsync(queueId, new { n = 1 }, sessionId: id)));
+        }
+
+        // Sessions register through their worker's reporter just after the enqueue.
+        var deadline = DateTime.UtcNow.AddSeconds(15);
+        QueueDetail detail;
+        while ((detail = await GetOkAsync<QueueDetail>($"queues/{queueId}")).SessionCount < 500 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(200);
+        }
+        Assert.Equal(500, detail.SessionCount);
+
+        var listed = new List<string>();
+        string? cursor = null;
+        do
+        {
+            var page = await GetOkAsync<AdminSessionPage>($"queues/{queueId}/sessions?limit=100{(cursor == null ? "" : $"&cursor={cursor}")}");
+            listed.AddRange(page.Items.Select(i => i.SessionId));
+            cursor = page.NextCursor;
+        }
+        while (cursor != null);
+        Assert.Equal(ids, listed);
+
+        var claimed = new HashSet<string>();
+        for (int i = 0; i < 500; i++)
+        {
+            var accept = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/sessions/accept", new { leaseSeconds = 30 });
+            Assert.Equal(HttpStatusCode.OK, accept.StatusCode);
+            claimed.Add((await accept.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>()).GetProperty("sessionId").GetString()!);
+        }
+        Assert.Equal(500, claimed.Count);
+    }
+
+    [Fact]
     public async Task Topic_ListsSubscribersWithLag()
     {
         var topicId = $"admin-t-{Guid.NewGuid():N}";
