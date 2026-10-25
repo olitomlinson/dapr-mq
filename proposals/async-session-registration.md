@@ -78,6 +78,50 @@ Today's ordering guarantees hold:
 - **The coordinator's deferral window still covers races between workers.** When a session actor
   moves between workers, the old worker's late Empty report is deferred.
 
+### Every successful enqueue is processed
+
+An enqueue that returns success must leave its session findable. A crash must not lose it, and
+neither must a restart. Without the direct call, between an enqueue returning and its report
+landing, "this session needs registering" exists only in the worker's memory:
+
+- **A crash in that window** (or an OOM kill, or the node being lost) takes the report with it. The
+  coordinator never learns of the session. Nothing scans for unknown sessions: the eviction pass only
+  checks known entries, and session actors aren't in the catalog. The messages would sit unseen until
+  another enqueue to that session.
+- **A graceful shutdown** (SIGTERM, a rolling restart) would cancel in-flight and pending reports, the
+  same loss for every unreported session on the worker.
+
+Today's code has the same gap, but only for registrations that fail or time out: about 30% of new
+sessions under load. Two additions close it:
+
+1. **A durable backstop on the enqueue path.**
+   - **When it's armed.** Before an enqueue stages anything, a session actor arms a one-shot reminder
+     (`session-registration`, 30 s) unless the coordinator has already accepted the session as Active
+     from this worker. It asks the reporter in-process (`IsReportedActive`). Once accepted, the
+     coordinator holds an entry for the session, and its eviction pass finds any work in it.
+   - **A lapsed lease counts as unknown,** because the coordinator may have ended it without telling
+     this worker.
+   - **If the reminder can't be armed, nothing is staged** and the enqueue fails as `UNAVAILABLE`: 503
+     with `Retry-After`, or gRPC `UNAVAILABLE`. A retry is then safe.
+   - **The reminder lives in the scheduler,** so it survives the worker.
+   - **When it fires,** possibly on a new worker, the session actor observes itself, so that worker's
+     reporter sends it. It stays armed until the coordinator has accepted the session.
+2. **Sending on shutdown.** On SIGTERM the reporter sends everything pending, Empty changes included,
+   before stopping. It waits at most `ReportCallTimeout` (5 s), and no longer than the host allows.
+
+The backstop's cost is bounded, so a session that flaps between empty and non-empty doesn't call the
+scheduler on every message:
+- **It's armed only when the coordinator doesn't already know.** While a consumer drains a session, or
+  it refills within the 30 s Empty debounce, the reporter's last-sent state stays Active, so nothing
+  is armed.
+- **At most one is pending per session,** so at most one scheduler call per session per 30 s.
+- **The remaining case** is sessions released with nothing left and revived each more than 30 s
+  apart. They arm one reminder per revival, which is still cheaper than today's coordinator turn per
+  revival.
+
+Enqueues to a session the coordinator doesn't yet know about now depend on the scheduler being
+available, as lease reminders already do.
+
 ### What callers see
 
 - **The enqueue returns before its session is registered.** At low load the session becomes
@@ -160,7 +204,8 @@ directory.
 
 ## Tests (TDD order, per CLAUDE.md)
 
-1. **Integration:**
+1. **Integration:** (the backstop and shutdown cases are covered by the unit tests below, since an
+   integration test can't kill a worker between an enqueue and its report)
    - publishing 2,000 new sessions completes while the coordinator is busy with claims, and no
      enqueue waits on it
    - an any-available accept retried after an enqueue claims the session within 1s
@@ -174,7 +219,14 @@ directory.
    - a batch over 500 is split into consecutive calls
    - a failed send retries with backoff, not on the tick
    - Empty changes still wait for the debounce and go on the tick
-4. **Coordinator:**
+4. **Backstop:**
+   - armed before anything is saved when the coordinator hasn't accepted the session
+   - not armed once it has, or while one is pending
+   - a failed arm fails the enqueue as `UNAVAILABLE` with nothing saved (503, gRPC `UNAVAILABLE`)
+   - plain queues never arm one
+   - firing re-arms until accepted, and not for an empty session
+   - on shutdown, pending changes are sent, bounded by the host's deadline
+5. **Coordinator:**
    - a batch of unknown sessions makes no lease reads
    - a targeted accept for an unregistered session with items reads its state, registers it and
      claims it in one turn
