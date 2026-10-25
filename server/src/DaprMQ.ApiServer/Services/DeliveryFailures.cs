@@ -27,6 +27,18 @@ public static class DeliveryFailures
         ? "DaprMQ is temporarily unavailable; the operation was not performed and can be retried."
         : "The operation's outcome is unknown: it may or may not have been performed.";
 
+    /// <summary>
+    /// An actor result saying nothing was done (ErrorCode UNAVAILABLE), raised as the delivery failure
+    /// it's equivalent to, so it maps to 503 + Retry-After or gRPC UNAVAILABLE like any other.
+    /// </summary>
+    public static void ThrowIfUnavailable(string? errorCode, string? message)
+    {
+        if (errorCode == UnavailableCode)
+        {
+            throw new ActorCallException(DeliveryOutcome.NotDelivered, new InvalidOperationException(message ?? "Not performed"));
+        }
+    }
+
     public static RpcException ToRpcException(ActorCallException ex) => new(
         new Status(ex.Outcome == DeliveryOutcome.NotDelivered ? StatusCode.Unavailable : StatusCode.Unknown, Message(ex.Outcome)),
         new Metadata { { MarkerHeader, Marker(ex.Outcome) } });

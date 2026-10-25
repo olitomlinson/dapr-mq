@@ -140,7 +140,7 @@ public record IdempotencyMarker
 /// QueueActor - A FIFO queue-based Dapr actor with priority support.
 /// Implements segmented storage (100 items per segment) for scalable queue operations.
 /// </summary>
-public class QueueActor : Actor, IQueueActor
+public class QueueActor : Actor, IQueueActor, IRemindable
 {
     private readonly IQueueActorInvoker _actorInvoker;
     private readonly IBlobReaperActorInvoker _blobReaperActorInvoker;
@@ -153,9 +153,11 @@ public class QueueActor : Actor, IQueueActor
     private readonly ISessionActivityReporter _sessionActivityReporter;
     private readonly SessionDirectoryConfig _sessionDirectoryConfig;
 
-    // Session actors only: RegisterSession has been sent on this activation's first non-empty save.
-    // Memory only, so every activation registers again once it has work.
-    private bool _registeredThisActivation;
+    internal const string RegistrationBackstopReminder = "session-registration";
+
+    // Session actors only: a registration backstop reminder is armed and hasn't fired yet. Memory
+    // only; after a crash the reminder itself survives, so at most one extra is armed.
+    private bool _registrationBackstopPending;
 
     // The lapsed lease this activation has already told the reporter about (see AfterActorMethodAsync).
     private string? _expiredLeaseReported;
@@ -475,19 +477,79 @@ public class QueueActor : Actor, IQueueActor
         }
     }
 
+    /// <summary>
+    /// Session actors only. Registration is the worker reporter's job and isn't durable: a worker that
+    /// stops before its report lands takes the report with it. So unless the coordinator has already
+    /// accepted this session as Active (it then holds an entry, and its eviction pass finds any work),
+    /// an enqueue first arms a one-shot reminder in the scheduler, which is durable. Returns false if
+    /// it couldn't be armed, in which case the enqueue must not succeed. At most one is pending.
+    /// </summary>
+    private async Task<bool> TryArmRegistrationBackstopAsync(ActorMetadata metadata)
+    {
+        if (!TryGetSessionIdentity(out var queueId, out var sessionId) || _registrationBackstopPending)
+        {
+            return true;
+        }
+
+        // A lapsed lease may have been ended by the coordinator without telling this worker.
+        bool leaseLapsed = metadata.ActiveSessionLeaseId != null
+            && metadata.ActiveSessionLeaseExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        if (_sessionActivityReporter.IsReportedActive(queueId, sessionId) && !leaseLapsed)
+        {
+            return true;
+        }
+
+        try
+        {
+            await ArmRegistrationBackstopAsync();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Could not arm the registration backstop for session {SessionId} of queue {QueueId}", sessionId, queueId);
+            return false;
+        }
+    }
+
+    private async Task ArmRegistrationBackstopAsync()
+    {
+        await RegisterReminderAsync(RegistrationBackstopReminder, null, _sessionDirectoryConfig.RegistrationBackstop, TimeSpan.FromMilliseconds(-1));
+        _registrationBackstopPending = true;
+    }
+
+    /// <summary>
+    /// The registration backstop. Possibly on a new worker after the old one stopped: observing the
+    /// session makes this worker's reporter send it. Until the coordinator has accepted it, the
+    /// backstop stays armed.
+    /// </summary>
+    public async Task ReceiveReminderAsync(string reminderName, byte[] state, TimeSpan dueTime, TimeSpan period)
+    {
+        if (reminderName != RegistrationBackstopReminder)
+        {
+            return;
+        }
+
+        _registrationBackstopPending = false;
+        if (!TryGetSessionIdentity(out var queueId, out var sessionId) || RemainingItems(await GetMetadataAsync()) == 0)
+        {
+            return;
+        }
+
+        _sessionActivityReporter.Observe(queueId, sessionId, hasWork: true);
+        if (!_sessionActivityReporter.IsReportedActive(queueId, sessionId))
+        {
+            await ArmRegistrationBackstopAsync();
+        }
+    }
+
     protected override Task OnPostActorMethodAsync(ActorMethodContext actorMethodContext) =>
         AfterActorMethodAsync(actorMethodContext.MethodName);
 
     /// <summary>
     /// Session actors only, after every successful method: tells the worker's reporter whether the
-    /// session has work (in-process), and on this activation's first non-empty save registers
-    /// directly with the SessionCoordinatorActor, so a new or reactivated session is claimable as
-    /// soon as the call returns. Best-effort: a failed registration is left to the reporter, which
-    /// still has the session as unsent.
-    ///
-    /// Skipped for SetSessionLease/ClearSessionLease: those come from the coordinator itself, which
-    /// learns the session's state from them, and calling back into it mid-turn would be an
-    /// A -> B -> A chain.
+    /// session has work (in-process). The reporter registers a session that gets work with the
+    /// SessionCoordinatorActor straight away, outside this turn, so an enqueue never waits on the
+    /// coordinator (see proposals/async-session-registration.md).
     ///
     /// A lease end changes what the coordinator believes without a report from this worker, so the
     /// reporter's record has to follow it. On release, the coordinator marks the session Idle exactly
@@ -504,47 +566,16 @@ public class QueueActor : Actor, IQueueActor
 
         var metadata = await GetMetadataAsync();
         bool hasWork = RemainingItems(metadata) > 0;
-        _sessionActivityReporter.Observe(queueId, sessionId, hasWork);
+        bool leaseEnded = methodName == nameof(ClearSessionLease);
+        _sessionActivityReporter.Observe(queueId, sessionId, hasWork, reported: leaseEnded);
 
-        if (methodName == nameof(ClearSessionLease))
-        {
-            _sessionActivityReporter.MarkReported(queueId, sessionId, hasWork);
-        }
-        else if (metadata.ActiveSessionLeaseId is { } leaseId
+        if (!leaseEnded
+            && metadata.ActiveSessionLeaseId is { } leaseId
             && metadata.ActiveSessionLeaseExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds()
             && leaseId != _expiredLeaseReported)
         {
             _expiredLeaseReported = leaseId;
             _sessionActivityReporter.ResetReported(queueId, sessionId);
-        }
-
-        if (!hasWork || _registeredThisActivation
-            || methodName is nameof(SetSessionLease) or nameof(ClearSessionLease))
-        {
-            return;
-        }
-
-        _registeredThisActivation = true;
-        try
-        {
-            // Bounded: this turn holds the session's lock, and a coordinator turn waiting on this
-            // session (SetSessionLease, ClearSessionLease) can't answer until it ends. The timeout
-            // breaks that cycle; the reporter still has the session as unsent.
-            using var timeout = new CancellationTokenSource(_sessionDirectoryConfig.RegisterSessionTimeout);
-            var result = await _sessionCoordinatorActorInvoker.InvokeMethodAsync<RegisterSessionRequest, RegisterSessionResponse>(
-                new ActorId(queueId),
-                "RegisterSession",
-                new RegisterSessionRequest { SessionId = sessionId },
-                timeout.Token);
-
-            if (result.Success)
-            {
-                _sessionActivityReporter.MarkReported(queueId, sessionId, hasWork: true);
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.LogWarning(ex, "RegisterSession failed for session {SessionId} of queue {QueueId}; the reporter will send it", sessionId, queueId);
         }
     }
 
@@ -1234,6 +1265,19 @@ public class QueueActor : Actor, IQueueActor
             {
                 int tail = metadata.Queues.TryGetValue(priority, out var queueMeta) ? queueMeta.TailSegment : 0;
                 await StateManager.TryGetStateAsync<Queue<QueueSegmentItem>>($"queue_{priority}_seg_{tail}");
+            }
+
+            // Before anything is staged: a session the coordinator may not know about must have a
+            // durable way to be registered before this enqueue can succeed.
+            if (!await TryArmRegistrationBackstopAsync(metadata))
+            {
+                return new EnqueueResponse
+                {
+                    Success = false,
+                    ItemsEnqueued = 0,
+                    ErrorCode = "UNAVAILABLE",
+                    ErrorMessage = "Session registration backstop could not be armed; nothing was enqueued"
+                };
             }
 
             int totalEnqueued = 0;

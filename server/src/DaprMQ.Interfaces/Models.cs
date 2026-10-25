@@ -193,6 +193,12 @@ public record EnqueueResponse
     public bool Success { get; init; }
 
     /// <summary>
+    /// Null on success. UNAVAILABLE: nothing was enqueued and a retry is safe (a session's
+    /// registration backstop couldn't be armed).
+    /// </summary>
+    public string? ErrorCode { get; init; }
+
+    /// <summary>
     /// Number of items enqueued.
     /// </summary>
     public int ItemsEnqueued { get; init; }

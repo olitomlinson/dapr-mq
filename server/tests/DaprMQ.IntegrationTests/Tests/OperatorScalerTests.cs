@@ -84,7 +84,7 @@ public class OperatorScalerTests(OperatorTestFixture fixture)
         await EnqueueAsync(queueId, 2, "a");
         await EnqueueAsync(queueId, 3, "b");
 
-        // Each session registers with its coordinator on its first enqueue; allow for the operator's depth cache.
+        // Each session registers through its worker's reporter just after its first enqueue; allow for that and the operator's depth cache.
         var deadline = DateTime.UtcNow.AddSeconds(15);
         double sessions;
         while ((sessions = await GetMetricAsync(Ref(queueId, ("mode", "sessions")))) < 2 && DateTime.UtcNow < deadline)

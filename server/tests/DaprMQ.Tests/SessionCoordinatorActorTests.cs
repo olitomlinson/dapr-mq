@@ -391,6 +391,55 @@ public class SessionCoordinatorActorTests
     }
 
     [Fact]
+    public async Task AcceptSession_Targeted_EnqueuedButNotYetRegistered_RegistersAndClaimsInOneTurn()
+    {
+        // The reporter registers a new session shortly after its enqueue; a targeted accept in
+        // between reads the session itself.
+        var h = await CreateAsync();
+        SessionReads(h, "order-42", items: 3);
+        h.State.Invocations.Clear();
+
+        var result = await h.Actor.AcceptSession(new AcceptSessionRequest { SessionId = "order-42" });
+
+        Assert.True(result.Success);
+        Assert.Equal("order-42", result.SessionId);
+        Assert.True(h.Entry("order-42").Active);
+        Assert.Equal(1, h.Summary.TotalCount);
+        Assert.Equal(1, h.Summary.ActiveCount);
+        Assert.True(h.Data.ContainsKey("session-lock_order-42"));
+        h.State.Verify(m => m.SaveStateAsync(It.IsAny<CancellationToken>()), Times.Once());
+    }
+
+    [Fact]
+    public async Task AcceptSession_Targeted_UnknownSessionReadFails_ReturnsSessionNotFound()
+    {
+        var h = await CreateAsync();
+        h.Reader.Setup(r => r.ReadSessionStateAsync(It.IsAny<ActorId>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("sidecar down"));
+
+        var result = await h.Actor.AcceptSession(new AcceptSessionRequest { SessionId = "order-42" });
+
+        Assert.Equal("SESSION_NOT_FOUND", result.ErrorCode);
+        Assert.False(h.Metadata.SessionDirectory.ContainsKey("order-42"));
+    }
+
+    [Fact]
+    public async Task ReportSessionChanges_UnknownSessions_MakeNoLeaseReads()
+    {
+        // A session with no entry has never been claimed, so a batch of new sessions reads no leases.
+        var h = await CreateAsync();
+        h.State.Invocations.Clear();
+
+        await h.Actor.ReportSessionChanges(new ReportSessionChangesRequest
+        {
+            Changes = [new SessionChange { SessionId = "a", HasWork = true }, new SessionChange { SessionId = "b", HasWork = true }]
+        });
+
+        Assert.Equal(["a", "b"], h.Metadata.ReadyQueue);
+        h.State.Verify(m => m.TryGetStateAsync<SessionLockState>(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never());
+    }
+
+    [Fact]
     public async Task AcceptSession_Targeted_ClaimsAndSyncsLease()
     {
         var h = await CreateAsync();

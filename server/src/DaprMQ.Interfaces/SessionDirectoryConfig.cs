@@ -6,22 +6,32 @@ namespace DaprMQ.Interfaces;
 /// </summary>
 public class SessionDirectoryConfig
 {
-    /// <summary>How often a worker's reporter sends changes.</summary>
+    /// <summary>
+    /// How often a worker's reporter sends Empty changes, and resends anything unsent. A session that
+    /// gets work is sent straight away, not on the tick.
+    /// </summary>
     public TimeSpan ReportTick { get; init; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>First wait before retrying a failed report; doubles up to <see cref="ReportRetryMax"/>.</summary>
+    public TimeSpan ReportRetryInitial { get; init; } = TimeSpan.FromMilliseconds(100);
+
+    public TimeSpan ReportRetryMax { get; init; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>Most changes in one report call, so one coordinator turn stays short.</summary>
+    public int ReportBatchMax { get; init; } = 500;
+
+    /// <summary>
+    /// When a session actor's one-shot registration backstop fires. Armed before an enqueue saves,
+    /// whenever the coordinator hasn't accepted the session as Active, so a session whose report
+    /// was lost with its worker is still registered.
+    /// </summary>
+    public TimeSpan RegistrationBackstop { get; init; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
     /// Upper bound on one report call. Must stay below <see cref="DeferralWindow"/>, which relies on
     /// no report arriving later than this.
     /// </summary>
     public TimeSpan ReportCallTimeout { get; init; } = TimeSpan.FromSeconds(5);
-
-    /// <summary>
-    /// Timeout on a session's direct RegisterSession call, made inside its own turn. A coordinator
-    /// turn that is waiting on the same session (SetSessionLease, ClearSessionLease) can't answer it,
-    /// so the timeout is what breaks that cycle; the reporter then sends the change on its next tick.
-    /// Keep it well above a normal coordinator turn, or new sessions fall back to the reporter.
-    /// </summary>
-    public TimeSpan RegisterSessionTimeout { get; init; } = TimeSpan.FromSeconds(2);
 
     /// <summary>How long a session must stay empty before its reporter says so.</summary>
     public TimeSpan EmptyDebounce { get; init; } = TimeSpan.FromSeconds(30);

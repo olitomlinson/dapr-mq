@@ -188,4 +188,38 @@ public class DeliveryFailureMappingTests
         Assert.Equal(marker, ex.Trailers.GetValue("daprmq-delivery"));
         Assert.DoesNotContain("actor", ex.Status.Detail, StringComparison.OrdinalIgnoreCase);
     }
+
+    // An enqueue that saved nothing because a session's registration backstop couldn't be armed.
+    private static Mock<IQueueActorInvoker> EnqueueReturnsUnavailable()
+    {
+        var invoker = new Mock<IQueueActorInvoker>();
+        invoker.Setup(i => i.InvokeMethodAsync<ActorModels.EnqueueRequest, ActorModels.EnqueueResponse>(
+                It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<ActorModels.EnqueueRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.EnqueueResponse { Success = false, ErrorCode = "UNAVAILABLE", ErrorMessage = "backstop" });
+        return invoker;
+    }
+
+    [Fact]
+    public async Task Rest_EnqueueResultUnavailable_Returns503_WithRetryAfter()
+    {
+        var result = await CreateController(EnqueueReturnsUnavailable().Object).Enqueue("q", OneItem());
+
+        var objectResult = Assert.IsType<DeliveryFailureResult>(result);
+        Assert.Equal(503, objectResult.StatusCode);
+        Assert.Equal("UNAVAILABLE", Assert.IsType<ApiErrorResponse>(objectResult.Value).ErrorCode);
+        Assert.Equal("1", Headers(result).RetryAfter);
+    }
+
+    [Fact]
+    public async Task Grpc_EnqueueResultUnavailable_ReturnsUnavailable()
+    {
+        var service = new DaprMQGrpcService(new Mock<ILogger<DaprMQGrpcService>>().Object, EnqueueReturnsUnavailable().Object, new Mock<ISessionCoordinatorActorInvoker>().Object);
+        var request = new ApiServer.Grpc.EnqueueRequest { QueueId = "q" };
+        request.Items.Add(new ApiServer.Grpc.EnqueueItem { ItemJson = "{\"n\":1}", Priority = 1 });
+
+        var ex = await Assert.ThrowsAsync<RpcException>(() => service.Enqueue(request, new Mock<ServerCallContext>().Object));
+
+        Assert.Equal(StatusCode.Unavailable, ex.StatusCode);
+        Assert.Equal("not-delivered", ex.Trailers.GetValue("daprmq-delivery"));
+    }
 }
