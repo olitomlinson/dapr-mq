@@ -38,6 +38,22 @@ public class SessionRunRecordTests
     }
 
     [Fact]
+    public void Profile_NamesTheSessionLength_WhenItIsNotTheDefault100()
+    {
+        // 10,000 sessions of 10 load the coordinator far more than 1,000 of 100; they chart apart.
+        var shortSessions = Settings.Parse(new Dictionary<string, string>
+        {
+            ["QUEUE_ID"] = "tp-1", ["WORKLOAD"] = "sessions", ["REPLICAS"] = "20", ["SESSIONS"] = "10000",
+            ["ENV_LABEL"] = "ci-ubuntu-latest", ["GATEWAY_REPLICAS"] = "3"
+        });
+
+        var run = Build(shortSessions, Drained());
+
+        Assert.Equal("k8s-session-drain-10per-r20", run["scenario"]!["profile"]!.GetValue<string>());
+        Assert.StartsWith("k8s-sessions:10000x10@", run["scenario"]!["key"]!.GetValue<string>());
+    }
+
+    [Fact]
     public void Key_GroupsOnlyRunsOfTheSameShape()
     {
         Assert.Equal("k8s-sessions:1000x100@200ms/10slots/prefetch1/lease30s/idle1s/replicas20",

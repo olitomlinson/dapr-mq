@@ -1,6 +1,6 @@
 name: Performance (extreme)
 
-# The `extreme` scale of sdks/testing/PERFORMANCE_TESTS.md, run only by hand: concurrency ramps up
+# The `extreme` scale of sdks/testing/PERFORMANCE_TESTS.md, run nightly and by hand: concurrency ramps up
 # to 256 workers and the big session drains, against a scaled-out Testcontainers stack (N API
 # replicas behind nginx, 3-node scheduler HA). Each SDK runs in its own job on its own stack, then
 # one job builds the cross-SDK report. Expect ~2h for the full suite on a standard runner.
@@ -11,10 +11,20 @@ name: Performance (extreme)
 # The k8s-throughput job is different: it deploys DaprMQ, Dapr, Postgres and KEDA onto a kind cluster
 # on the runner and runs tools/k8s-throughput twice, for a queue and for sessions (KEDA-scaled competing
 # or session consumers draining a backlog,
-# once per replica count). Its records use the same schema, as P-05 queue drains with profiles
-# k8s-queue-drain-r<N>, and publish alongside the SDK runs under sdk-dotnet-k8s.
+# once per replica count), then for short sessions, 10,000 of 10, where the session coordinator is
+# the limit. Its records use the same schema, as P-05 queue drains (k8s-queue-drain-r<N>) and P-04
+# session drains (k8s-session-drain-r<N>, k8s-session-drain-10per-r<N>), and publish alongside the
+# SDK runs under sdk-dotnet-k8s.
+#
+# The k8s-failover job deletes the pod hosting a session queue's coordinator part-way through a
+# drain, and fails unless every message is still handled, in order.
+#
+# On the nightly schedule no inputs are given, so every input below is read with its default as a
+# fallback.
 
 on:
+  schedule:
+    - cron: '0 1 * * *' # nightly, before perf.yml's 04:00 run
   workflow_dispatch:
     inputs:
       api_replicas:
@@ -69,6 +79,18 @@ on:
         description: 'Extra run.sh options for the session series, for example "--publish-jitter 30 --session-length-jitter 50"'
         required: false
         default: ''
+      k8s_short_sessions:
+        description: 'Also run short sessions: the backlog over 10,000 sessions of 10 (k8s-session-drain-10per-r<N>)'
+        type: boolean
+        default: true
+      k8s_short_replicas:
+        description: 'Consumer replica counts for the short-session series'
+        required: false
+        default: '10,20'
+      k8s_failover:
+        description: "Run the failover check: delete the session coordinator's host mid-drain"
+        type: boolean
+        default: true
       publish:
         description: 'Commit results to the perf-results branch'
         type: boolean
@@ -114,8 +136,8 @@ jobs:
   dotnet:
     name: .NET SDK
     needs: build-image
-    if: inputs.dotnet
-    runs-on: ${{ inputs.runner }}
+    if: (inputs.dotnet != false)
+    runs-on: ${{ (inputs.runner || 'ubuntu-latest') }}
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
@@ -130,9 +152,9 @@ jobs:
 
       - name: Run extreme profiles
         env:
-          PROFILES: ${{ inputs.profiles }}
-          REPLICAS: ${{ inputs.api_replicas }}
-          ENV_LABEL: ci-${{ inputs.runner }}
+          PROFILES: ${{ (inputs.profiles || 'all') }}
+          REPLICAS: ${{ (inputs.api_replicas || '3') }}
+          ENV_LABEL: ci-${{ (inputs.runner || 'ubuntu-latest') }}
         run: |
           common=(--env-label "$ENV_LABEL" --out perf-results --api-replicas "$REPLICAS")
           if [[ "$PROFILES" == "all" ]]; then
@@ -155,8 +177,8 @@ jobs:
   python:
     name: Python SDK
     needs: build-image
-    if: inputs.python
-    runs-on: ${{ inputs.runner }}
+    if: (inputs.python != false)
+    runs-on: ${{ (inputs.runner || 'ubuntu-latest') }}
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
@@ -180,9 +202,9 @@ jobs:
       - name: Run extreme profiles
         working-directory: sdks/python
         env:
-          PROFILES: ${{ inputs.profiles }}
-          REPLICAS: ${{ inputs.api_replicas }}
-          ENV_LABEL: ci-${{ inputs.runner }}
+          PROFILES: ${{ (inputs.profiles || 'all') }}
+          REPLICAS: ${{ (inputs.api_replicas || '3') }}
+          ENV_LABEL: ci-${{ (inputs.runner || 'ubuntu-latest') }}
         run: |
           perf() { python -m perf $1; }
           common="--env-label $ENV_LABEL --out ../../perf-results --api-replicas $REPLICAS"
@@ -206,8 +228,8 @@ jobs:
   typescript:
     name: TypeScript SDK
     needs: build-image
-    if: inputs.typescript
-    runs-on: ${{ inputs.runner }}
+    if: (inputs.typescript != false)
+    runs-on: ${{ (inputs.runner || 'ubuntu-latest') }}
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
@@ -233,9 +255,9 @@ jobs:
       - name: Run extreme profiles
         working-directory: sdks/typescript
         env:
-          PROFILES: ${{ inputs.profiles }}
-          REPLICAS: ${{ inputs.api_replicas }}
-          ENV_LABEL: ci-${{ inputs.runner }}
+          PROFILES: ${{ (inputs.profiles || 'all') }}
+          REPLICAS: ${{ (inputs.api_replicas || '3') }}
+          ENV_LABEL: ci-${{ (inputs.runner || 'ubuntu-latest') }}
         run: |
           perf() { npm run perf -- $1; }
           common="--env-label $ENV_LABEL --out ../../perf-results --api-replicas $REPLICAS"
@@ -259,8 +281,8 @@ jobs:
   java:
     name: Java SDK
     needs: build-image
-    if: inputs.java
-    runs-on: ${{ inputs.runner }}
+    if: (inputs.java != false)
+    runs-on: ${{ (inputs.runner || 'ubuntu-latest') }}
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
@@ -282,9 +304,9 @@ jobs:
       - name: Run extreme profiles
         working-directory: sdks/java
         env:
-          PROFILES: ${{ inputs.profiles }}
-          REPLICAS: ${{ inputs.api_replicas }}
-          ENV_LABEL: ci-${{ inputs.runner }}
+          PROFILES: ${{ (inputs.profiles || 'all') }}
+          REPLICAS: ${{ (inputs.api_replicas || '3') }}
+          ENV_LABEL: ci-${{ (inputs.runner || 'ubuntu-latest') }}
         run: |
           perf() { mvn -B -q -Pperf test-compile exec:exec -Dperf.args="$1"; }
           common="--env-label $ENV_LABEL --out ../../perf-results --api-replicas $REPLICAS"
@@ -307,8 +329,8 @@ jobs:
 
   k8s-throughput:
     name: Kubernetes throughput (KEDA)
-    if: inputs.k8s_throughput
-    runs-on: ${{ inputs.runner }}
+    if: (inputs.k8s_throughput != false)
+    runs-on: ${{ (inputs.runner || 'ubuntu-latest') }}
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
@@ -330,11 +352,11 @@ jobs:
 
       - name: Throughput runs
         env:
-          REPLICAS: ${{ inputs.k8s_replicas }}
-          MESSAGES: ${{ inputs.k8s_messages }}
-          REPEATS: ${{ inputs.k8s_repeats }}
-          FAST: ${{ inputs.k8s_fast_scale_up && '--fast-scale-up' || '' }}
-          ENV_LABEL: ci-k8s-${{ inputs.runner }}
+          REPLICAS: ${{ (inputs.k8s_replicas || '2,5,10,20') }}
+          MESSAGES: ${{ (inputs.k8s_messages || '100000') }}
+          REPEATS: ${{ (inputs.k8s_repeats || '1') }}
+          FAST: ${{ (inputs.k8s_fast_scale_up != false) && '--fast-scale-up' || '' }}
+          ENV_LABEL: ci-k8s-${{ (inputs.runner || 'ubuntu-latest') }}
         run: |
           set -o pipefail
           status=0
@@ -354,12 +376,12 @@ jobs:
       - name: Session throughput runs
         if: ${{ !cancelled() }}
         env:
-          REPLICAS: ${{ inputs.k8s_replicas }}
-          MESSAGES: ${{ inputs.k8s_messages }}
-          REPEATS: ${{ inputs.k8s_repeats }}
-          FAST: ${{ inputs.k8s_fast_scale_up && '--fast-scale-up' || '' }}
+          REPLICAS: ${{ (inputs.k8s_replicas || '2,5,10,20') }}
+          MESSAGES: ${{ (inputs.k8s_messages || '100000') }}
+          REPEATS: ${{ (inputs.k8s_repeats || '1') }}
+          FAST: ${{ (inputs.k8s_fast_scale_up != false) && '--fast-scale-up' || '' }}
           SESSION_ARGS: ${{ inputs.k8s_session_args }}
-          ENV_LABEL: ci-k8s-${{ inputs.runner }}
+          ENV_LABEL: ci-k8s-${{ (inputs.runner || 'ubuntu-latest') }}
         run: |
           set -o pipefail
           status=0
@@ -371,6 +393,31 @@ jobs:
             echo '## Kubernetes session throughput'
             echo '```'
             sed -n '/== results/,$p' session-throughput.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      # Short sessions, 10,000 of 10: the same backlog, ten times the claims, so the session
+      # coordinator rather than the consumers is the limit (k8s-session-drain-10per-r<N>).
+      - name: Short-session throughput runs
+        if: ${{ !cancelled() && (inputs.k8s_short_sessions != false) }}
+        env:
+          REPLICAS: ${{ (inputs.k8s_short_replicas || '10,20') }}
+          MESSAGES: ${{ (inputs.k8s_messages || '100000') }}
+          REPEATS: ${{ (inputs.k8s_repeats || '1') }}
+          FAST: ${{ (inputs.k8s_fast_scale_up != false) && '--fast-scale-up' || '' }}
+          ENV_LABEL: ci-k8s-${{ (inputs.runner || 'ubuntu-latest') }}
+        run: |
+          set -o pipefail
+          status=0
+          sessions=$(( MESSAGES / 10 ))
+          tools/k8s-throughput/run.sh --context kind-daprmq --workload sessions --replicas "$REPLICAS" \
+            --messages "$MESSAGES" --sessions "$sessions" --timeout 2400 --repeats "$REPEATS" $FAST \
+            --env-label "$ENV_LABEL" --out perf-results | tee short-session-throughput.log || status=$?
+          {
+            echo '## Kubernetes short-session throughput'
+            echo '```'
+            sed -n '/== results/,$p' short-session-throughput.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           exit $status
@@ -390,6 +437,50 @@ jobs:
           kubectl logs -n daprmq-throughput -l app.kubernetes.io/component=run --tail=200 || true
           kubectl logs -n daprmq -l app.kubernetes.io/component=operator -c daprmq --tail=200 --prefix || true
 
+  # Not a performance run: a correctness check that runs on its own cluster and publishes nothing.
+  k8s-failover:
+    name: Kubernetes failover (session coordinator moves mid-drain)
+    if: (inputs.k8s_failover != false)
+    runs-on: ${{ (inputs.runner || 'ubuntu-latest') }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v4.1.3
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: daprmq
+
+      - name: Deploy Dapr, Postgres, KEDA and DaprMQ
+        run: |
+          ./k8s-base-deploy.sh --context kind-daprmq
+          ./daprmq-deploy.sh --context kind-daprmq --skip-examples
+
+      - name: Delete the coordinator's host mid-drain
+        run: |
+          set -o pipefail
+          tools/k8s-throughput/failover.sh --context kind-daprmq --kill-after 60 --replicas 10 \
+            --messages 100000 --sessions 10000 --fast-scale-up --timeout 2400 \
+            --env-label ci-failover --out failover-results | tee failover.log
+          {
+            echo '## Kubernetes failover'
+            echo '```'
+            grep '^failover:' failover.log
+            sed -n '/== results/,$p' failover.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide
+          kubectl logs -n daprmq-throughput -l app.kubernetes.io/component=run --tail=200 || true
+          kubectl logs -n daprmq -l app.kubernetes.io/component=worker -c daprmq --tail=200 --prefix || true
+
   publish:
     name: Report and publish
     needs: [dotnet, python, typescript, java, k8s-throughput]
@@ -404,5 +495,5 @@ jobs:
 
       - uses: ./sdks/testing/actions/publish-perf-results
         with:
-          push: ${{ inputs.publish }}
-          message: 'Perf extreme: ${{ github.sha }} (${{ inputs.api_replicas }} replicas)'
+          push: ${{ (inputs.publish != false) }}
+          message: "Perf extreme: ${{ github.sha }} (${{ (inputs.api_replicas || '3') }} replicas)"

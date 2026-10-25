@@ -101,7 +101,9 @@ KEDA scales them with the scaler's `sessions` mode: the metric is the number of 
 consumers: the count falls as consumers release drained sessions, but a session that isn't released only drops
 out after the session directory's empty debounce (30s by default).
 
-A run is a P-04 session drain by the .NET SDK, with profile `k8s-session-drain-r<replicas>`.
+A run is a P-04 session drain by the .NET SDK, with profile `k8s-session-drain-r<replicas>`. Sessions of other
+than 100 messages get their own profile, `k8s-session-drain-<per session>per-r<replicas>` (for example
+`k8s-session-drain-10per-r20` for 10,000 sessions of 10), as they load the session coordinator differently.
 
 - **Key:** `k8s-sessions:<sessions>x<per session>@<delay>ms/<concurrent>slots/prefetch<p>/lease<l>s/idle<i>s/replicas<replicas>`,
   with `+len<percent>` and `+pubjitter<seconds>s` when those are on, and `+fixed` without KEDA.
@@ -122,14 +124,30 @@ A run is a P-04 session drain by the .NET SDK, with profile `k8s-session-drain-r
   its own DLQ. The handler never fails, so a dead-lettered message shows as missing.
 - **Checks** fail if the sessions didn't drain, if messages are missing, or on any FIFO violation.
 
+## Failover
+
+`failover.sh` runs a session drain and, once claims start flowing and `--kill-after` seconds after that (default 30), deletes the worker pod
+hosting the queue's SessionCoordinatorActor: the worker logging its claims. It passes only if run.sh's checks
+pass afterwards: every message handled, in order. Other options go to run.sh:
+
+```bash
+tools/k8s-throughput/failover.sh --context kind-daprmq-e2e --kill-after 60 \
+  --replicas 10 --messages 100000 --sessions 10000 --fast-scale-up
+```
+
 ## In CI
 
-The [Performance (extreme)](../../.github/workflows/perf-extreme.yml) workflow runs it in its `k8s-throughput` job:
-- it creates a kind cluster on the runner and deploys the stack
-- it runs `--replicas` from the `k8s_replicas` input (default `2,5,10,20`, the standard series), for the queue
-  and then for sessions
-- it writes the table to the job summary
-- it uploads the records as `perf-sdk-dotnet-k8s`, which the publish job merges into the perf-results branch
+The [Performance (extreme)](../../.github/workflows/perf-extreme.yml) workflow runs nightly, and by hand. Its
+`k8s-throughput` job:
+- creates a kind cluster on the runner and deploys the stack
+- runs `--replicas` from the `k8s_replicas` input (default `2,5,10,20`, the standard series), for the queue and
+  then for sessions (1,000 of 100)
+- runs short sessions, 10,000 of 10, at `k8s_short_replicas` (default `10,20`), unless `k8s_short_sessions` is off
+- writes each table to the job summary
+- uploads the records as `perf-sdk-dotnet-k8s`, which the publish job merges into the perf-results branch
+
+Its `k8s-failover` job runs `failover.sh` on a cluster of its own, at r10 with 10,000 sessions, and publishes
+nothing; turn it off with `k8s_failover`.
 
 A standard runner has 4 vCPUs shared by every pod, so the larger replica counts can measure the runner as much
 as DaprMQ. Use the workflow's `runner` input for a larger one.

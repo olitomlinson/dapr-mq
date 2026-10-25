@@ -41,7 +41,11 @@ public static class RunRecord
 {
     private static bool IsSessions(Settings s) => s.Workload == "sessions";
 
-    public static string Profile(Settings s) => IsSessions(s) ? $"k8s-session-drain-r{s.Replicas}" : $"k8s-queue-drain-r{s.Replicas}";
+    // Sessions of other than 100 messages load the coordinator differently, so they chart apart:
+    // k8s-session-drain-10per-r20 for 10,000 sessions of 10.
+    public static string Profile(Settings s) => !IsSessions(s) ? $"k8s-queue-drain-r{s.Replicas}"
+        : s.MessagesPerSession == 100 ? $"k8s-session-drain-r{s.Replicas}"
+        : $"k8s-session-drain-{s.MessagesPerSession}per-r{s.Replicas}";
 
     public static string Key(Settings s) =>
         (IsSessions(s)
