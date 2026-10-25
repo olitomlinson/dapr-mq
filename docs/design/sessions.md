@@ -14,10 +14,11 @@ DaprMQ Sessions add Azure Service Bus-style ordered sub-groups within a queue: a
 Enqueue (sessionId set) → routed by QueueController/DaprMQGrpcService →
                         QueueActor "{queueId}-session-{sessionId}" (plain QueueActor, unmodified)
                              │
-                             │ OnActivateAsync (first activation only)
+                             │ after each method: Observe(hasWork), in-process
                              ▼
-                        RegisterSession(sessionId) → SessionCoordinatorActor "{queueId}"
-                                                          (SessionDirectory += sessionId)
+                        worker's SessionActivityReporter → ReportSessionChanges([sessionId, ...])
+                          (sent at once, one call in flight     → SessionCoordinatorActor "{queueId}"
+                           per queue; batches under load)          (SessionDirectory += sessionId)
 
 AcceptSession(sessionId?, leaseSeconds) → SessionCoordinatorActor "{queueId}"
                              │
@@ -58,10 +59,11 @@ sequenceDiagram
     Producer->>API: Enqueue(item, sessionId)
     API->>SessionActor: Enqueue (routed to derived actor id)
     activate SessionActor
-    Note right of SessionActor: First activation only
-    SessionActor->>Coordinator: RegisterSession(sessionId)
-    Coordinator-->>SessionActor: ok
+    Note right of SessionActor: Observe(hasWork) to the worker's reporter, in-process
+    SessionActor-->>API: ok (doesn't wait on the coordinator)
     deactivate SessionActor
+    Note over SessionActor,Coordinator: Reporter, straight away (one call in flight per queue)
+    SessionActor->>Coordinator: ReportSessionChanges([sessionId, ...])
 
     Consumer->>API: AcceptSession(sessionId?, leaseSeconds)
     API->>Coordinator: AcceptSession

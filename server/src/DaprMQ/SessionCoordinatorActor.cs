@@ -207,7 +207,7 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
                     summary = summary with { TotalCount = summary.TotalCount + 1 };
                 }
 
-                entry = await MarkActiveAsync(entry ?? new SessionEntry(), change.SessionId, ready, now);
+                entry = await MarkActiveAsync(entry ?? new SessionEntry(), change.SessionId, ready, now, neverClaimed: entry == null);
                 summary = summary with { ActiveCount = summary.ActiveCount + 1 };
             }
             else
@@ -268,7 +268,7 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
     private async Task<AcceptSessionResponse> AcceptTargetedAsync(string sessionId, int leaseSeconds)
     {
         var metadata = await GetMetadataAsync();
-        if (!metadata.SessionDirectory.ContainsKey(sessionId))
+        if (!metadata.SessionDirectory.ContainsKey(sessionId) && !await TryAddFromSessionStateAsync(sessionId))
         {
             return new AcceptSessionResponse
             {
@@ -293,6 +293,49 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
         return await ClaimAsync(sessionId, leaseSeconds)
             ?? SessionActorUnavailable(sessionId);
     }
+
+    /// <summary>
+    /// A session is registered by its worker's reporter shortly after its first enqueue, so a targeted
+    /// accept can arrive first. Reads the session's state (no activation) and, if it holds items, adds
+    /// it as Active and unqueued, staged for this turn's save. Returns false if it has none or the read
+    /// fails.
+    /// </summary>
+    private async Task<bool> TryAddFromSessionStateAsync(string sessionId)
+    {
+        SessionActorState state;
+        try
+        {
+            using var timeout = new CancellationTokenSource(_config.LeaseEndCallTimeout);
+            state = await _queueActorStateReader.ReadSessionStateAsync(new ActorId(SessionActorId(sessionId)), timeout.Token);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "Failed to read unregistered session {SessionId}", sessionId);
+            return false;
+        }
+
+        if (state.ItemCount + state.LockCount == 0)
+        {
+            return false;
+        }
+
+        double now = Now();
+        var metadata = await GetMetadataAsync();
+        var summary = await GetSummaryAsync();
+        _lastActiveAt[sessionId] = now;
+        await SetDirectoryAsync(
+            metadata with
+            {
+                SessionDirectory = WithAdded(metadata.SessionDirectory, sessionId,
+                    new SessionEntry { Active = true, NextCheckAt = now + _config.Backstop.TotalSeconds })
+            },
+            summary with { TotalCount = summary.TotalCount + 1, ActiveCount = summary.ActiveCount + 1 });
+        await EnsureEvictionReminderAsync();
+        return true;
+    }
+
+    private static Dictionary<string, SessionEntry> WithAdded(Dictionary<string, SessionEntry> directory, string sessionId, SessionEntry entry) =>
+        new(directory) { [sessionId] = entry };
 
     /// <summary>
     /// Takes the ReadyQueue's head. Stale ids (evicted, Idle, leased) are dropped; a session whose
@@ -838,7 +881,9 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
         return new Dictionary<string, SessionActorState>(results);
     }
 
-    private async Task<SessionEntry> MarkActiveAsync(SessionEntry entry, string sessionId, List<string> ready, double now)
+    /// <param name="neverClaimed">The session had no entry, so no claim can have leased it: skip the
+    /// lease read. If it were leased after all, an any-available claim drops it at the head.</param>
+    private async Task<SessionEntry> MarkActiveAsync(SessionEntry entry, string sessionId, List<string> ready, double now, bool neverClaimed = false)
     {
         var active = entry with
         {
@@ -848,7 +893,7 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
             NextCheckAt = now + _config.Backstop.TotalSeconds
         };
 
-        if (!active.Queued && !await IsLeasedAsync(sessionId, now))
+        if (!active.Queued && (neverClaimed || !await IsLeasedAsync(sessionId, now)))
         {
             ready.Add(sessionId);
             active = active with { Queued = true };

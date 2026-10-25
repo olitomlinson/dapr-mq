@@ -5,16 +5,21 @@ using DaprMQ.Interfaces;
 namespace DaprMQ.ApiServer.Services;
 
 /// <summary>
-/// Worker-local tracking of whether each hosted session has work, off the actors' turns. Session
-/// actors call <see cref="Observe"/> after every method (an in-process call); each tick, the
-/// reporter sends every SessionCoordinatorActor only the lasting changes since it last told it:
-/// a session that got work (Active, on the next tick), or one that has stayed empty for the
-/// debounce period (Empty). A quiet worker sends nothing.
+/// Worker-local tracking of whether each hosted session has work, off the actors' turns, and the
+/// only way sessions register with their SessionCoordinatorActor. Session actors call
+/// <see cref="Observe"/> after every method (an in-process call). The reporter sends each
+/// coordinator only the lasting changes since it last told it:
+/// - a session that got work (Active) straight away, so it is claimable about one coordinator call
+///   after its enqueue, which never waits for it
+/// - one that has stayed empty for the debounce period (Empty), on the tick
+/// A quiet worker sends nothing.
 ///
-/// Ordering: one flush runs at a time and nothing is marked sent until its call succeeds, so a
-/// failed or deferred change is never resent as it was - the next tick sends each session's state
-/// as it is then. Reports from one reporter therefore arrive in order; the coordinator's deferral
-/// window covers races with the direct RegisterSession path and with other workers.
+/// Each queue has one sender with at most one call in flight. Changes that arrive during a call go
+/// together in the next, so under load one turn registers many sessions. Nothing is marked sent
+/// until its call succeeds, so a failed or deferred change is never resent as it was: the next send
+/// carries each session's state as it is then. Reports from one reporter therefore arrive in order;
+/// the coordinator's deferral window covers races with other workers.
+/// See proposals/async-session-registration.md.
 /// </summary>
 public sealed class SessionActivityReporter : BackgroundService, ISessionActivityReporter
 {
@@ -36,6 +41,18 @@ public sealed class SessionActivityReporter : BackgroundService, ISessionActivit
     private readonly object _gate = new();
     private readonly Dictionary<(string QueueId, string SessionId), TrackedSession> _sessions = new();
 
+    /// <summary>One per queue. Guarded by _gate.</summary>
+    private sealed class QueueSender
+    {
+        public bool Busy;
+        public bool Again;
+        public bool IncludeEmpty;
+        public Task Run = Task.CompletedTask;
+    }
+
+    private readonly Dictionary<string, QueueSender> _senders = new();
+    private CancellationToken _stopping = CancellationToken.None;
+
     public SessionActivityReporter(ISessionCoordinatorActorInvoker invoker, SessionDirectoryConfig config, TimeProvider time,
         ILogger<SessionActivityReporter> logger)
     {
@@ -46,7 +63,7 @@ public sealed class SessionActivityReporter : BackgroundService, ISessionActivit
     }
 
     /// <inheritdoc />
-    public void Observe(string queueId, string sessionId, bool hasWork, bool deactivating = false)
+    public void Observe(string queueId, string sessionId, bool hasWork, bool deactivating = false, bool reported = false)
     {
         lock (_gate)
         {
@@ -61,17 +78,13 @@ public sealed class SessionActivityReporter : BackgroundService, ISessionActivit
             }
 
             session.Deactivating = deactivating;
-        }
-    }
-
-    /// <inheritdoc />
-    public void MarkReported(string queueId, string sessionId, bool hasWork)
-    {
-        lock (_gate)
-        {
-            if (_sessions.TryGetValue((queueId, sessionId), out var session) && session.HasWork == hasWork)
+            if (reported)
             {
                 session.LastSent = hasWork;
+            }
+            else if (hasWork && session.LastSent != true)
+            {
+                KickLocked(queueId, includeEmpty: false);
             }
         }
     }
@@ -84,55 +97,155 @@ public sealed class SessionActivityReporter : BackgroundService, ISessionActivit
             if (_sessions.TryGetValue((queueId, sessionId), out var session))
             {
                 session.LastSent = null;
+                if (session.HasWork)
+                {
+                    KickLocked(queueId, includeEmpty: false);
+                }
             }
         }
     }
 
-    /// <summary>
-    /// Sends each coordinator its sessions' changes, one call per queue, then forgets deactivated
-    /// sessions whose final state the coordinator has accepted. Single caller only.
-    /// </summary>
-    public async Task FlushAsync(CancellationToken cancellationToken)
+    /// <inheritdoc />
+    public bool IsReportedActive(string queueId, string sessionId)
     {
-        var batches = TakeChanges();
-        await Task.WhenAll(batches.Select(batch => SendAsync(batch.Key, batch.Value, cancellationToken)));
+        lock (_gate)
+        {
+            return _sessions.TryGetValue((queueId, sessionId), out var session) && session.LastSent == true;
+        }
+    }
 
+    /// <summary>Every send started so far has finished (tests).</summary>
+    internal Task WhenIdleAsync()
+    {
+        Task[] runs;
+        lock (_gate)
+        {
+            runs = _senders.Values.Select(s => s.Run).ToArray();
+        }
+        return Task.WhenAll(runs);
+    }
+
+    // Called under _gate. Starts the queue's sender, or tells a busy one to go round again.
+    private void KickLocked(string queueId, bool includeEmpty)
+    {
+        if (!_senders.TryGetValue(queueId, out var sender))
+        {
+            _senders[queueId] = sender = new QueueSender();
+        }
+
+        sender.IncludeEmpty |= includeEmpty;
+        if (sender.Busy)
+        {
+            sender.Again = true;
+            return;
+        }
+
+        sender.Busy = true;
+        // Off the caller's thread: Observe runs inside an actor's turn.
+        sender.Run = Task.Run(() => RunSenderAsync(queueId, sender));
+    }
+
+    /// <summary>
+    /// Sends the queue's changes, one call at a time, until there are none left. Active changes go on
+    /// any run; Empty changes only on a run the tick asked for, so a deferred Empty waits for the
+    /// next tick rather than being resent at once.
+    /// </summary>
+    private async Task RunSenderAsync(string queueId, QueueSender sender)
+    {
+        var backoff = _config.ReportRetryInitial;
+        while (true)
+        {
+            List<(string SessionId, TrackedSession Session, bool HasWork)> batch;
+            lock (_gate)
+            {
+                bool includeEmpty = sender.IncludeEmpty;
+                sender.IncludeEmpty = false;
+                sender.Again = false;
+                batch = TakeChangesLocked(queueId, includeEmpty, _config.ReportBatchMax);
+                if (batch.Count == 0)
+                {
+                    sender.Busy = false;
+                    return;
+                }
+            }
+
+            if (await SendAsync(queueId, batch, _stopping))
+            {
+                backoff = _config.ReportRetryInitial;
+                continue;
+            }
+
+            try
+            {
+                await Task.Delay(backoff, _time, _stopping);
+            }
+            catch (OperationCanceledException)
+            {
+                lock (_gate)
+                {
+                    sender.Busy = false;
+                }
+                return;
+            }
+            backoff = TimeSpan.FromTicks(Math.Min(backoff.Ticks * 2, _config.ReportRetryMax.Ticks));
+        }
+    }
+
+    /// <summary>
+    /// The tick. Forgets deactivated sessions whose final state the coordinator has accepted, then
+    /// starts each queue's sender with Empty changes included. It doesn't wait for the sends, so a
+    /// queue whose coordinator is unreachable (its sender retrying) doesn't hold up the others.
+    /// Single caller only.
+    /// </summary>
+    public Task FlushAsync(CancellationToken cancellationToken)
+    {
         lock (_gate)
         {
             foreach (var key in _sessions.Where(s => s.Value.Deactivating && s.Value.LastSent == s.Value.HasWork).Select(s => s.Key).ToList())
             {
                 _sessions.Remove(key);
             }
-        }
-    }
 
-    private Dictionary<string, List<(string SessionId, TrackedSession Session, bool HasWork)>> TakeChanges()
-    {
-        var now = _time.GetUtcNow();
-        var batches = new Dictionary<string, List<(string, TrackedSession, bool)>>();
-        lock (_gate)
-        {
-            foreach (var ((queueId, sessionId), session) in _sessions)
+            foreach (var queueId in _sessions.Keys.Select(k => k.QueueId).Distinct().ToList())
             {
-                bool? toSend = session.HasWork ? true
-                    : session.Deactivating || now - session.ChangedAt >= _config.EmptyDebounce ? false
-                    : null; // still settling
-                if (toSend == null || toSend == session.LastSent)
-                {
-                    continue;
-                }
-
-                if (!batches.TryGetValue(queueId, out var batch))
-                {
-                    batches[queueId] = batch = [];
-                }
-                batch.Add((sessionId, session, toSend.Value));
+                KickLocked(queueId, includeEmpty: true);
             }
         }
-        return batches;
+        return Task.CompletedTask;
     }
 
-    private async Task SendAsync(string queueId, List<(string SessionId, TrackedSession Session, bool HasWork)> changes, CancellationToken cancellationToken)
+    // Called under _gate.
+    private List<(string SessionId, TrackedSession Session, bool HasWork)> TakeChangesLocked(string queueId, bool includeEmpty, int max)
+    {
+        var now = _time.GetUtcNow();
+        var batch = new List<(string, TrackedSession, bool)>();
+        foreach (var ((sessionQueueId, sessionId), session) in _sessions)
+        {
+            if (sessionQueueId != queueId)
+            {
+                continue;
+            }
+
+            bool? toSend = session.HasWork ? true
+                : !includeEmpty ? null
+                : session.Deactivating || now - session.ChangedAt >= _config.EmptyDebounce ? false
+                : null; // still settling
+            if (toSend == null || toSend == session.LastSent)
+            {
+                continue;
+            }
+
+            batch.Add((sessionId, session, toSend.Value));
+            if (batch.Count == max)
+            {
+                break;
+            }
+        }
+        return batch;
+    }
+
+    /// <summary>Returns whether the coordinator accepted the call.</summary>
+    private async Task<bool> SendAsync(string queueId, List<(string SessionId, TrackedSession Session, bool HasWork)> changes, CancellationToken cancellationToken)
     {
         try
         {
@@ -156,16 +269,53 @@ public sealed class SessionActivityReporter : BackgroundService, ISessionActivit
                     change.Session.LastSent = deferred.Contains(change.SessionId) ? null : change.HasWork;
                 }
             }
+            return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
-            // Nothing is marked sent: the next tick sends each session's state as it is then.
-            _logger.LogDebug(ex, "Session change report to {QueueId} failed; resending current state next tick", queueId);
+            // Nothing is marked sent: the retry sends each session's state as it is then.
+            _logger.LogDebug(ex, "Session change report to {QueueId} failed; retrying with the current state", queueId);
+            return false;
         }
+        catch (OperationCanceledException)
+        {
+            return false; // stopping
+        }
+    }
+
+    /// <summary>
+    /// On shutdown (SIGTERM), sends everything pending, Empty included, before the senders are
+    /// cancelled. Waits at most <see cref="SessionDirectoryConfig.ReportCallTimeout"/>, and no longer
+    /// than the host allows. A session whose report is still lost is registered by its backstop
+    /// reminder.
+    /// </summary>
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            foreach (var queueId in _sessions.Keys.Select(k => k.QueueId).Distinct().ToList())
+            {
+                KickLocked(queueId, includeEmpty: true);
+            }
+        }
+
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(_config.ReportCallTimeout);
+        try
+        {
+            await WhenIdleAsync().WaitAsync(deadline.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("Shutting down with session reports still unsent; their backstop reminders will register them");
+        }
+
+        await base.StopAsync(cancellationToken);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        _stopping = stoppingToken;
         while (!stoppingToken.IsCancellationRequested)
         {
             try

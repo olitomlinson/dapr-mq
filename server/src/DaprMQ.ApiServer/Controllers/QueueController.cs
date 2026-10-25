@@ -141,6 +141,7 @@ public class QueueController : ControllerBase
                 var result = await InvokeEnqueueAsync(group.Key, actorItems);
                 if (!result.Success)
                 {
+                    DeliveryFailures.ThrowIfUnavailable(result.ErrorCode, result.ErrorMessage);
                     return BadRequest(new ApiErrorResponse(result.ErrorMessage ?? "Failed to enqueue items"));
                 }
 
@@ -172,6 +173,7 @@ public class QueueController : ControllerBase
 
         if (!result.Success)
         {
+            DeliveryFailures.ThrowIfUnavailable(result.ErrorCode, result.ErrorMessage);
             return BadRequest(new ApiErrorResponse(result.ErrorMessage ?? "Failed to enqueue items"));
         }
 

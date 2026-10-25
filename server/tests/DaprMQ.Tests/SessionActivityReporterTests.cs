@@ -13,21 +13,26 @@ public class SessionActivityReporterTests
     private readonly FakeTimeProvider _time = new(DateTimeOffset.FromUnixTimeSeconds(1_700_000_000));
     private readonly Mock<ISessionCoordinatorActorInvoker> _invoker = new();
     private readonly List<(string QueueId, List<SessionChange> Changes)> _calls = [];
-    private readonly SessionActivityReporter _reporter;
+    private SessionActivityReporter _reporter;
 
-    // Sessions the fake coordinator defers, and whether calls fail.
+    // Sessions the fake coordinator defers, whether calls fail, and a gate that holds calls in flight.
     private readonly HashSet<string> _defer = [];
     private bool _fail;
+    private TaskCompletionSource? _hold;
 
     public SessionActivityReporterTests()
     {
         _invoker.Setup(i => i.InvokeMethodAsync<ReportSessionChangesRequest, ReportSessionChangesResponse>(
                 It.IsAny<ActorId>(), ActorMethodNames.ReportSessionChanges, It.IsAny<ReportSessionChangesRequest>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((ActorId id, string _, ReportSessionChangesRequest request, CancellationToken _) =>
+            .Returns(async (ActorId id, string _, ReportSessionChangesRequest request, CancellationToken _) =>
             {
                 lock (_calls)
                 {
                     _calls.Add((id.GetId(), request.Changes));
+                }
+                if (_hold is { } hold)
+                {
+                    await hold.Task;
                 }
                 if (_fail)
                 {
@@ -39,65 +44,179 @@ public class SessionActivityReporterTests
                     Deferred = request.Changes.Where(c => _defer.Contains(c.SessionId)).Select(c => c.SessionId).ToList()
                 };
             });
-        _reporter = new SessionActivityReporter(_invoker.Object, new SessionDirectoryConfig(), _time, NullLogger<SessionActivityReporter>.Instance);
+        _reporter = Create(new SessionDirectoryConfig());
     }
 
-    private async Task<List<(string QueueId, List<SessionChange> Changes)>> FlushAsync()
+    private SessionActivityReporter Create(SessionDirectoryConfig config) =>
+        new(_invoker.Object, config, _time, NullLogger<SessionActivityReporter>.Instance);
+
+    private List<(string QueueId, List<SessionChange> Changes)> Take()
     {
-        _calls.Clear();
+        lock (_calls)
+        {
+            var taken = _calls.ToList();
+            _calls.Clear();
+            return taken;
+        }
+    }
+
+    /// <summary>Calls made without a tick, once every send has finished.</summary>
+    private async Task<List<(string QueueId, List<SessionChange> Changes)>> SentAsync()
+    {
+        await _reporter.WhenIdleAsync();
+        return Take();
+    }
+
+    /// <summary>Calls made by one tick (anything sent before it is discarded first).</summary>
+    private async Task<List<(string QueueId, List<SessionChange> Changes)>> TickAsync()
+    {
+        await _reporter.WhenIdleAsync();
+        Take();
         await _reporter.FlushAsync(CancellationToken.None);
-        return [.. _calls];
+        await _reporter.WhenIdleAsync();
+        return Take();
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(2);
+        while (!condition())
+        {
+            if (DateTime.UtcNow > deadline)
+            {
+                throw new TimeoutException("Condition not met within timeout");
+            }
+            await Task.Delay(5);
+        }
+    }
+
+    private int CallCount()
+    {
+        lock (_calls)
+        {
+            return _calls.Count;
+        }
     }
 
     private static (string, bool)[] Flat(List<(string QueueId, List<SessionChange> Changes)> calls) =>
         calls.SelectMany(c => c.Changes.Select(ch => (ch.SessionId, ch.HasWork))).OrderBy(c => c.SessionId).ToArray();
 
+    // --- Active: sent straight away, one call in flight per queue ---
+
     [Fact]
-    public async Task Active_IsSentOnTheNextTick()
+    public async Task Active_IsSentStraightAway_WithoutATick()
     {
         _reporter.Observe("orders", "a", hasWork: true);
 
-        var calls = await FlushAsync();
+        var calls = await SentAsync();
 
         var call = Assert.Single(calls);
         Assert.Equal("orders", call.QueueId);
         Assert.Equal([("a", true)], Flat(calls));
+        Assert.Empty(await TickAsync());
     }
 
     [Fact]
-    public async Task OneCallPerQueue()
+    public async Task WhileACallIsInFlight_LaterSessionsGoTogetherInTheNextCall()
     {
+        _hold = new TaskCompletionSource();
         _reporter.Observe("orders", "a", hasWork: true);
-        _reporter.Observe("orders", "b", hasWork: true);
-        _reporter.Observe("payments", "c", hasWork: true);
+        await WaitUntilAsync(() => CallCount() == 1);
 
-        var calls = await FlushAsync();
+        _reporter.Observe("orders", "b", hasWork: true);
+        _reporter.Observe("orders", "c", hasWork: true);
+        await Task.Delay(50);
+        Assert.Equal(1, CallCount());
+
+        _hold.SetResult();
+        var calls = await SentAsync();
 
         Assert.Equal(2, calls.Count);
-        Assert.Equal(2, calls.Single(c => c.QueueId == "orders").Changes.Count);
+        Assert.Equal([("a", true)], Flat([calls[0]]));
+        Assert.Equal([("b", true), ("c", true)], Flat([calls[1]]));
+    }
+
+    [Fact]
+    public async Task EachQueueHasItsOwnSender()
+    {
+        _hold = new TaskCompletionSource();
+        _reporter.Observe("orders", "a", hasWork: true);
+        await WaitUntilAsync(() => CallCount() == 1);
+
+        _reporter.Observe("payments", "x", hasWork: true);
+        await WaitUntilAsync(() => CallCount() == 2);
+        _hold.SetResult();
+
+        var calls = await SentAsync();
+        Assert.Equal(["orders", "payments"], calls.Select(c => c.QueueId).Order());
+    }
+
+    [Fact]
+    public async Task ABacklogOverTheBatchCap_GoesInConsecutiveCalls()
+    {
+        _reporter = Create(new SessionDirectoryConfig { ReportBatchMax = 2 });
+        _hold = new TaskCompletionSource();
+        _reporter.Observe("orders", "a", hasWork: true);
+        await WaitUntilAsync(() => CallCount() == 1);
+        foreach (var id in new[] { "b", "c", "d", "e", "f" })
+        {
+            _reporter.Observe("orders", id, hasWork: true);
+        }
+
+        _hold.SetResult();
+        var calls = await SentAsync();
+
+        Assert.Equal([1, 2, 2, 1], calls.Select(c => c.Changes.Count));
+        Assert.Equal(6, Flat(calls).Distinct().Count());
+    }
+
+    [Fact]
+    public async Task FailedSend_RetriesWithBackoff_NotOnTheTick()
+    {
+        _fail = true;
+        _reporter.Observe("orders", "a", hasWork: true);
+        await WaitUntilAsync(() => CallCount() == 1);
+        await Task.Delay(50); // let the sender start its backoff timer before the clock moves
+
+        _time.Advance(TimeSpan.FromMilliseconds(100));
+        await WaitUntilAsync(() => CallCount() == 2);
+        _fail = false;
+        await Task.Delay(50);
+        _time.Advance(TimeSpan.FromMilliseconds(199));
+        await Task.Delay(50);
+        Assert.Equal(2, CallCount()); // the second wait is 200ms
+
+        _time.Advance(TimeSpan.FromMilliseconds(1));
+        var calls = await SentAsync();
+        Assert.Equal(3, calls.Count);
+        Assert.Empty(await TickAsync());
     }
 
     [Fact]
     public async Task UnchangedState_IsNotSentAgain_AndAQuietTickMakesNoCalls()
     {
         _reporter.Observe("orders", "a", hasWork: true);
-        await FlushAsync();
+        await SentAsync();
         _reporter.Observe("orders", "a", hasWork: true);
 
-        Assert.Empty(await FlushAsync());
+        Assert.Empty(await SentAsync());
+        Assert.Empty(await TickAsync());
     }
 
+    // --- Empty: still debounced, and sent on the tick ---
+
     [Fact]
-    public async Task Empty_WaitsForTheDebounce()
+    public async Task Empty_WaitsForTheDebounce_AndGoesOnTheTick()
     {
         _reporter.Observe("orders", "a", hasWork: true);
-        await FlushAsync();
+        await SentAsync();
         _reporter.Observe("orders", "a", hasWork: false);
 
+        Assert.Empty(await SentAsync());
         _time.Advance(TimeSpan.FromSeconds(10));
-        var early = await FlushAsync();
+        var early = await TickAsync();
         _time.Advance(TimeSpan.FromSeconds(21));
-        var settled = await FlushAsync();
+        var settled = await TickAsync();
 
         Assert.Empty(early);
         Assert.Equal([("a", false)], Flat(settled));
@@ -107,7 +226,7 @@ public class SessionActivityReporterTests
     public async Task FlappingThatEndsWithWork_SendsNothing()
     {
         _reporter.Observe("orders", "a", hasWork: true);
-        await FlushAsync();
+        await SentAsync();
         for (int i = 0; i < 50; i++)
         {
             _reporter.Observe("orders", "a", hasWork: false);
@@ -117,7 +236,8 @@ public class SessionActivityReporterTests
 
         _time.Advance(TimeSpan.FromSeconds(31));
 
-        Assert.Empty(await FlushAsync());
+        Assert.Empty(await SentAsync());
+        Assert.Empty(await TickAsync());
     }
 
     [Fact]
@@ -127,19 +247,19 @@ public class SessionActivityReporterTests
         _reporter.Observe("orders", "a", hasWork: false);
         _time.Advance(TimeSpan.FromSeconds(31));
 
-        Assert.Equal([("a", false)], Flat(await FlushAsync()));
+        Assert.Equal([("a", false)], Flat(await TickAsync()));
     }
 
     [Fact]
-    public async Task Deactivating_SendsEmptyWithoutWaiting_ThenForgetsTheSession()
+    public async Task Deactivating_SendsEmptyOnTheNextTick_ThenForgetsTheSession()
     {
         _reporter.Observe("orders", "a", hasWork: true);
-        await FlushAsync();
+        await SentAsync();
         _reporter.Observe("orders", "a", hasWork: false, deactivating: true);
 
-        var final = await FlushAsync();
+        var final = await TickAsync();
         _time.Advance(TimeSpan.FromMinutes(5));
-        var after = await FlushAsync();
+        var after = await TickAsync();
 
         Assert.Equal([("a", false)], Flat(final));
         Assert.Empty(after);
@@ -149,80 +269,114 @@ public class SessionActivityReporterTests
     public async Task Deactivating_AlreadyReported_IsForgottenWithoutACall()
     {
         _reporter.Observe("orders", "a", hasWork: true);
-        await FlushAsync();
+        await SentAsync();
         _reporter.Observe("orders", "a", hasWork: true, deactivating: true);
 
-        Assert.Empty(await FlushAsync());
+        Assert.Empty(await TickAsync());
         // Forgotten: a later empty observation for a fresh activation starts from unknown.
         _reporter.Observe("orders", "a", hasWork: false);
         _time.Advance(TimeSpan.FromSeconds(31));
-        Assert.Equal([("a", false)], Flat(await FlushAsync()));
+        Assert.Equal([("a", false)], Flat(await TickAsync()));
     }
 
+    // --- What the coordinator already knows ---
+
     [Fact]
-    public async Task MarkReported_SuppressesTheDuplicateActive()
+    public async Task ObservedAsReported_IsNotSent()
     {
-        _reporter.Observe("orders", "a", hasWork: true);
-        _reporter.MarkReported("orders", "a", hasWork: true);
+        // A lease end: the coordinator decided this state itself.
+        _reporter.Observe("orders", "a", hasWork: true, reported: true);
 
-        Assert.Empty(await FlushAsync());
+        Assert.Empty(await SentAsync());
+        Assert.Empty(await TickAsync());
     }
 
     [Fact]
-    public async Task MarkReported_Empty_MakesALaterRevivalBeSent()
+    public async Task ReportedEmpty_MakesALaterRevivalBeSentStraightAway()
     {
         // A release told the coordinator the session is empty; new work within the debounce
         // must still go out as Active.
         _reporter.Observe("orders", "a", hasWork: true);
-        await FlushAsync();
-        _reporter.Observe("orders", "a", hasWork: false);
-        _reporter.MarkReported("orders", "a", hasWork: false);
+        await SentAsync();
+        _reporter.Observe("orders", "a", hasWork: false, reported: true);
         _reporter.Observe("orders", "a", hasWork: true);
 
-        Assert.Equal([("a", true)], Flat(await FlushAsync()));
+        Assert.Equal([("a", true)], Flat(await SentAsync()));
     }
 
     [Fact]
-    public async Task ResetReported_SendsTheCurrentStateAgain()
+    public async Task ResetReported_SendsTheCurrentStateAgain_StraightAwayWhenItHasWork()
     {
         _reporter.Observe("orders", "a", hasWork: true);
-        await FlushAsync();
+        await SentAsync();
 
         _reporter.ResetReported("orders", "a");
 
-        Assert.Equal([("a", true)], Flat(await FlushAsync()));
+        Assert.Equal([("a", true)], Flat(await SentAsync()));
     }
 
     [Fact]
-    public async Task FailedCall_NextTickSendsCurrentState_NotTheFailedBatch()
+    public async Task FailedCall_TheNextSendCarriesTheCurrentState_NotTheFailedBatch()
     {
-        _reporter.Observe("orders", "a", hasWork: true);
         _fail = true;
-        await FlushAsync();
-        _fail = false;
+        _reporter.Observe("orders", "a", hasWork: true);
+        await WaitUntilAsync(() => CallCount() == 1);
         _reporter.Observe("orders", "a", hasWork: false);
         _time.Advance(TimeSpan.FromSeconds(31));
+        _fail = false;
+        await _reporter.WhenIdleAsync();
+        Take();
 
         // The coordinator was never told Active, so the current state (Empty) is what goes.
-        Assert.Equal([("a", false)], Flat(await FlushAsync()));
+        Assert.Equal([("a", false)], Flat(await TickAsync()));
     }
 
     [Fact]
     public async Task Deferred_IsSentAgainNextTick_UntilAccepted()
     {
         _reporter.Observe("orders", "a", hasWork: true);
-        await FlushAsync();
+        await SentAsync();
         _reporter.Observe("orders", "a", hasWork: false);
         _time.Advance(TimeSpan.FromSeconds(31));
         _defer.Add("a");
 
-        var deferred = await FlushAsync();
+        var deferred = await TickAsync();
+        Assert.Empty(await SentAsync()); // not resent until the next tick
         _defer.Clear();
-        var retried = await FlushAsync();
-        var done = await FlushAsync();
+        var retried = await TickAsync();
+        var done = await TickAsync();
 
         Assert.Equal([("a", false)], Flat(deferred));
         Assert.Equal([("a", false)], Flat(retried));
         Assert.Empty(done);
+    }
+
+    // --- Shutdown ---
+
+    [Fact]
+    public async Task Stop_SendsEverythingPending_EmptyIncluded()
+    {
+        _reporter.Observe("orders", "a", hasWork: true);
+        await SentAsync();
+        _reporter.Observe("orders", "a", hasWork: false);
+        _time.Advance(TimeSpan.FromSeconds(31)); // due, but the tick hasn't run
+
+        await _reporter.StopAsync(CancellationToken.None);
+
+        Assert.Equal([("a", false)], Flat(Take()));
+    }
+
+    [Fact]
+    public async Task Stop_GivesUpWhenTheHostStopsWaiting()
+    {
+        _hold = new TaskCompletionSource(); // the coordinator never answers
+        _reporter.Observe("orders", "a", hasWork: true);
+        await WaitUntilAsync(() => CallCount() == 1);
+        using var hostGivesUp = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+
+        var stop = _reporter.StopAsync(hostGivesUp.Token);
+
+        Assert.Same(stop, await Task.WhenAny(stop, Task.Delay(TimeSpan.FromSeconds(3))));
+        _hold.SetResult();
     }
 }

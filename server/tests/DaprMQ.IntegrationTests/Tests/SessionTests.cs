@@ -47,6 +47,23 @@ public class SessionTests(DaprTestFixture fixture)
         return result!;
     }
 
+    /// <summary>
+    /// An any-available claim. A session is registered by its worker's reporter just after its
+    /// first enqueue returns, so the claim is retried until that lands (well within a second).
+    /// </summary>
+    private async Task<ApiAcceptSessionResponse> ClaimAnyAvailableAsync(string queueId, int leaseSeconds = 30)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        HttpResponseMessage response;
+        while ((response = await AcceptSessionAsync(queueId, null, leaseSeconds)).StatusCode == HttpStatusCode.NoContent && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(50);
+        }
+        var content = await response.Content.ReadAsStringAsync();
+        Assert.True(response.StatusCode == HttpStatusCode.OK, $"AcceptSession failed: {response.StatusCode} - {content}");
+        return (await response.Content.ReadFromJsonAsync<ApiAcceptSessionResponse>())!;
+    }
+
     private async Task<HttpResponseMessage> RenewAsync(string queueId, string sessionId, string leaseId, int additionalSeconds = 30) =>
         await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/sessions/{sessionId}/renew", new ApiRenewSessionLeaseRequest(leaseId, additionalSeconds));
 
@@ -170,8 +187,39 @@ public class SessionTests(DaprTestFixture fixture)
         var sessionId = "any-available-target";
         await EnqueueAsync(queueId, sessionId, new { seq = 1 });
 
-        var lease = await AcceptSessionSuccessfullyAsync(queueId, sessionId: null);
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var lease = await ClaimAnyAvailableAsync(queueId);
+
         Assert.Equal(sessionId, lease.SessionId);
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(1), $"claimable after {stopwatch.Elapsed}");
+    }
+
+    [Fact]
+    public async Task AcceptSession_Targeted_StraightAfterTheFirstEnqueue_Succeeds()
+    {
+        // Before the reporter's registration lands, the coordinator reads the session itself.
+        var queueId = NewQueueId();
+        await EnqueueAsync(queueId, "fresh", new { seq = 1 });
+
+        var lease = await AcceptSessionSuccessfullyAsync(queueId, "fresh");
+
+        Assert.Equal("fresh", lease.SessionId);
+    }
+
+    [Fact]
+    public async Task Enqueue_ToManyNewSessions_RegistersThemAll()
+    {
+        // Registration is batched by the reporter, so a burst of new sessions all become claimable.
+        var queueId = NewQueueId();
+        await Task.WhenAll(Enumerable.Range(0, 50).Select(i => EnqueueAsync(queueId, $"s{i}", new { seq = 1 })));
+
+        var claimed = new HashSet<string>();
+        for (int i = 0; i < 50; i++)
+        {
+            claimed.Add((await ClaimAnyAvailableAsync(queueId)).SessionId!);
+        }
+
+        Assert.Equal(50, claimed.Count);
     }
 
     [Fact]
@@ -184,7 +232,7 @@ public class SessionTests(DaprTestFixture fixture)
         Assert.Equal(HttpStatusCode.OK, (await ReleaseAsync(queueId, "drained", drainLease.LeaseId)).StatusCode);
         await EnqueueAsync(queueId, "has-work", new { seq = 1 });
 
-        var lease = await AcceptSessionSuccessfullyAsync(queueId, sessionId: null);
+        var lease = await ClaimAnyAvailableAsync(queueId);
         var none = await AcceptSessionAsync(queueId, sessionId: null);
 
         Assert.Equal("has-work", lease.SessionId);
@@ -201,8 +249,8 @@ public class SessionTests(DaprTestFixture fixture)
         Assert.Equal(HttpStatusCode.OK, (await DequeueAsync(queueId, sessionId, drainLease.LeaseId)).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await ReleaseAsync(queueId, sessionId, drainLease.LeaseId)).StatusCode);
 
-        // The session actor is still in memory, so it doesn't register again: its worker's reporter
-        // sends the change on its next tick.
+        // The session actor is still in memory; its worker's reporter sends the revival as soon as it
+        // sees the new work.
         await EnqueueAsync(queueId, sessionId, new { seq = 2 });
 
         var deadline = DateTime.UtcNow.AddSeconds(20);
@@ -458,6 +506,23 @@ public class SessionTests(DaprTestFixture fixture)
     /// <summary>Runs one any-available stream until it drains; returns the session it was given.</summary>
     private async Task<string> DrainAnyAvailableStreamAsync(GrpcService.DaprMQClient client, string queueId)
     {
+        // Sessions register just after their enqueue returns: retry a stream that found none yet.
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (true)
+        {
+            var assigned = await TryDrainAnyAvailableStreamAsync(client, queueId);
+            if (assigned != null || DateTime.UtcNow > deadline)
+            {
+                Assert.NotNull(assigned);
+                return assigned!;
+            }
+            await Task.Delay(50);
+        }
+    }
+
+    /// <summary>Null when the stream ended with NO_SESSIONS_AVAILABLE.</summary>
+    private async Task<string?> TryDrainAnyAvailableStreamAsync(GrpcService.DaprMQClient client, string queueId)
+    {
         using var call = client.ConsumeSession();
         await call.RequestStream.WriteAsync(new ConsumeSessionRequest
         {
@@ -465,6 +530,7 @@ public class SessionTests(DaprTestFixture fixture)
         });
 
         string? assigned = null;
+        bool noSessions = false;
         var readTask = Task.Run(async () =>
         {
             await foreach (var response in call.ResponseStream.ReadAllAsync())
@@ -477,6 +543,11 @@ public class SessionTests(DaprTestFixture fixture)
                 {
                     await call.RequestStream.WriteAsync(new ConsumeSessionRequest { Ack = new ConsumeSessionAck { LockId = response.Delivered.LockId } });
                 }
+                else if (response.PayloadCase == ConsumeSessionResponse.PayloadOneofCase.Error
+                    && response.Error.ErrorCode == "NO_SESSIONS_AVAILABLE")
+                {
+                    noSessions = true;
+                }
                 else
                 {
                     Assert.Equal(ConsumeSessionResponse.PayloadOneofCase.SessionDrained, response.PayloadCase);
@@ -487,6 +558,10 @@ public class SessionTests(DaprTestFixture fixture)
         var completed = await Task.WhenAny(readTask, Task.Delay(TimeSpan.FromSeconds(15))) == readTask;
         Assert.True(completed, "ConsumeSession stream did not drain within timeout");
         await readTask;
+        if (noSessions)
+        {
+            return null;
+        }
         Assert.NotNull(assigned);
         return assigned!;
     }

@@ -111,6 +111,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
 
                 if (!result.Success)
                 {
+                    DeliveryFailures.ThrowIfUnavailable(result.ErrorCode, result.ErrorMessage);
                     throw new RpcException(new Status(StatusCode.Internal, result.ErrorMessage ?? "Failed to enqueue items"));
                 }
 

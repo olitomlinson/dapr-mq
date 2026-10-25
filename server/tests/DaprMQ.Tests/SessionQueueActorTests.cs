@@ -123,9 +123,10 @@ public class SessionQueueActorTests
         ICatalogRegistrar? catalogRegistrar = null,
         ISessionActivityReporter? reporter = null,
         SessionDirectoryConfig? sessionDirectoryConfig = null,
-        Func<CancellationToken, Task<RegisterSessionResponse>>? registerSession = null)
+        Func<CancellationToken, Task<RegisterSessionResponse>>? registerSession = null,
+        Mock<ActorTimerManager>? timerManager = null)
     {
-        var mockTimerManager = new Mock<ActorTimerManager>();
+        var mockTimerManager = timerManager ?? new Mock<ActorTimerManager>();
         mockTimerManager.Setup(m => m.RegisterTimerAsync(It.IsAny<ActorTimer>()))
             .Returns(Task.CompletedTask);
 
@@ -206,9 +207,9 @@ public class SessionQueueActorTests
         return (actor, mockSessionCoordinatorInvoker);
     }
 
-    // --- After every method: observe, and register on the first non-empty save ---
+    // --- After every method: observe; registration is the reporter's, never a call from the turn ---
 
-    private static Task EnqueueOneAsync(QueueActor actor) =>
+    private static Task<EnqueueResponse> EnqueueOneAsync(QueueActor actor) =>
         actor.Enqueue(new EnqueueRequest { Items = new List<EnqueueItem> { new EnqueueItem { ItemJson = "{\"id\":1}", Priority = 1 } } });
 
     private static void VerifyRegistered(Mock<ISessionCoordinatorActorInvoker> invoker, Times times) =>
@@ -229,23 +230,9 @@ public class SessionQueueActorTests
     }
 
     [Fact]
-    public async Task FirstNonEmptySave_RegistersDirectly_AndMarksItReported()
+    public async Task NonEmptySave_ObservesWork_AndNeverCallsTheCoordinator()
     {
-        var (mockStateManager, _) = CreateMockStateManager();
-        var reporter = new Mock<ISessionActivityReporter>();
-        var (actor, invoker) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42", reporter: reporter.Object);
-
-        await EnqueueOneAsync(actor);
-        await actor.AfterActorMethodAsync("Enqueue");
-
-        VerifyRegistered(invoker, Times.Once());
-        reporter.Verify(r => r.Observe("orders", "order-42", true, false), Times.Once());
-        reporter.Verify(r => r.MarkReported("orders", "order-42", true), Times.Once());
-    }
-
-    [Fact]
-    public async Task LaterNonEmptySaves_OnlyObserve()
-    {
+        // The enqueue must not wait on the coordinator: the reporter registers the session.
         var (mockStateManager, _) = CreateMockStateManager();
         var reporter = new Mock<ISessionActivityReporter>();
         var (actor, invoker) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42", reporter: reporter.Object);
@@ -255,7 +242,8 @@ public class SessionQueueActorTests
         await EnqueueOneAsync(actor);
         await actor.AfterActorMethodAsync("Enqueue");
 
-        VerifyRegistered(invoker, Times.Once());
+        VerifyRegistered(invoker, Times.Never());
+        invoker.VerifyNoOtherCalls();
         reporter.Verify(r => r.Observe("orders", "order-42", true, false), Times.Exactly(2));
     }
 
@@ -273,20 +261,158 @@ public class SessionQueueActorTests
         reporter.Verify(r => r.Observe("orders", "order-42", false, false), Times.Once());
     }
 
-    [Fact]
-    public async Task Reactivated_RegistersAgainOnItsFirstNonEmptySave()
+    // --- Registration backstop: an enqueue that returns success always leaves its session findable ---
+
+    private static Mock<ActorTimerManager> RecordingTimers(List<string> events, Exception? reminderThrows = null)
     {
+        var timers = new Mock<ActorTimerManager>();
+        var setup = timers.Setup(m => m.RegisterReminderAsync(It.IsAny<ActorReminder>()));
+        if (reminderThrows != null)
+        {
+            setup.ThrowsAsync(reminderThrows);
+        }
+        else
+        {
+            setup.Callback<ActorReminder>(r => events.Add($"reminder:{r.Name}:{r.DueTime.TotalSeconds}")).Returns(Task.CompletedTask);
+        }
+        return timers;
+    }
+
+    private static Mock<ISessionActivityReporter> Reporter(bool reportedActive)
+    {
+        var reporter = new Mock<ISessionActivityReporter>();
+        reporter.Setup(r => r.IsReportedActive("orders", "order-42")).Returns(reportedActive);
+        return reporter;
+    }
+
+    [Fact]
+    public async Task Enqueue_CoordinatorNotYetToldActive_ArmsTheBackstopBeforeSaving()
+    {
+        var events = new List<string>();
         var (mockStateManager, _) = CreateMockStateManager();
-        var (first, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
-        await EnqueueOneAsync(first);
-        await first.AfterActorMethodAsync("Enqueue");
+        mockStateManager.Setup(m => m.SaveStateAsync(It.IsAny<CancellationToken>())).Callback(() => events.Add("save")).Returns(Task.CompletedTask);
+        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42",
+            reporter: Reporter(reportedActive: false).Object, timerManager: RecordingTimers(events));
+        events.Clear();
 
-        // Same persisted state, new activation.
-        var (second, invoker) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
-        await EnqueueOneAsync(second);
-        await second.AfterActorMethodAsync("Enqueue");
+        var result = await EnqueueOneAsync(actor);
 
-        VerifyRegistered(invoker, Times.Once());
+        Assert.True(result.Success);
+        Assert.Equal(["reminder:session-registration:30", "save"], events);
+    }
+
+    [Fact]
+    public async Task Enqueue_CoordinatorAlreadyToldActive_ArmsNothing()
+    {
+        var events = new List<string>();
+        var (mockStateManager, _) = CreateMockStateManager();
+        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42",
+            reporter: Reporter(reportedActive: true).Object, timerManager: RecordingTimers(events));
+        events.Clear();
+
+        await EnqueueOneAsync(actor);
+
+        Assert.Empty(events);
+    }
+
+    [Fact]
+    public async Task Enqueue_WhileABackstopIsPending_ArmsNoSecond()
+    {
+        // A session flapping between empty and non-empty costs at most one scheduler call per window.
+        var events = new List<string>();
+        var (mockStateManager, _) = CreateMockStateManager();
+        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42",
+            reporter: Reporter(reportedActive: false).Object, timerManager: RecordingTimers(events));
+        events.Clear();
+
+        await EnqueueOneAsync(actor);
+        await actor.Dequeue(new DequeueRequest { Count = 1 });
+        await EnqueueOneAsync(actor);
+
+        Assert.Single(events);
+    }
+
+    [Fact]
+    public async Task Enqueue_BackstopCannotBeArmed_FailsAsUnavailable_AndSavesNothing()
+    {
+        var events = new List<string>();
+        var (mockStateManager, stateData) = CreateMockStateManager();
+        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42",
+            reporter: Reporter(reportedActive: false).Object,
+            timerManager: RecordingTimers(events, reminderThrows: new HttpRequestException("scheduler unavailable")));
+        mockStateManager.Invocations.Clear();
+
+        var result = await EnqueueOneAsync(actor);
+
+        Assert.False(result.Success);
+        Assert.Equal("UNAVAILABLE", result.ErrorCode);
+        mockStateManager.Verify(m => m.SetStateAsync(It.IsAny<string>(), It.IsAny<It.IsAnyType>(), It.IsAny<CancellationToken>()), Times.Never());
+        mockStateManager.Verify(m => m.SaveStateAsync(It.IsAny<CancellationToken>()), Times.Never());
+    }
+
+    [Fact]
+    public async Task PlainQueueEnqueue_ArmsNoBackstop()
+    {
+        var events = new List<string>();
+        var (mockStateManager, _) = CreateMockStateManager();
+        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders", timerManager: RecordingTimers(events));
+        events.Clear();
+
+        await EnqueueOneAsync(actor);
+
+        Assert.Empty(events);
+    }
+
+    [Fact]
+    public async Task BackstopFires_NotYetConfirmed_ObservesAndRearms()
+    {
+        // Possibly on a new worker after a crash: its reporter has no record, so Observe sends the
+        // session; until the coordinator confirms it, the backstop stays armed.
+        var events = new List<string>();
+        var (mockStateManager, _) = CreateMockStateManager();
+        var reporter = Reporter(reportedActive: false);
+        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42",
+            reporter: reporter.Object, timerManager: RecordingTimers(events));
+        await EnqueueOneAsync(actor);
+        events.Clear();
+
+        await actor.ReceiveReminderAsync("session-registration", [], TimeSpan.Zero, TimeSpan.Zero);
+
+        reporter.Verify(r => r.Observe("orders", "order-42", true, false, false), Times.AtLeastOnce());
+        Assert.Equal(["reminder:session-registration:30"], events);
+    }
+
+    [Fact]
+    public async Task BackstopFires_Confirmed_DoesNotRearm()
+    {
+        var events = new List<string>();
+        var (mockStateManager, _) = CreateMockStateManager();
+        var reporter = Reporter(reportedActive: false);
+        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42",
+            reporter: reporter.Object, timerManager: RecordingTimers(events));
+        await EnqueueOneAsync(actor);
+        reporter.Setup(r => r.IsReportedActive("orders", "order-42")).Returns(true);
+        events.Clear();
+
+        await actor.ReceiveReminderAsync("session-registration", [], TimeSpan.Zero, TimeSpan.Zero);
+
+        Assert.Empty(events);
+    }
+
+    [Fact]
+    public async Task BackstopFires_SessionEmpty_DoesNotRearm()
+    {
+        var events = new List<string>();
+        var (mockStateManager, _) = CreateMockStateManager();
+        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42",
+            reporter: Reporter(reportedActive: false).Object, timerManager: RecordingTimers(events));
+        await EnqueueOneAsync(actor);
+        await actor.Dequeue(new DequeueRequest { Count = 1 });
+        events.Clear();
+
+        await actor.ReceiveReminderAsync("session-registration", [], TimeSpan.Zero, TimeSpan.Zero);
+
+        Assert.Empty(events);
     }
 
     [Fact]
@@ -301,7 +427,7 @@ public class SessionQueueActorTests
 
         await actor.AfterActorMethodAsync("DequeueLocked");
 
-        VerifyRegistered(invoker, Times.Once());
+        VerifyRegistered(invoker, Times.Never());
         reporter.Verify(r => r.Observe("orders", "order-42", true, false), Times.Once());
     }
 
@@ -323,7 +449,7 @@ public class SessionQueueActorTests
         await actor.ClearSessionLease();
         await actor.AfterActorMethodAsync("ClearSessionLease");
 
-        reporter.Verify(r => r.MarkReported("orders", "order-42", hasWork), Times.Once());
+        reporter.Verify(r => r.Observe("orders", "order-42", hasWork, false, true), Times.Once());
     }
 
     [Fact]
@@ -371,7 +497,7 @@ public class SessionQueueActorTests
         await actor.AfterActorMethodAsync(methodName);
 
         VerifyRegistered(invoker, Times.Never());
-        reporter.Verify(r => r.Observe("orders", "order-42", true, false), Times.Once());
+        reporter.Verify(r => r.Observe("orders", "order-42", true, false, It.IsAny<bool>()), Times.Once());
     }
 
     [Theory]
@@ -391,68 +517,6 @@ public class SessionQueueActorTests
         invoker.Verify(i => i.InvokeMethodAsync<RegisterSessionRequest, RegisterSessionResponse>(
             It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<RegisterSessionRequest>(), It.IsAny<CancellationToken>()), Times.Never());
         reporter.VerifyNoOtherCalls();
-    }
-
-    [Fact]
-    public async Task RegistrationThrows_IsSwallowed_AndLeftToTheReporter()
-    {
-        var (mockStateManager, _) = CreateMockStateManager();
-        var reporter = new Mock<ISessionActivityReporter>();
-        var (actor, _) = await CreateActorAsync(
-            mockStateManager,
-            actorId: "orders-session-order-42",
-            registerSessionThrows: new InvalidOperationException("session coordinator unreachable"),
-            reporter: reporter.Object);
-        await EnqueueOneAsync(actor);
-
-        await actor.AfterActorMethodAsync("Enqueue");
-
-        reporter.Verify(r => r.Observe("orders", "order-42", true, false), Times.Once());
-        reporter.Verify(r => r.MarkReported(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>()), Times.Never());
-    }
-
-    [Fact]
-    public async Task RegistrationThatHangs_TimesOut_AndIsLeftToTheReporter()
-    {
-        // A coordinator turn that is itself waiting on this session (SetSessionLease) would never
-        // answer: the timeout is what breaks that cycle and frees this session's turn.
-        var (mockStateManager, _) = CreateMockStateManager();
-        var reporter = new Mock<ISessionActivityReporter>();
-        var (actor, _) = await CreateActorAsync(
-            mockStateManager,
-            actorId: "orders-session-order-42",
-            reporter: reporter.Object,
-            sessionDirectoryConfig: new SessionDirectoryConfig { RegisterSessionTimeout = TimeSpan.FromMilliseconds(100) },
-            registerSession: async ct =>
-            {
-                await Task.Delay(Timeout.Infinite, ct);
-                return new RegisterSessionResponse { Success = true };
-            });
-        await EnqueueOneAsync(actor);
-
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        await actor.AfterActorMethodAsync("Enqueue");
-
-        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(3), $"hook took {stopwatch.Elapsed}");
-        reporter.Verify(r => r.Observe("orders", "order-42", true, false), Times.Once());
-        reporter.Verify(r => r.MarkReported(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>()), Times.Never());
-    }
-
-    [Fact]
-    public async Task RegistrationRejected_IsNotMarkedReported()
-    {
-        var (mockStateManager, _) = CreateMockStateManager();
-        var reporter = new Mock<ISessionActivityReporter>();
-        var (actor, _) = await CreateActorAsync(
-            mockStateManager,
-            actorId: "orders-session-order-42",
-            registerSessionResponse: new RegisterSessionResponse { Success = false },
-            reporter: reporter.Object);
-        await EnqueueOneAsync(actor);
-
-        await actor.AfterActorMethodAsync("Enqueue");
-
-        reporter.Verify(r => r.MarkReported(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>()), Times.Never());
     }
 
     [Fact]

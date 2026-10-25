@@ -36,5 +36,8 @@ Dapr configurations ([config.yml](../../server/dapr/config/config.yml),
   session chain (a coordinator call into a cold session actor). A new call from a callee back to its caller needs
   either reentrancy back on or to be moved out of the calling turn.
 - Cycles between separate call chains were never solved by reentrancy; `RegisterSessionTimeout` bounds the session one.
+  (Update, 2026-10-25: session actors no longer call the coordinator at all. Their worker's reporter registers them
+  outside the turn, so that cycle and `RegisterSessionTimeout` are gone; see
+  [async-session-registration.md](../../proposals/async-session-registration.md).)
 - `ActorTurnGuard` (dapr/dapr#10835) stays: the overlap happens with reentrancy on and off. Without a reentrancy id,
   every call waits its turn.
