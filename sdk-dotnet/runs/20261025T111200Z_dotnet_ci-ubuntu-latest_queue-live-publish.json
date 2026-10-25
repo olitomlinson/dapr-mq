@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 2,
+  "runId": "20261025T111200Z_dotnet_ci-ubuntu-latest_queue-live-publish",
+  "timestampUtc": "2026-10-25T11:12:00.1412320\u002B00:00",
+  "sdk": {
+    "name": "dotnet",
+    "version": "0.0.0-alpha.0",
+    "runtime": ".NET 10.0.13"
+  },
+  "environment": {
+    "label": "ci-ubuntu-latest",
+    "gitSha": "f7bcd4c4055588a7a175994d6211c5b3821920e2",
+    "gitBranch": "main",
+    "gitDirty": false,
+    "os": "Ubuntu 24.04.5 LTS",
+    "cpuCount": 4
+  },
+  "topology": {
+    "apiReplicas": 1,
+    "schedulerReplicas": 3,
+    "loadBalancer": false,
+    "server": "testcontainers daprmq-api:test"
+  },
+  "scale": "pr",
+  "scenario": {
+    "id": "P-05",
+    "name": "queue-drain",
+    "profile": "queue-live-publish",
+    "key": "queue:50@10ms/active100\u002Bpub200ms~100ms",
+    "params": {
+      "messages": 50,
+      "settleMs": 10,
+      "maxActiveMessages": 100,
+      "maxConcurrentHandlers": 0,
+      "strictOrder": false,
+      "publishIntervalMs": 200,
+      "publishJitterMs": 100,
+      "tailEvery": 0,
+      "tailMs": 0
+    }
+  },
+  "metrics": {
+    "seedSeconds": 12.5389802,
+    "wallClockSeconds": 12.7265403,
+    "messagesPerSecond": 3.928797522449994,
+    "idealSeconds": 9.81,
+    "efficiency": 0.7708300739046888,
+    "timeToFirstMessageSeconds": 0.20653059999999998,
+    "peakConcurrentHandlers": 2,
+    "deliveryLatencyMs": {
+      "count": 50,
+      "mean": 165.44,
+      "p50": 111,
+      "p95": 400,
+      "p99": 401,
+      "max": 401
+    },
+    "messagesHandled": 50,
+    "duplicates": 0,
+    "missing": 0,
+    "orderViolations": 1
+  },
+  "checks": {
+    "passed": true,
+    "failures": []
+  },
+  "timeline": {
+    "bucketMs": 1000,
+    "series": {
+      "messagesPerSecond": [
+        3,
+        4,
+        5,
+        4,
+        4,
+        3,
+        5,
+        4,
+        3,
+        4,
+        3,
+        5,
+        3
+      ],
+      "busyHandlers": [
+        0.03,
+        0.039,
+        0.051,
+        0.04,
+        0.041,
+        0.03,
+        0.051,
+        0.04,
+        0.031,
+        0.041,
+        0.03,
+        0.049,
+        0.03
+      ]
+    }
+  }
+}
