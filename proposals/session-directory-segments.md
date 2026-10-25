@@ -114,7 +114,7 @@ of `metadata`:
 | Release, nothing left | `metadata` + `dir_summary` + lock | the session's bucket + `dir_summary` + lock |
 | Release, items left | `metadata` + `dir_summary` + lock | the session's bucket + tail segment + `ready_meta` + `dir_summary` + lock |
 | Combined release and claim | `metadata` + `dir_summary` + 2 locks | the union: about 5–7 keys, each ≤ 16 KB |
-| `RegisterSession` | `metadata` + `dir_summary` | the session's bucket + tail segment + `ready_meta` + `dir_summary` |
+| Registration (`ReportSessionChanges`) | `metadata` + `dir_summary` | each new session's bucket + tail segment + `ready_meta` + `dir_summary`, for the whole batch |
 | Eviction pass | `metadata` + `dir_summary` | only the buckets with changed entries, + any segments appended to, + `dir_summary` |
 
 ### Activation
@@ -135,15 +135,9 @@ of `metadata`:
 
 ### Existing state
 
-When a coordinator activates and finds the old `metadata` key, it converts it in one turn and one
-save:
-
-1. the entries go into buckets
-2. the ReadyQueue goes into segments, numbered in order
-3. `metadata` is deleted
-
-`dir_summary` already has the right shape. The conversion code stays for one release, then goes.
-See [decision 4](#4-existing-state).
+None is converted or read. DaprMQ hasn't reached v1, so there's no compatibility to keep with
+existing actors: an old `metadata` key is simply ignored, and coordinators start from the new
+layout. See [decision 4](#4-existing-state).
 
 ## Expected effect
 
@@ -169,7 +163,6 @@ test should show how much of its limit is turn count rather than turn cost.
 | **Very small directories,** tens to a few hundred sessions | today's blob is already tiny, so the cost of each extra row dominates. A claim writes 3–4 keys instead of 2 | probably under 1 ms per save; about break-even at a few hundred sessions, better above | none; confirm in the 1,000-session check below |
 | **An eviction pass that changes entries in many buckets at once,** such as marking hundreds Idle | it rewrites every bucket it touched. If that's most of them, it writes about today's blob size, spread over up to 64 rows | the same as today or slightly worse, for that pass. Passes are bounded (≤ 64 reads, 250 ms) and run every 30 s | none |
 | **The console's session list** | 64 parallel state reads and a merge instead of one read | tens of ms more per page view, and 64 requests to daprd | only when the page is opened; page through buckets if needed |
-| **The upgrade** | each coordinator converts its blob in one turn: a large read, then writing 64 buckets and the segments. Calls wait behind that turn | a one-off pause of perhaps 100–300 ms per queue at 10,000 sessions | none |
 
 The first row is the one that matters. Placement moves the coordinator when workers scale or
 restart, which tends to happen under load. The others are small, rare or one-off.
@@ -201,8 +194,8 @@ Weighed on blocking (what waits on what) and latency.
 | c. Dynamic (split a bucket that grows past a size) | ~16 KB always | grows with the directory | every reader has to discover the bucket layout; **discounted** as complexity with no measured need |
 
 **Recommend a.** 160 KB per change at 100,000 sessions is still about 6× less than a 10,000-session
-blob today. The count is a constant, so changing it later means converting existing state, the same
-code path as [decision 4](#4-existing-state).
+blob today. The count is a constant: changing it later moves sessions to other buckets, which before v1 is
+handled like any other layout change ([decision 4](#4-existing-state)).
 
 ### 2. The ReadyQueue's shape
 
@@ -228,11 +221,12 @@ code path as [decision 4](#4-existing-state).
 
 | Option | Risk | Cost |
 |---|---|---|
-| a. No conversion: start each coordinator empty, as [session-directory.md](session-directory.md#no-migration) did | queues upgraded mid-flight lose their directory. Sessions with work can't be claimed until each is reported again, and an idle reporter sends nothing | none |
-| **b. Convert on activation**, then drop the code after one release | one turn with a large read and one save per coordinator | ~40 lines and a test |
+| **a. No conversion: start each coordinator empty**, as [session-directory.md](session-directory.md#no-migration) did | queues upgraded mid-flight lose their directory. Sessions with work can't be claimed until each is reported again, and an idle reporter sends nothing | none |
+| b. Convert on activation, then drop the code after one release | one turn with a large read and one save per coordinator | ~40 lines, a test, and a reader fallback |
 
-**Recommend b.** Unlike the earlier change, the directory is now the only record of which sessions
-hold work, so losing it strands their messages.
+**Decided a (2026-10-25).** DaprMQ hasn't reached v1, so the project keeps no compatibility with
+existing actors or state. b was built first and then removed. Upgrading a queue mid-flight before v1
+means draining it first, or accepting that its sessions are re-registered only as they get new work.
 
 ## Alternatives considered
 
@@ -263,10 +257,7 @@ hold work, so losing it strands their messages.
 5. **Activation:**
    - activation reads only `dir_summary`
    - an entry with no `_lastActiveAt` defers an Empty report as if marked Active at activation
-6. **Conversion:**
-   - an old `metadata` becomes buckets and segments in one save, with order and counts kept
-   - `metadata` is deleted
-7. **Reader:** `ReadSessionDirectoryAsync` merges 64 buckets and treats a missing bucket as empty.
+6. **Reader:** `ReadSessionDirectoryAsync` merges 64 buckets and treats a missing bucket as empty.
 
 ## Results
 

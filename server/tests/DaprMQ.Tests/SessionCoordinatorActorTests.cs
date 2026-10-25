@@ -68,7 +68,6 @@ public class SessionCoordinatorActorTests
         var mock = new Mock<IActorStateManager>();
         var stateData = new Dictionary<string, object>();
 
-        SetupTryGet<SessionCoordinatorMetadata>(mock, stateData);
         SetupTryGet<DirectorySummary>(mock, stateData);
         SetupTryGet<Dictionary<string, SessionEntry>>(mock, stateData);
         SetupTryGet<List<ReadyItem>>(mock, stateData);
@@ -178,11 +177,12 @@ public class SessionCoordinatorActorTests
         return harness;
     }
 
+    /// <summary>Each session reported as having work, one report each, as a worker's reporter would.</summary>
     private static async Task RegisterAsync(Harness h, params string[] sessionIds)
     {
         foreach (var id in sessionIds)
         {
-            await h.Actor.RegisterSession(new RegisterSessionRequest { SessionId = id });
+            await h.Actor.ReportSessionChanges(new ReportSessionChangesRequest { Changes = [new SessionChange { SessionId = id, HasWork = true }] });
         }
     }
 
@@ -256,49 +256,7 @@ public class SessionCoordinatorActorTests
     }
 
     [Fact]
-    public async Task OnActivate_OldSingleBlob_IsConvertedInOneSave()
-    {
-        var (mock, data) = CreateMockStateManager();
-        data["metadata"] = new SessionCoordinatorMetadata
-        {
-            SessionDirectory = new()
-            {
-                ["a"] = new SessionEntry { Active = true },
-                ["b"] = new SessionEntry { Active = true },
-                ["idle"] = new SessionEntry { IdleSince = 1 }
-            },
-            ReadyQueue = ["b", "a"]
-        };
-        data["dir_summary"] = new DirectorySummary { TotalCount = 3, ActiveCount = 2 };
-
-        var h = await CreateAsync(state: (mock, data));
-
-        Assert.False(h.Data.ContainsKey("metadata"));
-        Assert.Equal(["a", "b", "idle"], h.Directory.Keys.Order());
-        Assert.Equal(["b", "a"], h.ReadyQueue);
-        h.State.Verify(m => m.SaveStateAsync(It.IsAny<CancellationToken>()), Times.Once());
-        var claim = await h.Actor.AcceptSession(new AcceptSessionRequest());
-        Assert.Equal("b", claim.SessionId);
-    }
-
-    // --- RegisterSession ---
-
-    [Fact]
-    public async Task RegisterSession_UnknownSession_AddsItActiveAndQueued()
-    {
-        var h = await CreateAsync();
-
-        var result = await h.Actor.RegisterSession(new RegisterSessionRequest { SessionId = "order-42" });
-
-        Assert.True(result.Success);
-        Assert.True(h.Entry("order-42").Active);
-        Assert.True(h.Entry("order-42").Queued);
-        Assert.Equal(["order-42"], h.ReadyQueue);
-        Assert.Equal(new DirectorySummary { TotalCount = 1, ActiveCount = 1 }, h.Summary);
-    }
-
-    [Fact]
-    public async Task RegisterSession_CalledTwice_DoesNotDuplicateOrWriteAgain()
+    public async Task Report_ActiveTwice_DoesNotDuplicateOrWriteAgain()
     {
         var h = await CreateAsync();
         await RegisterAsync(h, "order-42");
@@ -312,18 +270,17 @@ public class SessionCoordinatorActorTests
     }
 
     [Fact]
-    public async Task RegisterSession_EmptySessionId_ReturnsFailure()
+    public async Task Report_EmptySessionId_IsIgnored()
     {
         var h = await CreateAsync();
 
-        var result = await h.Actor.RegisterSession(new RegisterSessionRequest { SessionId = "" });
+        await RegisterAsync(h, "");
 
-        Assert.False(result.Success);
         Assert.Empty(h.Directory);
     }
 
     [Fact]
-    public async Task RegisterSession_FirstEntry_RegistersEvictionReminderOnce()
+    public async Task Report_FirstEntry_RegistersEvictionReminderOnce()
     {
         var h = await CreateAsync();
 
@@ -334,7 +291,7 @@ public class SessionCoordinatorActorTests
     }
 
     [Fact]
-    public async Task RegisterSession_LeasedIdleSession_BecomesActiveButNotQueued()
+    public async Task Report_ActiveForLeasedIdleSession_BecomesActiveButNotQueued()
     {
         var h = await CreateAsync();
         await MakeIdleAsync(h, "order-42");

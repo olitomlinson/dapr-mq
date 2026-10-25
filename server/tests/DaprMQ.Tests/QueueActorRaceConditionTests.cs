@@ -110,8 +110,6 @@ public class QueueActorRaceConditionTests
                 It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
-        var mockSessionCoordinatorActorInvoker = new Mock<ISessionCoordinatorActorInvoker>();
-
         var tokenIssuer = new ObjectClaimTokenIssuer(new ObjectClaimTokenConfig
         {
             SigningKey = "test-signing-key-that-is-long-enough-for-hmac-sha256"u8.ToArray(),
@@ -122,7 +120,7 @@ public class QueueActorRaceConditionTests
         var lockConfig = new LockConfig { MaxDeliveryCount = 10, SweepBatchSize = 200 };
 
         var actorHost = ActorHost.CreateForTest<QueueActor>(testOptions);
-        var actor = new QueueActor(actorHost, mockInvoker.Object, mockBlobReaperActorInvoker.Object, mockSessionCoordinatorActorInvoker.Object, tokenIssuer, blobReapConfig, idempotencyConfig, lockConfig, Mock.Of<ICatalogRegistrar>(), Mock.Of<ISessionActivityReporter>(), new SessionDirectoryConfig());
+        var actor = new QueueActor(actorHost, mockInvoker.Object, mockBlobReaperActorInvoker.Object, tokenIssuer, blobReapConfig, idempotencyConfig, lockConfig, Mock.Of<ICatalogRegistrar>(), Mock.Of<ISessionActivityReporter>(), new SessionDirectoryConfig());
 
         var stateManagerProperty = typeof(Actor).GetProperty("StateManager");
         stateManagerProperty?.SetValue(actor, mockStateManager.Object);

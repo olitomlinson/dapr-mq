@@ -112,11 +112,6 @@ public class QueueActorLockExpiryTests
                 It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<ScheduleDeletionRequest>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
-        var mockSessionCoordinatorActorInvoker = new Mock<ISessionCoordinatorActorInvoker>();
-        mockSessionCoordinatorActorInvoker.Setup(i => i.InvokeMethodAsync<RegisterSessionRequest, RegisterSessionResponse>(
-                It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<RegisterSessionRequest>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new RegisterSessionResponse { Success = true });
-
         var tokenIssuer = new ObjectClaimTokenIssuer(new ObjectClaimTokenConfig
         {
             SigningKey = "test-signing-key-that-is-long-enough-for-hmac-sha256"u8.ToArray(),
@@ -128,7 +123,6 @@ public class QueueActorLockExpiryTests
             actorHost,
             mockInvoker.Object,
             mockBlobReaperActorInvoker.Object,
-            mockSessionCoordinatorActorInvoker.Object,
             tokenIssuer,
             new BlobReapConfig { BackstopSeconds = 86400, PostDownloadSeconds = 86400 },
             new IdempotencyConfig { TtlSeconds = 86400 },

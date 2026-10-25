@@ -144,7 +144,6 @@ public class QueueActor : Actor, IQueueActor, IRemindable
 {
     private readonly IQueueActorInvoker _actorInvoker;
     private readonly IBlobReaperActorInvoker _blobReaperActorInvoker;
-    private readonly ISessionCoordinatorActorInvoker _sessionCoordinatorActorInvoker;
     private readonly IObjectClaimTokenIssuer _objectClaimTokenIssuer;
     private readonly BlobReapConfig _blobReapConfig;
     private readonly IdempotencyConfig _idempotencyConfig;
@@ -360,7 +359,6 @@ public class QueueActor : Actor, IQueueActor, IRemindable
         ActorHost host,
         IQueueActorInvoker queueActorInvoker,
         IBlobReaperActorInvoker blobReaperActorInvoker,
-        ISessionCoordinatorActorInvoker sessionCoordinatorActorInvoker,
         IObjectClaimTokenIssuer objectClaimTokenIssuer,
         BlobReapConfig blobReapConfig,
         IdempotencyConfig idempotencyConfig,
@@ -371,7 +369,6 @@ public class QueueActor : Actor, IQueueActor, IRemindable
     {
         _actorInvoker = queueActorInvoker ?? throw new ArgumentNullException(nameof(queueActorInvoker));
         _blobReaperActorInvoker = blobReaperActorInvoker ?? throw new ArgumentNullException(nameof(blobReaperActorInvoker));
-        _sessionCoordinatorActorInvoker = sessionCoordinatorActorInvoker ?? throw new ArgumentNullException(nameof(sessionCoordinatorActorInvoker));
         _objectClaimTokenIssuer = objectClaimTokenIssuer ?? throw new ArgumentNullException(nameof(objectClaimTokenIssuer));
         _blobReapConfig = blobReapConfig ?? throw new ArgumentNullException(nameof(blobReapConfig));
         _idempotencyConfig = idempotencyConfig ?? throw new ArgumentNullException(nameof(idempotencyConfig));

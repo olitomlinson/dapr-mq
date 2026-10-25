@@ -13,13 +13,6 @@ namespace DaprMQ.Interfaces;
 public interface ISessionCoordinatorActor : IActor
 {
     /// <summary>
-    /// Called by a per-session QueueActor on its first non-empty save after each activation: marks
-    /// the session Active (adding it if unknown) and queues it for claiming if it has no lease.
-    /// Idempotent - safe to call more than once for the same id.
-    /// </summary>
-    Task<RegisterSessionResponse> RegisterSession(RegisterSessionRequest request);
-
-    /// <summary>
     /// Called by a worker's SessionActivityReporter with the lasting has-work changes of the
     /// sessions it hosts. An Empty change too soon after the session was last marked Active is
     /// returned as deferred rather than applied.

@@ -109,21 +109,13 @@ public class SessionQueueActorTests
         return (mock, stateData);
     }
 
-    /// <summary>
-    /// Creates and activates a QueueActor with the given actor id (default: a plain, non-session
-    /// id). RegisterSession calls the mocked ISessionCoordinatorActorInvoker makes
-    /// (self-registration, fired from OnActivateAsync when the id identifies this as a session
-    /// actor) resolve via registerSessionResponse/registerSessionThrows.
-    /// </summary>
-    private async Task<(QueueActor actor, Mock<ISessionCoordinatorActorInvoker> mockSessionCoordinatorInvoker)> CreateActorAsync(
+    /// <summary>Creates and activates a QueueActor with the given actor id (default: a plain, non-session id).</summary>
+    private async Task<QueueActor> CreateActorAsync(
         Mock<IActorStateManager> mockStateManager,
         string actorId = "test-queue",
-        RegisterSessionResponse? registerSessionResponse = null,
-        Exception? registerSessionThrows = null,
         ICatalogRegistrar? catalogRegistrar = null,
         ISessionActivityReporter? reporter = null,
         SessionDirectoryConfig? sessionDirectoryConfig = null,
-        Func<CancellationToken, Task<RegisterSessionResponse>>? registerSession = null,
         Mock<ActorTimerManager>? timerManager = null)
     {
         var mockTimerManager = timerManager ?? new Mock<ActorTimerManager>();
@@ -143,25 +135,6 @@ public class SessionQueueActorTests
                 It.IsAny<EnqueueRequest>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(new EnqueueResponse { Success = true });
-
-        var mockSessionCoordinatorInvoker = new Mock<ISessionCoordinatorActorInvoker>();
-        var registerSetup = mockSessionCoordinatorInvoker.Setup(i => i.InvokeMethodAsync<RegisterSessionRequest, RegisterSessionResponse>(
-                It.IsAny<ActorId>(),
-                It.IsAny<string>(),
-                It.IsAny<RegisterSessionRequest>(),
-                It.IsAny<CancellationToken>()));
-        if (registerSession != null)
-        {
-            registerSetup.Returns((ActorId _, string _, RegisterSessionRequest _, CancellationToken ct) => registerSession(ct));
-        }
-        else if (registerSessionThrows != null)
-        {
-            registerSetup.ThrowsAsync(registerSessionThrows);
-        }
-        else
-        {
-            registerSetup.ReturnsAsync(registerSessionResponse ?? new RegisterSessionResponse { Success = true });
-        }
 
         var mockBlobReaperActorInvoker = new Mock<IBlobReaperActorInvoker>();
         mockBlobReaperActorInvoker.Setup(i => i.InvokeMethodAsync<ScheduleDeletionRequest>(
@@ -185,7 +158,6 @@ public class SessionQueueActorTests
             actorHost,
             mockInvoker.Object,
             mockBlobReaperActorInvoker.Object,
-            mockSessionCoordinatorInvoker.Object,
             tokenIssuer,
             blobReapConfig,
             idempotencyConfig,
@@ -204,7 +176,7 @@ public class SessionQueueActorTests
             await (Task)onActivateMethod.Invoke(actor, null)!;
         }
 
-        return (actor, mockSessionCoordinatorInvoker);
+        return actor;
     }
 
     // --- After every method: observe; registration is the reporter's, never a call from the turn ---
@@ -212,52 +184,33 @@ public class SessionQueueActorTests
     private static Task<EnqueueResponse> EnqueueOneAsync(QueueActor actor) =>
         actor.Enqueue(new EnqueueRequest { Items = new List<EnqueueItem> { new EnqueueItem { ItemJson = "{\"id\":1}", Priority = 1 } } });
 
-    private static void VerifyRegistered(Mock<ISessionCoordinatorActorInvoker> invoker, Times times) =>
-        invoker.Verify(i => i.InvokeMethodAsync<RegisterSessionRequest, RegisterSessionResponse>(
-            It.Is<ActorId>(id => id.GetId() == "orders"),
-            "RegisterSession",
-            It.Is<RegisterSessionRequest>(r => r.SessionId == "order-42"),
-            It.IsAny<CancellationToken>()), times);
 
     [Fact]
-    public async Task Activation_DoesNotRegister()
+    public async Task NonEmptySave_ObservesWork()
     {
-        // Activation runs before the triggering method, so there is no work yet to register.
-        var (mockStateManager, _) = CreateMockStateManager();
-        var (_, invoker) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
-
-        VerifyRegistered(invoker, Times.Never());
-    }
-
-    [Fact]
-    public async Task NonEmptySave_ObservesWork_AndNeverCallsTheCoordinator()
-    {
-        // The enqueue must not wait on the coordinator: the reporter registers the session.
+        // The reporter registers the session; the session actor has no way to call the coordinator.
         var (mockStateManager, _) = CreateMockStateManager();
         var reporter = new Mock<ISessionActivityReporter>();
-        var (actor, invoker) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42", reporter: reporter.Object);
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42", reporter: reporter.Object);
 
         await EnqueueOneAsync(actor);
         await actor.AfterActorMethodAsync("Enqueue");
         await EnqueueOneAsync(actor);
         await actor.AfterActorMethodAsync("Enqueue");
 
-        VerifyRegistered(invoker, Times.Never());
-        invoker.VerifyNoOtherCalls();
         reporter.Verify(r => r.Observe("orders", "order-42", true, false), Times.Exactly(2));
     }
 
     [Fact]
-    public async Task EmptySave_ObservesEmpty_AndDoesNotRegister()
+    public async Task EmptySave_ObservesEmpty()
     {
         var (mockStateManager, _) = CreateMockStateManager();
         var reporter = new Mock<ISessionActivityReporter>();
-        var (actor, invoker) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42", reporter: reporter.Object);
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42", reporter: reporter.Object);
 
         await actor.Dequeue(new DequeueRequest { Count = 1 });
         await actor.AfterActorMethodAsync("Dequeue");
 
-        VerifyRegistered(invoker, Times.Never());
         reporter.Verify(r => r.Observe("orders", "order-42", false, false), Times.Once());
     }
 
@@ -291,7 +244,7 @@ public class SessionQueueActorTests
         var events = new List<string>();
         var (mockStateManager, _) = CreateMockStateManager();
         mockStateManager.Setup(m => m.SaveStateAsync(It.IsAny<CancellationToken>())).Callback(() => events.Add("save")).Returns(Task.CompletedTask);
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42",
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42",
             reporter: Reporter(reportedActive: false).Object, timerManager: RecordingTimers(events));
         events.Clear();
 
@@ -306,7 +259,7 @@ public class SessionQueueActorTests
     {
         var events = new List<string>();
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42",
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42",
             reporter: Reporter(reportedActive: true).Object, timerManager: RecordingTimers(events));
         events.Clear();
 
@@ -321,7 +274,7 @@ public class SessionQueueActorTests
         // A session flapping between empty and non-empty costs at most one scheduler call per window.
         var events = new List<string>();
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42",
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42",
             reporter: Reporter(reportedActive: false).Object, timerManager: RecordingTimers(events));
         events.Clear();
 
@@ -337,7 +290,7 @@ public class SessionQueueActorTests
     {
         var events = new List<string>();
         var (mockStateManager, stateData) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42",
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42",
             reporter: Reporter(reportedActive: false).Object,
             timerManager: RecordingTimers(events, reminderThrows: new HttpRequestException("scheduler unavailable")));
         mockStateManager.Invocations.Clear();
@@ -355,7 +308,7 @@ public class SessionQueueActorTests
     {
         var events = new List<string>();
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders", timerManager: RecordingTimers(events));
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders", timerManager: RecordingTimers(events));
         events.Clear();
 
         await EnqueueOneAsync(actor);
@@ -371,7 +324,7 @@ public class SessionQueueActorTests
         var events = new List<string>();
         var (mockStateManager, _) = CreateMockStateManager();
         var reporter = Reporter(reportedActive: false);
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42",
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42",
             reporter: reporter.Object, timerManager: RecordingTimers(events));
         await EnqueueOneAsync(actor);
         events.Clear();
@@ -388,7 +341,7 @@ public class SessionQueueActorTests
         var events = new List<string>();
         var (mockStateManager, _) = CreateMockStateManager();
         var reporter = Reporter(reportedActive: false);
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42",
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42",
             reporter: reporter.Object, timerManager: RecordingTimers(events));
         await EnqueueOneAsync(actor);
         reporter.Setup(r => r.IsReportedActive("orders", "order-42")).Returns(true);
@@ -404,7 +357,7 @@ public class SessionQueueActorTests
     {
         var events = new List<string>();
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42",
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42",
             reporter: Reporter(reportedActive: false).Object, timerManager: RecordingTimers(events));
         await EnqueueOneAsync(actor);
         await actor.Dequeue(new DequeueRequest { Count = 1 });
@@ -421,13 +374,12 @@ public class SessionQueueActorTests
         // A session abandoned mid-consumption holds its items in locks; it has to stay claimable.
         var (mockStateManager, _) = CreateMockStateManager();
         var reporter = new Mock<ISessionActivityReporter>();
-        var (actor, invoker) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42", reporter: reporter.Object);
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42", reporter: reporter.Object);
         await EnqueueOneAsync(actor);
         await actor.DequeueLocked(new DequeueLockedRequest());
 
         await actor.AfterActorMethodAsync("DequeueLocked");
 
-        VerifyRegistered(invoker, Times.Never());
         reporter.Verify(r => r.Observe("orders", "order-42", true, false), Times.Once());
     }
 
@@ -440,7 +392,7 @@ public class SessionQueueActorTests
         // view must follow, or a revival before the empty debounce would never be sent.
         var (mockStateManager, _) = CreateMockStateManager();
         var reporter = new Mock<ISessionActivityReporter>();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42", reporter: reporter.Object);
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42", reporter: reporter.Object);
         for (int i = 0; i < items; i++)
         {
             await EnqueueOneAsync(actor);
@@ -459,7 +411,7 @@ public class SessionQueueActorTests
         // can't know what the coordinator now believes: the reporter resends its current state.
         var (mockStateManager, _) = CreateMockStateManager();
         var reporter = new Mock<ISessionActivityReporter>();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42", reporter: reporter.Object);
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42", reporter: reporter.Object);
         await SeedActiveLeaseAsync(actor, "lapsed-lease", PastExpiry());
 
         await EnqueueOneAsync(actor);
@@ -475,7 +427,7 @@ public class SessionQueueActorTests
     {
         var (mockStateManager, _) = CreateMockStateManager();
         var reporter = new Mock<ISessionActivityReporter>();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42", reporter: reporter.Object);
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42", reporter: reporter.Object);
         await SeedActiveLeaseAsync(actor, "live-lease", FutureExpiry());
 
         await actor.Enqueue(new EnqueueRequest { Items = new List<EnqueueItem> { new EnqueueItem { ItemJson = "{\"id\":1}", Priority = 1 } } });
@@ -487,35 +439,32 @@ public class SessionQueueActorTests
     [Theory]
     [InlineData("SetSessionLease")]
     [InlineData("ClearSessionLease")]
-    public async Task CoordinatorOriginatedMethods_ObserveButNeverCallBackIntoTheCoordinator(string methodName)
+    public async Task CoordinatorOriginatedMethods_StillObserve(string methodName)
     {
         var (mockStateManager, _) = CreateMockStateManager();
         var reporter = new Mock<ISessionActivityReporter>();
-        var (actor, invoker) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42", reporter: reporter.Object);
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42", reporter: reporter.Object);
         await EnqueueOneAsync(actor);
 
         await actor.AfterActorMethodAsync(methodName);
 
-        VerifyRegistered(invoker, Times.Never());
         reporter.Verify(r => r.Observe("orders", "order-42", true, false, It.IsAny<bool>()), Times.Once());
     }
 
     [Theory]
     [InlineData("orders")]
     [InlineData("orders-session-order-42-deadletter")]
-    public async Task PlainQueueOrSessionDeadLetter_NeverObservesOrRegisters(string actorId)
+    public async Task PlainQueueOrSessionDeadLetter_NeverObserves(string actorId)
     {
         // A session's DLQ id still contains the session marker; registering it would let an
         // any-available claim hand a consumer its own dead-lettered items as a live session.
         var (mockStateManager, _) = CreateMockStateManager();
         var reporter = new Mock<ISessionActivityReporter>();
-        var (actor, invoker) = await CreateActorAsync(mockStateManager, actorId: actorId, reporter: reporter.Object);
+        var actor = await CreateActorAsync(mockStateManager, actorId: actorId, reporter: reporter.Object);
         await EnqueueOneAsync(actor);
 
         await actor.AfterActorMethodAsync("Enqueue");
 
-        invoker.Verify(i => i.InvokeMethodAsync<RegisterSessionRequest, RegisterSessionResponse>(
-            It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<RegisterSessionRequest>(), It.IsAny<CancellationToken>()), Times.Never());
         reporter.VerifyNoOtherCalls();
     }
 
@@ -524,7 +473,7 @@ public class SessionQueueActorTests
     {
         var (mockStateManager, _) = CreateMockStateManager();
         var reporter = new Mock<ISessionActivityReporter>();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42", reporter: reporter.Object);
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42", reporter: reporter.Object);
 
         await (Task)typeof(QueueActor)
             .GetMethod("OnDeactivateAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
@@ -537,7 +486,7 @@ public class SessionQueueActorTests
     public async Task SetSessionLease_StoresLeaseIdAndExpiry()
     {
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
 
         var result = await actor.SetSessionLease(new SetSessionLeaseRequest { LeaseId = "lease-1", ExpiresAt = 12345 });
 
@@ -551,7 +500,7 @@ public class SessionQueueActorTests
     public async Task SetSessionLease_CalledAgain_OverwritesPreviousLease()
     {
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
 
         await actor.SetSessionLease(new SetSessionLeaseRequest { LeaseId = "lease-1", ExpiresAt = 100 });
         await actor.SetSessionLease(new SetSessionLeaseRequest { LeaseId = "lease-2", ExpiresAt = 200 });
@@ -565,7 +514,7 @@ public class SessionQueueActorTests
     public async Task ClearSessionLease_NullsOutActiveLease()
     {
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
         await actor.SetSessionLease(new SetSessionLeaseRequest { LeaseId = "lease-1", ExpiresAt = 12345 });
 
         var result = await actor.ClearSessionLease();
@@ -580,7 +529,7 @@ public class SessionQueueActorTests
     public async Task ClearSessionLease_ReportsQueuedPlusLockedItemsRemaining()
     {
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
         await EnqueueOneAsync(actor);
         await EnqueueOneAsync(actor);
         await actor.DequeueLocked(new DequeueLockedRequest());
@@ -594,7 +543,7 @@ public class SessionQueueActorTests
     public async Task ClearSessionLease_WhenNoLeaseActive_IsANoOpSuccess()
     {
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders");
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders");
 
         var result = await actor.ClearSessionLease();
 
@@ -622,7 +571,7 @@ public class SessionQueueActorTests
     public async Task Dequeue_WithActiveLease_WrongLeaseId_ReturnsInvalidLeaseId()
     {
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
         await SeedActiveLeaseAsync(actor, "correct-lease", FutureExpiry());
 
         var result = await actor.Dequeue(new DequeueRequest { Count = 1, LeaseId = "wrong-lease" });
@@ -634,7 +583,7 @@ public class SessionQueueActorTests
     public async Task Dequeue_WithActiveLease_Expired_ReturnsSessionLeaseExpired()
     {
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
         await SeedActiveLeaseAsync(actor, "correct-lease", PastExpiry());
 
         var result = await actor.Dequeue(new DequeueRequest { Count = 1, LeaseId = "correct-lease" });
@@ -646,7 +595,7 @@ public class SessionQueueActorTests
     public async Task Dequeue_WithActiveLease_ValidLeaseId_Succeeds()
     {
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
         await actor.Enqueue(new EnqueueRequest { Items = new List<EnqueueItem> { new EnqueueItem { ItemJson = "{\"id\":1}", Priority = 1 } } });
         await SeedActiveLeaseAsync(actor, "correct-lease", FutureExpiry());
 
@@ -661,7 +610,7 @@ public class SessionQueueActorTests
     public async Task DequeueLocked_WithActiveLease_WrongLeaseId_ReturnsInvalidLeaseId()
     {
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
         await SeedActiveLeaseAsync(actor, "correct-lease", FutureExpiry());
 
         var result = await actor.DequeueLocked(new DequeueLockedRequest { LeaseId = "wrong-lease" });
@@ -673,7 +622,7 @@ public class SessionQueueActorTests
     public async Task DequeueLocked_WithActiveLease_Expired_ReturnsSessionLeaseExpired()
     {
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
         await SeedActiveLeaseAsync(actor, "correct-lease", PastExpiry());
 
         var result = await actor.DequeueLocked(new DequeueLockedRequest { LeaseId = "correct-lease" });
@@ -685,7 +634,7 @@ public class SessionQueueActorTests
     public async Task DequeueLocked_WithActiveLease_ValidLeaseId_Succeeds()
     {
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
         await actor.Enqueue(new EnqueueRequest { Items = new List<EnqueueItem> { new EnqueueItem { ItemJson = "{\"id\":1}", Priority = 1 } } });
         await SeedActiveLeaseAsync(actor, "correct-lease", FutureExpiry());
 
@@ -700,7 +649,7 @@ public class SessionQueueActorTests
     public async Task Acknowledge_WithActiveLease_WrongLeaseId_ReturnsInvalidLeaseId()
     {
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
         await SeedActiveLeaseAsync(actor, "correct-lease", FutureExpiry());
 
         var result = await actor.Acknowledge(new AcknowledgeRequest { LockId = "nonexistent-lock", LeaseId = "wrong-lease" });
@@ -713,7 +662,7 @@ public class SessionQueueActorTests
     public async Task Acknowledge_WithActiveLease_Expired_ReturnsSessionLeaseExpired()
     {
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
         await SeedActiveLeaseAsync(actor, "correct-lease", PastExpiry());
 
         var result = await actor.Acknowledge(new AcknowledgeRequest { LockId = "nonexistent-lock", LeaseId = "correct-lease" });
@@ -726,7 +675,7 @@ public class SessionQueueActorTests
     public async Task Acknowledge_WithActiveLease_ValidLeaseId_Succeeds()
     {
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
         await actor.Enqueue(new EnqueueRequest { Items = new List<EnqueueItem> { new EnqueueItem { ItemJson = "{\"id\":1}", Priority = 1 } } });
         await SeedActiveLeaseAsync(actor, "correct-lease", FutureExpiry());
         var dequeueResult = await actor.DequeueLocked(new DequeueLockedRequest { LeaseId = "correct-lease" });
@@ -740,7 +689,7 @@ public class SessionQueueActorTests
     public async Task ExtendLock_WithActiveLease_WrongLeaseId_ReturnsInvalidLeaseId()
     {
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
         await SeedActiveLeaseAsync(actor, "correct-lease", FutureExpiry());
 
         var result = await actor.ExtendLock(new ExtendLockRequest { LockId = "nonexistent-lock", LeaseId = "wrong-lease" });
@@ -753,7 +702,7 @@ public class SessionQueueActorTests
     public async Task ExtendLock_WithActiveLease_Expired_ReturnsSessionLeaseExpired()
     {
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
         await SeedActiveLeaseAsync(actor, "correct-lease", PastExpiry());
 
         var result = await actor.ExtendLock(new ExtendLockRequest { LockId = "nonexistent-lock", LeaseId = "correct-lease" });
@@ -766,7 +715,7 @@ public class SessionQueueActorTests
     public async Task ExtendLock_WithActiveLease_ValidLeaseId_Succeeds()
     {
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
         await actor.Enqueue(new EnqueueRequest { Items = new List<EnqueueItem> { new EnqueueItem { ItemJson = "{\"id\":1}", Priority = 1 } } });
         await SeedActiveLeaseAsync(actor, "correct-lease", FutureExpiry());
         var dequeueResult = await actor.DequeueLocked(new DequeueLockedRequest { LeaseId = "correct-lease" });
@@ -780,7 +729,7 @@ public class SessionQueueActorTests
     public async Task DeadLetter_WithActiveLease_WrongLeaseId_ReturnsInvalidLeaseId()
     {
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
         await SeedActiveLeaseAsync(actor, "correct-lease", FutureExpiry());
 
         var result = await actor.DeadLetter(new DeadLetterRequest { LockId = "nonexistent-lock", LeaseId = "wrong-lease" });
@@ -793,7 +742,7 @@ public class SessionQueueActorTests
     public async Task DeadLetter_WithActiveLease_Expired_ReturnsSessionLeaseExpired()
     {
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
         await SeedActiveLeaseAsync(actor, "correct-lease", PastExpiry());
 
         var result = await actor.DeadLetter(new DeadLetterRequest { LockId = "nonexistent-lock", LeaseId = "correct-lease" });
@@ -806,7 +755,7 @@ public class SessionQueueActorTests
     public async Task DeadLetter_WithActiveLease_ValidLeaseId_Succeeds()
     {
         var (mockStateManager, _) = CreateMockStateManager();
-        var (actor, _) = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
+        var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42");
         await actor.Enqueue(new EnqueueRequest { Items = new List<EnqueueItem> { new EnqueueItem { ItemJson = "{\"id\":1}", Priority = 1 } } });
         await SeedActiveLeaseAsync(actor, "correct-lease", FutureExpiry());
         var dequeueResult = await actor.DequeueLocked(new DequeueLockedRequest { LeaseId = "correct-lease" });

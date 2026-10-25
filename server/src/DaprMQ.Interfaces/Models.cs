@@ -35,21 +35,6 @@ public record EnqueueItem
 }
 
 /// <summary>
-/// Sent by a per-session queue actor to its SessionCoordinatorActor, directly, on its first
-/// non-empty save after each activation: the session has work, so mark it Active and claimable.
-/// Internal, actor-to-actor only - never exposed via QueueController/gRPC.
-/// </summary>
-public record RegisterSessionRequest
-{
-    public required string SessionId { get; init; }
-}
-
-public record RegisterSessionResponse
-{
-    public bool Success { get; init; }
-}
-
-/// <summary>
 /// Sent by SessionCoordinatorActor to a session's own QueueActor instance to sync its
 /// enforcement cache (ActiveSessionLeaseId/ActiveSessionLeaseExpiresAt) whenever a lease is
 /// claimed or renewed. Internal, actor-to-actor only - never exposed via QueueController/gRPC.

@@ -156,46 +156,4 @@ public class SessionDirectoryStoreTests
 
         Assert.Equal(["b", "a"], await DrainLiveAsync());
     }
-
-    // --- Converting the old blob ---
-
-    [Fact]
-    public async Task ConvertLegacy_KeepsEntriesAndReadyOrder_AndDeletesTheBlob()
-    {
-        _data[SessionDirectoryKeys.LegacyMetadataKey] = new object();
-        var legacy = new SessionCoordinatorMetadata
-        {
-            SessionDirectory = new()
-            {
-                ["a"] = new SessionEntry { Active = true },
-                ["b"] = new SessionEntry { Active = true },
-                ["idle"] = new SessionEntry { Active = false, IdleSince = 5 }
-            },
-            ReadyQueue = ["b", "a", "b", "evicted"]
-        };
-
-        await _store.ConvertLegacyAsync(legacy);
-
-        Assert.False(_data.ContainsKey(SessionDirectoryKeys.LegacyMetadataKey));
-        Assert.Equal(5, (await _store.GetEntryAsync("idle"))!.IdleSince);
-        Assert.Null((await _store.GetEntryAsync("idle"))!.ReadySeq);
-        Assert.Equal(["b", "a"], await DrainLiveAsync());
-    }
-
-    [Fact]
-    public async Task ConvertLegacy_ThenEnqueue_ContinuesAfterTheConvertedItems()
-    {
-        var legacy = new SessionCoordinatorMetadata
-        {
-            SessionDirectory = Enumerable.Range(0, 150).ToDictionary(i => $"s{i}", _ => new SessionEntry { Active = true }),
-            ReadyQueue = Enumerable.Range(0, 150).Select(i => $"s{i}").ToList()
-        };
-        await _store.ConvertLegacyAsync(legacy);
-
-        await _store.SetEntryAsync("new", await _store.EnqueueReadyAsync("new", new SessionEntry { Active = true }));
-
-        var live = await DrainLiveAsync();
-        Assert.Equal(151, live.Count);
-        Assert.Equal("new", live[^1]);
-    }
 }

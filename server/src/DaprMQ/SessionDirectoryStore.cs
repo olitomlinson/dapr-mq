@@ -26,9 +26,6 @@ public static class SessionDirectoryKeys
     public const string SummaryKey = "dir_summary";
     public const string ReadyMetaKey = "ready_meta";
 
-    /// <summary>The single blob the directory used to be: converted on activation, read as a fallback.</summary>
-    public const string LegacyMetadataKey = "metadata";
-
     public static string BucketKey(int bucket) => $"dir_{bucket}";
 
     public static string BucketKeyFor(string sessionId) => BucketKey(BucketFor(sessionId));
@@ -166,38 +163,6 @@ public sealed class SessionDirectoryStore(IActorStateManager state)
 
     public Task SetSummaryAsync(DirectorySummary summary) => state.SetStateAsync(SessionDirectoryKeys.SummaryKey, summary);
 
-    /// <summary>
-    /// Replaces the old single-blob layout. Entries go into buckets, and the ReadyQueue into segments
-    /// in its order, each queued entry taking its item's Seq. Stages everything and deletes the blob.
-    /// </summary>
-    public async Task ConvertLegacyAsync(SessionCoordinatorMetadata legacy)
-    {
-        var entries = legacy.SessionDirectory.ToDictionary(e => e.Key, e => e.Value with { ReadySeq = null });
-        var items = new List<ReadyItem>();
-        foreach (var sessionId in legacy.ReadyQueue.Distinct())
-        {
-            if (entries.TryGetValue(sessionId, out var entry))
-            {
-                long seq = items.Count + 1;
-                items.Add(new ReadyItem(sessionId, seq));
-                entries[sessionId] = entry with { ReadySeq = seq };
-            }
-        }
-
-        foreach (var bucket in entries.GroupBy(e => SessionDirectoryKeys.BucketFor(e.Key)))
-        {
-            await state.SetStateAsync(SessionDirectoryKeys.BucketKey(bucket.Key), bucket.ToDictionary(e => e.Key, e => e.Value));
-        }
-
-        long segments = 0;
-        foreach (var chunk in items.Chunk(SessionDirectoryKeys.ReadySegmentSize))
-        {
-            await state.SetStateAsync(SessionDirectoryKeys.ReadySegmentKey(segments++), chunk.ToList());
-        }
-        await state.SetStateAsync(SessionDirectoryKeys.ReadyMetaKey,
-            new ReadyMeta { Head = 0, Tail = Math.Max(0, segments - 1), NextSeq = items.Count + 1 });
-        await state.TryRemoveStateAsync(SessionDirectoryKeys.LegacyMetadataKey);
-    }
 
     private async Task<Dictionary<string, SessionEntry>> GetBucketAsync(int n, CancellationToken cancellationToken = default)
     {

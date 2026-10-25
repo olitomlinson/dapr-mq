@@ -108,7 +108,6 @@ should run at about the coordinator's claim rate.
 
 ## Not changing
 
-- `RegisterSession` stays on `ISessionCoordinatorActor`, so a worker on the old build can still call it during a rolling upgrade.
 - the reporter's Empty debounce, the coordinator's deferral window and the eviction pass
 - leases, one save per turn, the scaler, the wire protocol and the SDKs
 
