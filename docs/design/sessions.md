@@ -218,5 +218,8 @@ with no cross-process coordination.
 | State key | Type | Actor type / role |
 |---|---|---|
 | `metadata` | `ActorMetadata` (extended: `HasRegisteredSession`, `ActiveSessionLeaseId`, `ActiveSessionLeaseExpiresAt`) | `QueueActor`, both roles (fields meaningful only on a session-scoped instance) |
-| `metadata` | `SessionCoordinatorMetadata` (`SessionDirectory`) | `SessionCoordinatorActor` — separate actor type, no key collision with `QueueActor`'s own `metadata` |
+| `dir_{n}`, n = 0…63 | `Dictionary<string, SessionEntry>`: the entries of the sessions whose FNV-1a hash mod 64 is n | `SessionCoordinatorActor` |
+| `ready_{k}`, `ready_meta` | `List<ReadyItem>` segments of up to 100 `(SessionId, Seq)` items, and their head/tail pointers: the ReadyQueue. An item is live only while its entry's `ReadySeq` matches | `SessionCoordinatorActor` |
+| `dir_summary` | `DirectorySummary` (`TotalCount`, `ActiveCount`; what the KEDA scaler reads) | `SessionCoordinatorActor` |
+| `metadata` | `SessionCoordinatorMetadata`: the old single-blob directory, converted into the keys above when the coordinator activates (see [session-directory-segments.md](../../proposals/session-directory-segments.md)) | `SessionCoordinatorActor`, legacy only |
 | `session-lock_{sessionId}` | `SessionLockState` | `SessionCoordinatorActor` only |

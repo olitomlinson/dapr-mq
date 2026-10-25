@@ -161,31 +161,43 @@ public class QueueActorStateReaderTests
     }
 
     [Fact]
-    public async Task ReadSessionDirectoryAsync_ReturnsDirectorySessionIds()
+    public async Task ReadSessionDirectoryAsync_MergesTheBuckets_AndTheOldBlob()
     {
-        var coordinator = new SessionCoordinatorMetadata
+        // Each bucket is its own key; a coordinator not yet converted still has the old blob.
+        var bodies = new Dictionary<string, string>
         {
-            SessionDirectory = new Dictionary<string, SessionEntry>
+            [SessionDirectoryKeys.BucketKeyFor("a")] = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, SessionEntry> { ["a"] = new() }),
+            [SessionDirectoryKeys.LegacyMetadataKey] = System.Text.Json.JsonSerializer.Serialize(new SessionCoordinatorMetadata
             {
-                ["a"] = new SessionEntry(),
-                ["b"] = new SessionEntry()
-            }
+                SessionDirectory = new() { ["a"] = new(), ["c"] = new() }
+            })
         };
-        var json = System.Text.Json.JsonSerializer.Serialize(coordinator);
-        var reader = CreateReader(new HttpResponseMessage(HttpStatusCode.OK)
-        {
-            Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
-        }, out var mockHandler);
+        bodies[SessionDirectoryKeys.BucketKeyFor("b")] = System.Text.Json.JsonSerializer.Serialize(
+            new Dictionary<string, SessionEntry> { ["b"] = new() });
+        var requested = new List<string>();
+        var handler = new Mock<HttpMessageHandler>();
+        handler.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync", ItExpr.IsAny<HttpRequestMessage>(), ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync((HttpRequestMessage request, CancellationToken _) =>
+            {
+                var key = request.RequestUri!.Segments[^1];
+                lock (requested)
+                {
+                    requested.Add(key);
+                }
+                return new HttpResponseMessage(bodies.ContainsKey(key) ? HttpStatusCode.OK : HttpStatusCode.NoContent)
+                {
+                    Content = new StringContent(bodies.GetValueOrDefault(key, ""), System.Text.Encoding.UTF8, "application/json")
+                };
+            });
+        var factory = new Mock<IHttpClientFactory>();
+        factory.Setup(f => f.CreateClient(It.IsAny<string>())).Returns(new HttpClient(handler.Object));
+        var reader = new QueueActorStateReader(factory.Object, "QueueActor", "http://localhost:3500", "SessionCoordinatorActor");
 
         var sessions = await reader.ReadSessionDirectoryAsync("orders");
 
-        Assert.Equal(new[] { "a", "b" }, sessions.OrderBy(s => s));
-        mockHandler.Protected().Verify(
-            "SendAsync",
-            Times.Once(),
-            ItExpr.Is<HttpRequestMessage>(r =>
-                r.RequestUri!.ToString() == "http://localhost:3500/v1.0/actors/SessionCoordinatorActor/orders/state/metadata"),
-            ItExpr.IsAny<CancellationToken>());
+        Assert.Equal(["a", "b", "c"], sessions);
+        Assert.Equal(65, requested.Count);
     }
 
     [Fact]

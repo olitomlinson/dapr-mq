@@ -10,9 +10,9 @@ using DaprMQ.Interfaces;
 namespace DaprMQ;
 
 /// <summary>
-/// State for SessionCoordinatorActor: every session known to the queue, plus the FIFO of sessions
-/// waiting to be claimed. Kept in one blob - the directory stays small because eviction keeps up
-/// with session creation (see proposals/session-directory.md, "Why the directory isn't segmented").
+/// The SessionCoordinatorActor's old single-blob state ("metadata"): every session known to the
+/// queue, plus the FIFO of sessions waiting to be claimed. Now stored as buckets and segments
+/// (<see cref="SessionDirectoryStore"/>); kept only to convert existing state on activation.
 /// </summary>
 public record SessionCoordinatorMetadata
 {
@@ -35,8 +35,14 @@ public record SessionEntry
 {
     public bool Active { get; init; }
 
-    /// <summary>The id is currently in the ReadyQueue.</summary>
-    public bool Queued { get; init; }
+    /// <summary>
+    /// The Seq of this session's live item in the ReadyQueue; null when it isn't queued. An item with
+    /// any other Seq is stale.
+    /// </summary>
+    public long? ReadySeq { get; init; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool Queued => ReadySeq != null;
 
     public double? IdleSince { get; init; }
 
@@ -96,8 +102,12 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
     // (which is the queueId, since SessionCoordinatorActor and its QueueActor share an id string).
     private const string SessionActorIdMarker = "-session-";
 
-    internal const string MetadataKey = "metadata";
-    internal const string SummaryKey = "dir_summary";
+    internal const string MetadataKey = SessionDirectoryKeys.LegacyMetadataKey;
+    internal const string SummaryKey = SessionDirectoryKeys.SummaryKey;
+
+    // A claim drops at most this many stale ReadyQueue items, so a long stale run can't stretch one
+    // turn without limit (the next claim carries on).
+    private const int MaxStaleDropsPerClaim = 500;
     internal const string EvictionReminderName = "directory-evict";
     internal const string CatchUpReminderName = "directory-evict-catch-up";
     private const string LeaseReminderPrefix = "session-";
@@ -106,6 +116,15 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
     // older than that registration, so it is deferred. Rebuilt on activation as "all Active entries,
     // now", which only defers Empty changes for one window.
     private readonly Dictionary<string, double> _lastActiveAt = new();
+
+    // An Active entry with no _lastActiveAt record counts as marked Active at activation, as if
+    // activation had recorded every Active entry, without reading them all.
+    private double _activatedAt;
+
+    private SessionDirectoryStore? _directory;
+    private SessionDirectoryStore Dir => _directory ??= new SessionDirectoryStore(StateManager);
+
+    private double LastActiveAt(string sessionId) => _lastActiveAt.TryGetValue(sessionId, out var at) ? at : _activatedAt;
 
     private bool _evictionReminderRegistered;
 
@@ -124,27 +143,19 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
         // A queue that only ever receives session enqueues never activates its own QueueActor, so
         // the coordinator (same id) registers it in the catalog.
         _catalogRegistrar.Register(new CatalogEntry { Id = Id.GetId(), Kind = CatalogEntryKind.Queue, RegisteredAt = DateTimeOffset.UtcNow });
+        _activatedAt = Now();
 
-        var metadataExists = await StateManager.TryGetStateAsync<SessionCoordinatorMetadata>(MetadataKey);
-        if (!metadataExists.HasValue)
+        // Reads only dir_summary, plus the old single blob once, to convert it.
+        var legacy = await StateManager.TryGetStateAsync<SessionCoordinatorMetadata>(MetadataKey);
+        if (legacy.HasValue)
         {
-            await StateManager.SetStateAsync(MetadataKey, new SessionCoordinatorMetadata());
-            await StateManager.SetStateAsync(SummaryKey, new DirectorySummary());
+            await Dir.ConvertLegacyAsync(legacy.Value);
             await StateManager.SaveStateAsync();
-            Logger.LogDebug("SessionCoordinatorActor activated and metadata initialized");
-            return;
+            Logger.LogInformation("Converted the session directory of queue {QueueId} ({Count} sessions) to buckets",
+                Id.GetId(), legacy.Value.SessionDirectory.Count);
         }
 
-        double now = Now();
-        foreach (var (sessionId, entry) in metadataExists.Value.SessionDirectory)
-        {
-            if (entry.Active)
-            {
-                _lastActiveAt[sessionId] = now;
-            }
-        }
-
-        if (metadataExists.Value.SessionDirectory.Count > 0)
+        if ((await Dir.GetSummaryAsync()).TotalCount > 0)
         {
             await EnsureEvictionReminderAsync();
         }
@@ -169,18 +180,10 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
         return new ReportSessionChangesResponse { Success = true, Deferred = deferred };
     }
 
-    /// <summary>
-    /// Active is always applied: a wrong Active heals at the next claim or lease end. Empty is the
-    /// one that can strand work, so it is deferred if the session was marked Active within the
-    /// deferral window - it may have been sent before that registration and arrived after it.
-    /// </summary>
     private async Task<List<string>> ApplyChangesAsync(IEnumerable<SessionChange> changes)
     {
         double now = Now();
-        var metadata = await GetMetadataAsync();
-        var summary = await GetSummaryAsync();
-        var directory = new Dictionary<string, SessionEntry>(metadata.SessionDirectory);
-        var ready = new List<string>(metadata.ReadyQueue);
+        var summary = await Dir.GetSummaryAsync();
         var deferred = new List<string>();
         bool changed = false;
 
@@ -191,7 +194,7 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
                 continue;
             }
 
-            directory.TryGetValue(change.SessionId, out var entry);
+            var entry = await Dir.GetEntryAsync(change.SessionId);
             if (change.HasWork)
             {
                 _lastActiveAt[change.SessionId] = now;
@@ -207,7 +210,7 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
                     summary = summary with { TotalCount = summary.TotalCount + 1 };
                 }
 
-                entry = await MarkActiveAsync(entry ?? new SessionEntry(), change.SessionId, ready, now, neverClaimed: entry == null);
+                entry = await MarkActiveAsync(entry ?? new SessionEntry(), change.SessionId, now, neverClaimed: entry == null);
                 summary = summary with { ActiveCount = summary.ActiveCount + 1 };
             }
             else
@@ -217,7 +220,7 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
                     continue; // unknown or already Idle: nothing to do
                 }
 
-                if (_lastActiveAt.TryGetValue(change.SessionId, out var at) && now - at < _config.DeferralWindow.TotalSeconds)
+                if (now - LastActiveAt(change.SessionId) < _config.DeferralWindow.TotalSeconds)
                 {
                     deferred.Add(change.SessionId);
                     continue;
@@ -227,7 +230,7 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
                 summary = summary with { ActiveCount = summary.ActiveCount - 1 };
             }
 
-            directory[change.SessionId] = entry;
+            await Dir.SetEntryAsync(change.SessionId, entry);
             changed = true;
         }
 
@@ -235,7 +238,7 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
 
         if (changed)
         {
-            await SetDirectoryAsync(metadata with { SessionDirectory = directory, ReadyQueue = ready }, summary);
+            await Dir.SetSummaryAsync(summary);
             await StateManager.SaveStateAsync();
             await EnsureEvictionReminderAsync();
         }
@@ -267,8 +270,7 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
 
     private async Task<AcceptSessionResponse> AcceptTargetedAsync(string sessionId, int leaseSeconds)
     {
-        var metadata = await GetMetadataAsync();
-        if (!metadata.SessionDirectory.ContainsKey(sessionId) && !await TryAddFromSessionStateAsync(sessionId))
+        if (await Dir.GetEntryAsync(sessionId) == null && !await TryAddFromSessionStateAsync(sessionId))
         {
             return new AcceptSessionResponse
             {
@@ -320,51 +322,58 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
         }
 
         double now = Now();
-        var metadata = await GetMetadataAsync();
-        var summary = await GetSummaryAsync();
+        var summary = await Dir.GetSummaryAsync();
         _lastActiveAt[sessionId] = now;
-        await SetDirectoryAsync(
-            metadata with
-            {
-                SessionDirectory = WithAdded(metadata.SessionDirectory, sessionId,
-                    new SessionEntry { Active = true, NextCheckAt = now + _config.Backstop.TotalSeconds })
-            },
-            summary with { TotalCount = summary.TotalCount + 1, ActiveCount = summary.ActiveCount + 1 });
+        await Dir.SetEntryAsync(sessionId, new SessionEntry { Active = true, NextCheckAt = now + _config.Backstop.TotalSeconds });
+        await Dir.SetSummaryAsync(summary with { TotalCount = summary.TotalCount + 1, ActiveCount = summary.ActiveCount + 1 });
         await EnsureEvictionReminderAsync();
         return true;
     }
 
-    private static Dictionary<string, SessionEntry> WithAdded(Dictionary<string, SessionEntry> directory, string sessionId, SessionEntry entry) =>
-        new(directory) { [sessionId] = entry };
-
     /// <summary>
-    /// Takes the ReadyQueue's head. Stale ids (evicted, Idle, leased) are dropped; a session whose
-    /// actor can't be reached goes to the tail so it doesn't block the head. Bounded by
-    /// MaxClaimAttempts, and never tries the same session twice in one call.
+    /// Takes the ReadyQueue's head. Stale items (their session claimed, evicted or queued again
+    /// since) are dropped without counting as attempts, up to MaxStaleDropsPerClaim. Live ids that
+    /// are Idle or leased are dropped; a session whose actor can't be reached goes to the tail so it
+    /// doesn't block the head. Bounded by MaxClaimAttempts, and never tries the same session twice in
+    /// one call.
     /// </summary>
     private async Task<AcceptSessionResponse> AcceptAnyAvailableAsync(int leaseSeconds)
     {
         var tried = new HashSet<string>();
         string? unreachable = null;
+        int attempts = 0;
+        int staleDropped = 0;
 
-        for (int attempt = 0; attempt < MaxClaimAttempts; attempt++)
+        while (attempts < MaxClaimAttempts)
         {
-            var metadata = await GetMetadataAsync();
-            if (metadata.ReadyQueue.Count == 0)
+            var item = await Dir.PeekReadyAsync();
+            if (item == null)
             {
                 break;
             }
 
-            string sessionId = metadata.ReadyQueue[0];
+            var entry = await Dir.GetEntryAsync(item.SessionId);
+            if (entry?.ReadySeq != item.Seq)
+            {
+                await Dir.PopReadyAsync();
+                if (++staleDropped >= MaxStaleDropsPerClaim)
+                {
+                    break;
+                }
+                continue;
+            }
+
+            attempts++;
+            string sessionId = item.SessionId;
             if (!tried.Add(sessionId))
             {
                 break; // back round to a session that already failed this call
             }
 
-            metadata.SessionDirectory.TryGetValue(sessionId, out var entry);
-            if (entry is not { Active: true } || await IsLeasedAsync(sessionId, Now()))
+            if (!entry.Active || await IsLeasedAsync(sessionId, Now()))
             {
-                await SetMetadataAsync(RemoveFromReady(metadata, sessionId));
+                await Dir.PopReadyAsync();
+                await Dir.SetEntryAsync(sessionId, entry with { ReadySeq = null });
                 continue;
             }
 
@@ -374,13 +383,8 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
                 return claimed;
             }
 
-            // The lease sync is a cross-actor await: re-read before moving the id to the tail.
-            var current = RemoveFromReady(await GetMetadataAsync(), sessionId);
-            await SetMetadataAsync(current with
-            {
-                SessionDirectory = WithEntry(current.SessionDirectory, sessionId, e => e with { Queued = true }),
-                ReadyQueue = [.. current.ReadyQueue, sessionId]
-            });
+            await Dir.PopReadyAsync();
+            await Dir.SetEntryAsync(sessionId, await Dir.EnqueueReadyAsync(sessionId, entry with { ReadySeq = null }));
             unreachable = sessionId;
         }
 
@@ -420,12 +424,13 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
             ExpiresAt = expiresAt
         });
 
-        // Re-read rather than reusing an earlier copy: the lease sync above is a cross-actor await,
-        // and a change that lands during it must not be clobbered by a stale directory.
-        var metadata = await GetMetadataAsync();
-        if (metadata.ReadyQueue.Count > 0 && metadata.ReadyQueue[0] == sessionId)
+        // Claimed from the head: its item leaves the queue. A targeted claim leaves the session's
+        // item where it is; it's dropped as leased when it reaches the head.
+        var entry = await Dir.GetEntryAsync(sessionId);
+        if (entry?.ReadySeq is { } seq && await Dir.PeekReadyAsync() is { } head && head.SessionId == sessionId && head.Seq == seq)
         {
-            await SetMetadataAsync(RemoveFromReady(metadata, sessionId));
+            await Dir.PopReadyAsync();
+            await Dir.SetEntryAsync(sessionId, entry with { ReadySeq = null });
         }
 
         try
@@ -667,19 +672,11 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
         await StateManager.SaveStateAsync();
     }
 
-    /// <summary>
-    /// A lease has ended. Nothing left makes the entry Idle; items left (or an unknown count, which
-    /// errs toward availability) put the session back on the ReadyQueue. Stages the change; the
-    /// caller's turn saves it.
-    /// </summary>
     private async Task ApplyLeaseEndAsync(string sessionId, long? remaining)
     {
         double now = Now();
-        var metadata = await GetMetadataAsync();
-        var summary = await GetSummaryAsync();
-        var directory = new Dictionary<string, SessionEntry>(metadata.SessionDirectory);
-        var ready = new List<string>(metadata.ReadyQueue);
-        directory.TryGetValue(sessionId, out var entry);
+        var entry = await Dir.GetEntryAsync(sessionId);
+        var summary = await Dir.GetSummaryAsync();
 
         if (remaining == 0)
         {
@@ -688,7 +685,7 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
                 return;
             }
 
-            directory[sessionId] = MarkIdle(entry, now);
+            entry = MarkIdle(entry, now);
             summary = summary with { ActiveCount = summary.ActiveCount - 1 };
         }
         else
@@ -704,10 +701,11 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
                 _lastActiveAt[sessionId] = now;
             }
 
-            directory[sessionId] = await MarkActiveAsync(entry ?? new SessionEntry(), sessionId, ready, now);
+            entry = await MarkActiveAsync(entry ?? new SessionEntry(), sessionId, now);
         }
 
-        await SetDirectoryAsync(metadata with { SessionDirectory = directory, ReadyQueue = ready }, summary);
+        await Dir.SetEntryAsync(sessionId, entry);
+        await Dir.SetSummaryAsync(summary);
         await EnsureEvictionReminderAsync();
     }
 
@@ -720,7 +718,7 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
     private async Task EvictionPassAsync()
     {
         double now = Now();
-        var summary = await GetSummaryAsync();
+        var summary = await Dir.GetSummaryAsync();
         if (summary.TotalCount == 0)
         {
             await UnregisterEvictionReminderAsync();
@@ -729,28 +727,32 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
 
         // Real time, not _time: the cap is about how long callers actually wait on this turn.
         using var deadline = new CancellationTokenSource(_config.MaxPassDuration);
-        var metadata = await GetMetadataAsync();
-        var directory = new Dictionary<string, SessionEntry>(metadata.SessionDirectory);
-        var ready = new List<string>(metadata.ReadyQueue);
+        var entries = new Dictionary<string, SessionEntry>();
         bool changed = false;
         bool stoppedEarly = false;
         var toRead = new List<string>();
 
         try
         {
+            // Every bucket, read from the store the first time only (then cached).
+            foreach (var (sessionId, entry) in await Dir.AllEntriesAsync(deadline.Token))
+            {
+                entries[sessionId] = entry;
+            }
+
             // Repair: an Active session whose lease lapsed without its expiry reminder firing is
             // pushed back onto the ReadyQueue. No read: a wrong push heals at the next lease end.
-            foreach (var (sessionId, entry) in metadata.SessionDirectory.Where(e => e.Value is { Active: true, Queued: false }))
+            foreach (var (sessionId, entry) in entries.Where(e => e.Value is { Active: true, Queued: false }).ToList())
             {
                 if (!await IsLeasedAsync(sessionId, now, deadline.Token))
                 {
-                    ready.Add(sessionId);
-                    directory[sessionId] = entry with { Queued = true };
+                    entries[sessionId] = await Dir.EnqueueReadyAsync(sessionId, entry);
+                    await Dir.SetEntryAsync(sessionId, entries[sessionId]);
                     changed = true;
                 }
             }
 
-            var due = directory.Where(e => e.Value.NextCheckAt <= now).OrderBy(e => e.Value.NextCheckAt).Select(e => e.Key).ToList();
+            var due = entries.Where(e => e.Value.NextCheckAt <= now).OrderBy(e => e.Value.NextCheckAt).Select(e => e.Key).ToList();
             foreach (var sessionId in due)
             {
                 if (toRead.Count >= _config.MaxReadsPerPass)
@@ -759,12 +761,13 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
                     break;
                 }
 
-                var entry = directory[sessionId];
+                var entry = entries[sessionId];
                 if (await IsLeasedAsync(sessionId, now, deadline.Token))
                 {
                     // A lease end decides a leased session; look again later.
                     var later = entry.Active ? _config.Backstop : _config.Grace;
-                    directory[sessionId] = entry with { NextCheckAt = now + later.TotalSeconds };
+                    entries[sessionId] = entry with { NextCheckAt = now + later.TotalSeconds };
+                    await Dir.SetEntryAsync(sessionId, entries[sessionId]);
                     changed = true;
                     continue;
                 }
@@ -785,13 +788,13 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
 
         foreach (var (sessionId, sessionState) in results)
         {
-            var entry = directory[sessionId];
+            var entry = entries[sessionId];
             bool hasWork = !sessionState.IsEmpty;
 
             if (!entry.Active && !hasWork)
             {
-                directory.Remove(sessionId);
-                ready.Remove(sessionId);
+                // Its ReadyQueue item, if any, is now stale and is dropped at the head.
+                await Dir.RemoveEntryAsync(sessionId);
                 _lastActiveAt.Remove(sessionId);
                 summary = summary with { TotalCount = summary.TotalCount - 1 };
                 Logger.LogDebug("Evicted idle session {SessionId} from directory", sessionId);
@@ -799,14 +802,14 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
             else if (!entry.Active)
             {
                 // A lost Active report: promote it.
-                directory[sessionId] = await MarkActiveAsync(entry, sessionId, ready, now);
+                await Dir.SetEntryAsync(sessionId, await MarkActiveAsync(entry, sessionId, now));
                 _lastActiveAt[sessionId] = now;
                 summary = summary with { ActiveCount = summary.ActiveCount + 1 };
             }
             else if (!hasWork)
             {
                 // A lost Empty report: demote it.
-                directory[sessionId] = MarkIdle(entry, now);
+                await Dir.SetEntryAsync(sessionId, MarkIdle(entry, now));
                 summary = summary with { ActiveCount = summary.ActiveCount - 1 };
             }
             else
@@ -818,10 +821,9 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
                 var backedOff = entry with { NextCheckAt = now + backoff, BackoffSeconds = backoff };
                 if (!backedOff.Queued)
                 {
-                    ready.Add(sessionId);
-                    backedOff = backedOff with { Queued = true };
+                    backedOff = await Dir.EnqueueReadyAsync(sessionId, backedOff);
                 }
-                directory[sessionId] = backedOff;
+                await Dir.SetEntryAsync(sessionId, backedOff);
             }
 
             changed = true;
@@ -829,7 +831,7 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
 
         if (changed)
         {
-            await SetDirectoryAsync(metadata with { SessionDirectory = directory, ReadyQueue = ready }, summary);
+            await Dir.SetSummaryAsync(summary);
             await StateManager.SaveStateAsync();
         }
 
@@ -883,7 +885,7 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
 
     /// <param name="neverClaimed">The session had no entry, so no claim can have leased it: skip the
     /// lease read. If it were leased after all, an any-available claim drops it at the head.</param>
-    private async Task<SessionEntry> MarkActiveAsync(SessionEntry entry, string sessionId, List<string> ready, double now, bool neverClaimed = false)
+    private async Task<SessionEntry> MarkActiveAsync(SessionEntry entry, string sessionId, double now, bool neverClaimed = false)
     {
         var active = entry with
         {
@@ -895,8 +897,7 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
 
         if (!active.Queued && (neverClaimed || !await IsLeasedAsync(sessionId, now)))
         {
-            ready.Add(sessionId);
-            active = active with { Queued = true };
+            active = await Dir.EnqueueReadyAsync(sessionId, active);
         }
 
         return active;
@@ -916,27 +917,7 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
         return lease.HasValue && now < lease.Value.ExpiresAt;
     }
 
-    private static SessionCoordinatorMetadata RemoveFromReady(SessionCoordinatorMetadata metadata, string sessionId)
-    {
-        var ready = new List<string>(metadata.ReadyQueue);
-        ready.Remove(sessionId);
-        return metadata with
-        {
-            ReadyQueue = ready,
-            SessionDirectory = WithEntry(metadata.SessionDirectory, sessionId, e => e with { Queued = false })
-        };
-    }
 
-    private static Dictionary<string, SessionEntry> WithEntry(
-        Dictionary<string, SessionEntry> directory, string sessionId, Func<SessionEntry, SessionEntry> update)
-    {
-        var copy = new Dictionary<string, SessionEntry>(directory);
-        if (copy.TryGetValue(sessionId, out var entry))
-        {
-            copy[sessionId] = update(entry);
-        }
-        return copy;
-    }
 
     private void PruneLastActiveAt(double now)
     {
@@ -1043,28 +1024,7 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
         return result.ToString();
     }
 
-    private async Task<SessionCoordinatorMetadata> GetMetadataAsync()
-    {
-        var result = await StateManager.TryGetStateAsync<SessionCoordinatorMetadata>(MetadataKey);
-        // Metadata is guaranteed to exist - initialized in OnActivateAsync before any methods are called
-        return result.Value;
-    }
 
-    private async Task<DirectorySummary> GetSummaryAsync()
-    {
-        var result = await StateManager.TryGetStateAsync<DirectorySummary>(SummaryKey);
-        return result.HasValue ? result.Value : new DirectorySummary();
-    }
 
-    private async Task SetMetadataAsync(SessionCoordinatorMetadata metadata)
-    {
-        await StateManager.SetStateAsync(MetadataKey, metadata);
-    }
 
-    /// <summary>"metadata" and "dir_summary" are always staged together, so one save commits both.</summary>
-    private async Task SetDirectoryAsync(SessionCoordinatorMetadata metadata, DirectorySummary summary)
-    {
-        await StateManager.SetStateAsync(MetadataKey, metadata);
-        await StateManager.SetStateAsync(SummaryKey, summary);
-    }
 }
