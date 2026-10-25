@@ -160,6 +160,25 @@ This doesn't change the coordinator's single turn, or the wait in `RegisterSessi
 Those are phase 1b item 2 and phase 2 of the sharding proposal. With saves cheap, the 10-per-session
 test should show how much of its limit is turn count rather than turn cost.
 
+## Where it's slower
+
+| Scenario | Why | How much | Mitigation |
+|---|---|---|---|
+| **The first calls after the coordinator activates.** A worker restarts, placement moves the actor, or it reactivates after the 60-minute idle timeout | Today one read loads the whole directory. Segmented, each bucket and segment is read the first time a turn touches it. A claim reads `dir_summary`, `ready_meta`, the head segment and a bucket: 4 reads, not 1. A claim dropping stale items across many buckets, or the first eviction pass, can read up to 64 buckets one after another in one turn | tens of ms for most first calls; at worst about 64 × 1–3 ms ≈ 100–200 ms in one turn, against the eviction pass's 250 ms budget | read every bucket at activation only when `TotalCount` is large, or let the first pass stop early and finish on the catch-up reminder (it already can) |
+| **Very small directories,** tens to a few hundred sessions | today's blob is already tiny, so the cost of each extra row dominates. A claim writes 3–4 keys instead of 2 | probably under 1 ms per save; about break-even at a few hundred sessions, better above | none; confirm in the 1,000-session check below |
+| **An eviction pass that changes entries in many buckets at once,** such as marking hundreds Idle | it rewrites every bucket it touched. If that's most of them, it writes about today's blob size, spread over up to 64 rows | the same as today or slightly worse, for that pass. Passes are bounded (≤ 64 reads, 250 ms) and run every 30 s | none |
+| **The console's session list** | 64 parallel state reads and a merge instead of one read | tens of ms more per page view, and 64 requests to daprd | only when the page is opened; page through buckets if needed |
+| **The upgrade** | each coordinator converts its blob in one turn: a large read, then writing 64 buckets and the segments. Calls wait behind that turn | a one-off pause of perhaps 100–300 ms per queue at 10,000 sessions | none |
+
+The first row is the one that matters. Placement moves the coordinator when workers scale or
+restart, which tends to happen under load. The others are small, rare or one-off.
+
+These don't get worse:
+- **Stale items.** Today stale ids are also dropped at the head, and count toward the 16 claim
+  attempts. Here they don't count.
+- **Bytes per combined call.** Even when its release and its claim touch different buckets, it
+  writes about 32 KB, against 1 MB today at 10,000 sessions.
+
 ## Not changing
 
 - leases, `session-lock_{id}`, `SetSessionLease`/`ClearSessionLease`, and the rule that a session
@@ -255,6 +274,10 @@ hold work, so losing it strands their messages.
 - **The workload this targets.** r20, 100k messages over 10,000 sessions, before and after, with the
   timing build. Compare save time per call, coordinator busy time and throughput.
 - **No regression.** r20, 100k messages over 1,000 sessions: throughput and save time no worse.
+- **Activation cost.** At 10,000 sessions, restart the worker hosting the coordinator mid-drain.
+  Time the first claim and the first eviction pass after it reactivates, before and after the
+  change. If the first pass overruns its budget, decide between reading every bucket at activation
+  and leaving the rest to the catch-up reminder.
 - **Save time against directory size.** Measure at 1,000, 10,000 and 40,000 sessions. It should stay
   flat after the change, where today it grows.
 
