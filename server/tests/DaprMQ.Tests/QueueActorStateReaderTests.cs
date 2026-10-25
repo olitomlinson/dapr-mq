@@ -161,16 +161,13 @@ public class QueueActorStateReaderTests
     }
 
     [Fact]
-    public async Task ReadSessionDirectoryAsync_MergesTheBuckets_AndTheOldBlob()
+    public async Task ReadSessionDirectoryAsync_MergesTheBuckets()
     {
-        // Each bucket is its own key; a coordinator not yet converted still has the old blob.
+        // Each bucket is its own key; most are missing.
         var bodies = new Dictionary<string, string>
         {
             [SessionDirectoryKeys.BucketKeyFor("a")] = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, SessionEntry> { ["a"] = new() }),
-            [SessionDirectoryKeys.LegacyMetadataKey] = System.Text.Json.JsonSerializer.Serialize(new SessionCoordinatorMetadata
-            {
-                SessionDirectory = new() { ["a"] = new(), ["c"] = new() }
-            })
+            [SessionDirectoryKeys.BucketKeyFor("c")] = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, SessionEntry> { ["c"] = new() })
         };
         bodies[SessionDirectoryKeys.BucketKeyFor("b")] = System.Text.Json.JsonSerializer.Serialize(
             new Dictionary<string, SessionEntry> { ["b"] = new() });
@@ -197,7 +194,7 @@ public class QueueActorStateReaderTests
         var sessions = await reader.ReadSessionDirectoryAsync("orders");
 
         Assert.Equal(["a", "b", "c"], sessions);
-        Assert.Equal(65, requested.Count);
+        Assert.Equal(64, requested.Count);
     }
 
     [Fact]

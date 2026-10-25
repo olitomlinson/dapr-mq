@@ -58,11 +58,11 @@ public class SessionReentrancyTests(ReentrancyTestFixture fixture)
         await Task.Delay(TimeSpan.FromSeconds(7));
 
         // RenewSessionLease -> SessionCoordinatorActor.TrySyncSessionLeaseAsync -> SetSessionLease
-        // on the now-cold session actor. If reactivating it called back into this same
-        // SessionCoordinatorActor (RegisterSession) while the coordinator's RenewSessionLease is
-        // still awaiting that SetSessionLease response - the A -> B -> A chain - this would hang
-        // with reentrancy off; guard with an explicit timeout so a regression fails fast instead
-        // of hanging the test run.
+        // on the now-cold session actor. Session actors no longer call the coordinator at all, but if
+        // reactivating one ever called back into this same SessionCoordinatorActor while its
+        // RenewSessionLease is still awaiting that SetSessionLease response - an A -> B -> A chain -
+        // this would hang with reentrancy off; guard with an explicit timeout so a regression fails
+        // fast instead of hanging the test run.
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         HttpResponseMessage renewResponse;
         try

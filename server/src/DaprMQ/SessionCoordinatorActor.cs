@@ -10,23 +10,6 @@ using DaprMQ.Interfaces;
 namespace DaprMQ;
 
 /// <summary>
-/// The SessionCoordinatorActor's old single-blob state ("metadata"): every session known to the
-/// queue, plus the FIFO of sessions waiting to be claimed. Now stored as buckets and segments
-/// (<see cref="SessionDirectoryStore"/>); kept only to convert existing state on activation.
-/// </summary>
-public record SessionCoordinatorMetadata
-{
-    public Dictionary<string, SessionEntry> SessionDirectory { get; init; } = new();
-
-    /// <summary>
-    /// FIFO of Active, unleased session ids, in the order they got work or had their lease end. An
-    /// any-available claim takes the head. Ids can go stale (evicted, Idle, leased); claims drop
-    /// them when they reach the head.
-    /// </summary>
-    public List<string> ReadyQueue { get; init; } = new();
-}
-
-/// <summary>
 /// One session's directory entry. Active means the session is believed to hold queued or locked
 /// items; it is set by a registration, an Active report or a read that finds items, and cleared by
 /// an Empty report, a lease end with nothing left, or a read that finds it empty.
@@ -80,9 +63,8 @@ public record SessionLockState
 
 /// <summary>
 /// SessionCoordinatorActor - tracks the sessions of a logical queue, which of them have work, and
-/// which are leased to a consumer. Workers tell it about changes (RegisterSession directly on a
-/// session's first work, ReportSessionChanges from each worker's SessionActivityReporter), so it
-/// never has to walk the sessions. See ISessionCoordinatorActor for the delegation rationale.
+/// which are leased to a consumer. Workers tell it about changes (ReportSessionChanges from each
+/// worker's SessionActivityReporter), so it never has to walk the sessions. See ISessionCoordinatorActor for the delegation rationale.
 /// </summary>
 public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IRemindable
 {
@@ -102,7 +84,6 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
     // (which is the queueId, since SessionCoordinatorActor and its QueueActor share an id string).
     private const string SessionActorIdMarker = "-session-";
 
-    internal const string MetadataKey = SessionDirectoryKeys.LegacyMetadataKey;
     internal const string SummaryKey = SessionDirectoryKeys.SummaryKey;
 
     // A claim drops at most this many stale ReadyQueue items, so a long stale run can't stretch one
@@ -145,33 +126,13 @@ public class SessionCoordinatorActor : Actor, ISessionCoordinatorActor, IReminda
         _catalogRegistrar.Register(new CatalogEntry { Id = Id.GetId(), Kind = CatalogEntryKind.Queue, RegisteredAt = DateTimeOffset.UtcNow });
         _activatedAt = Now();
 
-        // Reads only dir_summary, plus the old single blob once, to convert it.
-        var legacy = await StateManager.TryGetStateAsync<SessionCoordinatorMetadata>(MetadataKey);
-        if (legacy.HasValue)
-        {
-            await Dir.ConvertLegacyAsync(legacy.Value);
-            await StateManager.SaveStateAsync();
-            Logger.LogInformation("Converted the session directory of queue {QueueId} ({Count} sessions) to buckets",
-                Id.GetId(), legacy.Value.SessionDirectory.Count);
-        }
-
+        // Reads only dir_summary.
         if ((await Dir.GetSummaryAsync()).TotalCount > 0)
         {
             await EnsureEvictionReminderAsync();
         }
     }
 
-    /// <inheritdoc />
-    public async Task<RegisterSessionResponse> RegisterSession(RegisterSessionRequest request)
-    {
-        if (string.IsNullOrEmpty(request.SessionId))
-        {
-            return new RegisterSessionResponse { Success = false };
-        }
-
-        await ApplyChangesAsync([new SessionChange { SessionId = request.SessionId, HasWork = true }]);
-        return new RegisterSessionResponse { Success = true };
-    }
 
     /// <inheritdoc />
     public async Task<ReportSessionChangesResponse> ReportSessionChanges(ReportSessionChangesRequest request)

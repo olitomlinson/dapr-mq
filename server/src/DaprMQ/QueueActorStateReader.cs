@@ -51,8 +51,7 @@ public interface IQueueActorStateReader
 
     /// <summary>
     /// Reads the session ids known to <paramref name="queueId"/>'s SessionCoordinatorActor, merged
-    /// across its directory buckets (and the old single blob, until it's converted). A missing key
-    /// reads as empty; a failed request throws.
+    /// across its directory buckets. A missing bucket reads as empty; a failed request throws.
     /// </summary>
     Task<IReadOnlyCollection<string>> ReadSessionDirectoryAsync(string queueId, CancellationToken cancellationToken = default);
 
@@ -116,17 +115,13 @@ public class QueueActorStateReader : IQueueActorStateReader
     /// <inheritdoc />
     public async Task<IReadOnlyCollection<string>> ReadSessionDirectoryAsync(string queueId, CancellationToken cancellationToken = default)
     {
-        // The 64 buckets in parallel, plus the old single blob of a coordinator that hasn't activated
-        // since the directory was split (it converts on activation).
+        // The 64 buckets, in parallel.
         var buckets = Enumerable.Range(0, SessionDirectoryKeys.BucketCount)
             .Select(n => ReadStateAsync<Dictionary<string, SessionEntry>>(_sessionCoordinatorActorType, queueId, SessionDirectoryKeys.BucketKey(n), cancellationToken))
             .ToList();
-        var legacy = ReadStateAsync<SessionCoordinatorMetadata>(_sessionCoordinatorActorType, queueId, SessionDirectoryKeys.LegacyMetadataKey, cancellationToken);
-        await Task.WhenAll([.. buckets, legacy]);
+        await Task.WhenAll(buckets);
 
         return buckets.SelectMany(b => b.Result?.Keys ?? Enumerable.Empty<string>())
-            .Concat(legacy.Result?.SessionDirectory.Keys ?? Enumerable.Empty<string>())
-            .Distinct()
             .Order(StringComparer.Ordinal)
             .ToArray();
     }

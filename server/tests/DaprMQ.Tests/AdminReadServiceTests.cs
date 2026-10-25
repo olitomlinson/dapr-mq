@@ -29,8 +29,8 @@ public class AdminReadServiceTests
 
         public Task<IReadOnlyCollection<string>> ReadSessionDirectoryAsync(string queueId, CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyCollection<string>>(
-                State.TryGetValue(("SessionCoordinatorActor", queueId, "metadata"), out var value)
-                    ? ((SessionCoordinatorMetadata)value).SessionDirectory.Keys.ToArray()
+                State.TryGetValue(("SessionCoordinatorActor", queueId, "sessions"), out var value)
+                    ? (string[])value
                     : []);
 
         public Task<DirectorySummary> ReadDirectorySummaryAsync(string queueId, CancellationToken cancellationToken = default) =>
@@ -107,10 +107,7 @@ public class AdminReadServiceTests
     [Fact]
     public async Task Queue_SessionOnly_IsFoundThroughItsDirectory()
     {
-        _reader.State[("SessionCoordinatorActor", "orders", "metadata")] = new SessionCoordinatorMetadata
-        {
-            SessionDirectory = new() { ["a"] = new SessionEntry(), ["b"] = new SessionEntry() }
-        };
+        _reader.State[("SessionCoordinatorActor", "orders", "sessions")] = new[] { "a", "b" };
 
         var result = await CreateService().GetQueueAsync("orders");
 
@@ -361,10 +358,7 @@ public class AdminReadServiceTests
     [Fact]
     public async Task Sessions_PageTheDirectoryById_WithEachSessionsDepth()
     {
-        _reader.State[("SessionCoordinatorActor", "orders", "metadata")] = new SessionCoordinatorMetadata
-        {
-            SessionDirectory = new() { ["c"] = new SessionEntry(), ["a"] = new SessionEntry(), ["b"] = new SessionEntry() }
-        };
+        _reader.State[("SessionCoordinatorActor", "orders", "sessions")] = new[] { "c", "a", "b" };
         Queue("orders-session-a", Meta((1, 0, 0, 2)) with { LockCount = 1, ActiveSessionLeaseExpiresAt = 50 });
 
         var first = (await CreateService().ListSessionsAsync("orders", null, 2)).Value!;

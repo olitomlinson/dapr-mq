@@ -602,8 +602,8 @@ public class SessionTests(DaprTestFixture fixture)
         var queueId = NewQueueId();
         var sessionId = "swept-then-leased";
 
-        // First enqueue activates this queue's SessionCoordinatorActor via RegisterSession, which
-        // reads session-lock_{sessionId} while it doesn't exist yet, caching "not found".
+        // First enqueue activates this queue's SessionCoordinatorActor via its worker's report,
+        // which reads session-lock_{sessionId} while it doesn't exist yet, caching "not found".
         await EnqueueAsync(queueId, sessionId, new { seq = 1 });
         await Task.Delay(TimeSpan.FromSeconds(3));
 

@@ -208,8 +208,6 @@ public partial class QueueActorTests
 
         // Actor id in these tests never contains "-session-", so self-registration never fires -
         // no setup needed beyond a bare mock.
-        var mockSessionCoordinatorActorInvoker = new Mock<ISessionCoordinatorActorInvoker>();
-
         var tokenIssuer = new ObjectClaimTokenIssuer(new ObjectClaimTokenConfig
         {
             SigningKey = "test-signing-key-that-is-long-enough-for-hmac-sha256"u8.ToArray(),
@@ -220,7 +218,7 @@ public partial class QueueActorTests
         lockConfig ??= new LockConfig { MaxDeliveryCount = 10, SweepBatchSize = 200 };
 
         var actorHost = ActorHost.CreateForTest<QueueActor>(testOptions);
-        var actor = new QueueActor(actorHost, mockInvoker.Object, mockBlobReaperActorInvoker.Object, mockSessionCoordinatorActorInvoker.Object, tokenIssuer, blobReapConfig, idempotencyConfig, lockConfig, catalogRegistrar ?? Mock.Of<ICatalogRegistrar>(), Mock.Of<ISessionActivityReporter>(), new SessionDirectoryConfig());
+        var actor = new QueueActor(actorHost, mockInvoker.Object, mockBlobReaperActorInvoker.Object, tokenIssuer, blobReapConfig, idempotencyConfig, lockConfig, catalogRegistrar ?? Mock.Of<ICatalogRegistrar>(), Mock.Of<ISessionActivityReporter>(), new SessionDirectoryConfig());
 
         // Use reflection to set the StateManager property
         var stateManagerProperty = typeof(Actor).GetProperty("StateManager");
