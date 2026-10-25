@@ -1,6 +1,6 @@
 # Sharding the session coordinator
 
-> **Status: phase 1 built (PR #103, 2026-10-24); phase 1b proposed (2026-10-25); phase 2 proposed, not yet needed.** Phase 1 raised
+> **Status: phase 1 built (PR #103, 2026-10-24); phase 1b built (#108, #109, 2026-10-25); phase 1c proposed (2026-10-25); phase 2 proposed, not yet needed.** Phase 1 raised
 > r20 session throughput on kind by about 27%, and the coordinator is now busy about a third of the
 > drain (see [Phase 1 results](#phase-1-results)). Phase 2 is for workloads that make it the limit
 > again: short sessions, or many more consumers. All numbers are from kind (a laptop). Confirm them
@@ -210,6 +210,84 @@ Expected: with 1 and 2, a combined call costs roughly its two lease syncs and on
 10 ms. Registration becomes about one turn per tick per worker. That would put the 10-per-session
 ceiling well above 141 msg/s; measure it.
 
+### Phase 1b results
+
+Both items were built, each with its own design:
+- [async-session-registration.md](async-session-registration.md) (#108). Registration goes through the
+  reporter, sent at once rather than on a tick, with a durable backstop.
+- [session-directory-segments.md](session-directory-segments.md) (#109). The directory is in 64
+  buckets, and the ReadyQueue in segments.
+
+Item 3 wasn't needed: with publishing no longer slow, accepts that find nothing all but disappeared.
+
+| r20, 10,000 sessions of 10 | Phase 1 | + async registration | + segmented directory |
+|---|---|---|---|
+| Throughput | 141 msg/s | 171 msg/s | 395, 453 msg/s |
+| Publish time | 706 s | 34 s | 17–26 s |
+| Combined release and claim, inside the turn | 33 ms | 56 ms (the whole directory written up front) | 21.5 ms |
+
+The coordinator is close to saturated again: combined calls took 215 of the 253 s run. Each of
+those 21.5 ms is now mostly waiting on other services:
+
+| Inside one combined call | Waits on | Time |
+|---|---|---|
+| `ClearSessionLease` on the released session's actor | that actor's turn | 3.4 ms |
+| Unregistering the released session's lease reminder | the Dapr scheduler | a few ms |
+| `SetSessionLease` on the claimed session's actor | that actor's turn | 3.7 ms |
+| Registering the claimed session's lease reminder | the Dapr scheduler | 4.2 ms |
+| The save | Postgres | 5.1 ms |
+
+### Phase 1c: drop the per-session lease reminders
+
+**What they're for.** Every claim registers a one-shot reminder, `session-{id}`, due when the lease
+expires. It does useful work only when a lease lapses without a release: a consumer crashed, a
+stream broke and its gateway couldn't release, a gateway died, or renewals kept failing. When it
+fires, `ExpireLeaseAsync` tidies up straight away:
+1. It deletes `session-lock_{id}`.
+2. It reads the session actor's state.
+3. It puts the session back on the ReadyQueue if it has items, or marks it Idle if not.
+
+**Why they're mostly wasted.** Almost every lease ends with a release: the stream drains, then the
+handoff or `ReleaseSession`. The release unregisters the reminder before it fires. So every session
+costs two scheduler calls inside the coordinator's turn, about a third of a combined call, for a
+timer that doesn't fire in normal running. A 10,000-session run creates and deletes 10,000 reminders.
+
+**What already covers a lapsed lease without them.** The code relies on these today whenever the
+scheduler is unavailable (`ClaimAsync` logs and carries on if registration fails):
+- **Claims ignore a lapsed lease.** `IsLeasedAsync` compares `ExpiresAt` with the current time, so a
+  targeted accept claims a lapsed session immediately.
+- **The eviction pass repairs it.** Each pass puts Active, unqueued entries without a live lease back
+  on the ReadyQueue, so any-available consumers get the session within one pass.
+- **The session actor restores its own messages.** When its lease lapses it bulk-restores its locked
+  items to the front, on its next call. Nothing is lost, and order holds.
+- **A stale lease record does no harm.** It's overwritten by the next claim, or deleted by a release
+  or renewal.
+
+**The change:**
+1. **Claims, renewals and releases no longer touch a lease reminder.** The `session-{id}` handler
+   (`ExpireLeaseAsync`, with its re-arm) is removed. Reminders already registered under the old build
+   fire into a handler that ignores unknown names. The pass repairs their sessions.
+2. **The repair reads before it requeues.** Today the pass's repair puts a lapsed session on the
+   ReadyQueue without reading it ("a wrong push heals at the next lease end"). An empty session would
+   then be claimed, deliver nothing, and hold a consumer slot until its idle timeout, which defaults
+   to the lease length (30 s). Instead:
+   - the repair reads the session's state, using the pass's existing read budget (`MaxReadsPerPass`,
+     `ReadParallelism`)
+   - it queues the session if it has items, and marks it Idle if it doesn't, which is what
+     `ExpireLeaseAsync` did
+   - a failed read errs toward availability and queues the session, as the old reminder did
+3. **The repair deletes the lapsed lease record.** Both outcomes remove `session-lock_{id}`, so no
+   record is left behind. Eviction also deletes any lease record of an entry it evicts.
+4. **The pass runs more often** (decision 6): `EvictionPeriod` drops from 30 s to 10 s.
+
+**Cost and effect:**
+- **Each combined call loses two scheduler calls,** about 7–8 ms of its 21.5 ms, so roughly 35% more
+  claims per second from one coordinator.
+- **The scheduler stops holding a reminder per leased session.**
+- **Recovery after a crash** waits up to one pass after the lease lapses: up to 10 s at the proposed
+  period, against immediately today. Normal releases are unaffected.
+- **"200 means processed" is unchanged.** A lapsed session's messages are delayed, never lost.
+
 ### Phase 2: shard the coordinator
 
 N coordinators per queue. A session belongs to shard `FNV-1a(sessionId) mod N`, the same hash as
@@ -342,6 +420,18 @@ where random moves would spread them out. So the two moves are kept separate:
   stream whose shard ran out. That's where streams would otherwise group, so randomness spreads them
   out there.
 
+### 6. How soon a lapsed lease is noticed without reminders (phase 1c)
+
+| Option | Recovery after a crash | Cost | Discounted? |
+|---|---|---|---|
+| a. The pass at today's 30 s | up to 30 s after the lease lapses | none | no, but slow enough to notice |
+| **b. The pass every 10 s** | up to 10 s | 3× the passes. A pass scans entries already in memory and reads only what's due (bounded by `MaxReadsPerPass`), so it's a few ms of turn every 10 s | no |
+| c. One coordinator-level reminder for the earliest lease expiry | at the expiry | the reminder moves whenever the earliest expiry changes. Finding the earliest needs an index of lease expiries, like the queue actor's `locks_exp_{bucket}` | **yes, for now**: an index to keep, for seconds of recovery |
+| d. Keep per-session reminders | at the expiry | two scheduler calls per claim, about a third of it | **yes**: the cost this phase removes |
+
+**Recommend b.** If 10 s proves too slow for some workload, c is the way to get prompt recovery
+without the per-claim cost.
+
 ## Alternatives considered
 
 | Alternative | Why not (now) |
@@ -353,6 +443,20 @@ where random moves would spread them out. So the two moves are kept separate:
 | Turn reentrancy back on | Superseded by ADR 0003. It removed the turn as a limit only by risking interleaved state writes |
 
 ## Tests (TDD order, per CLAUDE.md)
+
+Phase 1c:
+
+1. **Integration:** a session whose consumer stops without releasing is claimed again by an
+   any-available accept within one pass after its lease lapses, with its messages in order.
+2. **Coordinator:**
+   - a claim, renewal or release registers and unregisters no lease reminder
+   - the pass's repair of a lapsed session:
+     - reads it, then queues it if it has items, or marks it Idle if it doesn't
+     - deletes its lease record in both cases
+     - queues it if the read fails
+     - stays within the read budget, finishing on the catch-up pass
+   - eviction deletes an evicted entry's lease record
+   - an old `session-{id}` reminder firing changes nothing
 
 Phase 1 (built, PR #103):
 
@@ -388,6 +492,14 @@ Phase 2:
 5. Reporter: one batch with changes in three shards makes three calls, each with only its own changes.
 6. Readers: the scaler sums and the console merges across shards; a missing shard reads as empty.
 7. Validation: a queue id ending in `-coord-<digits>` is rejected with 400.
+
+## Measuring phase 1c
+
+- **The workload it targets.** r20, 10,000 sessions of 10, before and after, with the timing build.
+  Compare the combined call's time, coordinator busy time and throughput.
+- **No regression.** r20, 1,000 sessions of 100.
+- **Recovery.** Delete a consumer pod mid-drain, so its sessions' leases lapse unreleased. Time from
+  each lease's expiry to its session's next claim (expected ≤ 10 s). Check that everything drains.
 
 ## Measuring it
 
