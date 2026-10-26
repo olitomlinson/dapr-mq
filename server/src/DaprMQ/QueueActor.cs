@@ -577,24 +577,19 @@ public class QueueActor : Actor, IQueueActor, IRemindable
     }
 
     /// <summary>
-    /// Hands the session's final state to the reporter before this worker stops hosting it. Not
+    /// Tells the reporter the session's last observed state is final before this worker stops
+    /// hosting it. Every successful method has already observed the current state, so this reads
+    /// nothing: during a placement rebalance daprd halts actors before acking the update, and an
+    /// actor state call made from here waits on that same round until the HTTP timeout. Not
     /// guaranteed to run (a crash skips it), so nothing depends on it for correctness.
     /// </summary>
-    protected override async Task OnDeactivateAsync()
+    protected override Task OnDeactivateAsync()
     {
-        if (!TryGetSessionIdentity(out var queueId, out var sessionId))
+        if (TryGetSessionIdentity(out var queueId, out var sessionId))
         {
-            return;
+            _sessionActivityReporter.MarkDeactivating(queueId, sessionId);
         }
-
-        try
-        {
-            _sessionActivityReporter.Observe(queueId, sessionId, await HasWorkAsync(), deactivating: true);
-        }
-        catch (Exception ex)
-        {
-            Logger.LogDebug(ex, "Could not report session {SessionId} state on deactivation", sessionId);
-        }
+        return Task.CompletedTask;
     }
 
     /// <summary>
@@ -618,8 +613,6 @@ public class QueueActor : Actor, IQueueActor, IRemindable
     }
 
     /// <summary>Queued or locked items: a session abandoned mid-consumption still has work.</summary>
-    private async Task<bool> HasWorkAsync() => RemainingItems(await GetMetadataAsync()) > 0;
-
     private static long RemainingItems(ActorMetadata metadata) =>
         metadata.Queues.Values.Sum(q => (long)q.Count) + metadata.LockCount;
 

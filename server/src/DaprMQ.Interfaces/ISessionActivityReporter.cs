@@ -9,12 +9,19 @@ public interface ISessionActivityReporter
 {
     /// <summary>
     /// Records a session's current has-work state. A session that has work and hasn't been sent as
-    /// Active is sent straight away, outside the caller's turn. <paramref name="deactivating"/> marks
-    /// the session's final state before this worker stops hosting it. <paramref name="reported"/>
-    /// means the coordinator already knows this state (it decided it, as at a lease end), so nothing
-    /// is sent.
+    /// Active is sent straight away, outside the caller's turn. <paramref name="reported"/> means the
+    /// coordinator already knows this state (it decided it, as at a lease end), so nothing is sent.
     /// </summary>
-    void Observe(string queueId, string sessionId, bool hasWork, bool deactivating = false, bool reported = false);
+    void Observe(string queueId, string sessionId, bool hasWork, bool reported = false);
+
+    /// <summary>
+    /// This worker is about to stop hosting the session: its last observed state is final. An empty
+    /// session is sent on the next tick without waiting out the debounce, and the session is
+    /// forgotten once the coordinator has accepted it. A session never observed here is ignored.
+    /// Takes no state: it's called from deactivation, where an actor state call deadlocks with the
+    /// placement round that is halting the actor until the HTTP timeout.
+    /// </summary>
+    void MarkDeactivating(string queueId, string sessionId);
 
     /// <summary>
     /// Forgets what the coordinator was last told about this session, so the reporter sends its
