@@ -151,6 +151,7 @@ daprMQ takes a different approach:
 - [x] **Bulk Dequeue**: Dequeue many message from a queue in one atomic operation.
 - [x] **Competing Consumers**: Experimental project (requires Bulk Enqueue and Bulk Dequeue as a pre-requisite)
 - [x] **Large message support**: large messages are already possible, but large messages can be optionally stored in a dedicated binary store and not in the transaction store of the queue. 
+- [x] **Optimised large message support**: large messages stream through the Dapr Binary Store (1.19) rather than being buffered in memory.
 - [x] **Pub Sub**: When publishing to a single Topic, dapr-mq can fan-out to N other independent Subscriber Queues. 
 - [x] **Message Deduplication**: Messages with a non-unique Idempotency Key will be deduplicated within a time-window since first-occurrence.
 - [x] **Sessions**: Claim exclusive, leased ownership of an ordered sub-group (session) within a queue, modeled on Azure Service Bus sessions — different sessions on the same queue can be consumed in parallel while each preserves strict FIFO order internally.
@@ -159,7 +160,6 @@ daprMQ takes a different approach:
 ### To-do
 
 - [ ] **Multi-tenant API surface**: Ensure all queues operations can be scoped to a first-class `Tenant ID`. Stretch to JWT validation.
-- [ ] **Optimised large message support**: When Dapr releases the Binary Store component in 1.19, large messages will be streamed rather than buffered in memory.
 - [ ] **Queue Purge**: Remove all messages from a queue.
 - [ ] **Max Retries / Automatic Dead-lettering**: When calling Dequeue With Acknowledgements, if a message is dequeued N number of times without Acknowledgement, the message will be deemed poisonous, and automatically moved to the Deadletter queue.
 - [ ] **Dead-letter Forwarding**: Send a HTTP notification to any endpoint when a dead-letter message has been produced. Useful for alerting Operators, and triggering automated healing routines that sit external to the system.

@@ -25,9 +25,6 @@ spec:
         dapr.io/app-protocol: "http"
         dapr.io/config: {{ include "daprmq.fullname" . }}-dapr-config
         dapr.io/log-level: {{ .Values.dapr.logLevel | quote }}
-        {{- if .Values.blobStore.localStorage.enabled }}
-        dapr.io/volume-mounts: "blobstore:/blobstore"
-        {{- end }}
         {{- with .Values.worker.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -66,10 +63,10 @@ spec:
           value: "{{ .Release.Name }}-daprmq-HttpSinkActor"
         - name: BLOB_REAPER_ACTOR_TYPE_NAME
           value: "{{ .Release.Name }}-daprmq-BlobReaperActor"
-        - name: DAPRMQ_BLOB_GLOBAL_PREFIX
-          value: {{ .Values.blobStore.globalPrefix | quote }}
-        - name: DAPRMQ_BLOB_BINDING_NAME
-          value: {{ .Values.blobStore.bindingName | quote }}
+        - name: DAPRMQ_BLOB_STORE_NAME
+          value: {{ .Values.blobStore.storeName | quote }}
+        - name: DAPRMQ_OBJECT_MAX_BYTES
+          value: {{ .Values.blobStore.maxObjectBytes | int64 | quote }}
         - name: DAPRMQ_OBJECT_CLAIM_SIGNING_KEY
           value: {{ .Values.blobStore.signingKey | quote }}
         - name: DAPRMQ_BLOB_REAP_BACKSTOP_SECONDS
@@ -84,12 +81,6 @@ spec:
           {{- toYaml .Values.worker.resources | nindent 10 }}
         securityContext:
           {{- toYaml .Values.worker.securityContext | nindent 10 }}
-      {{- if .Values.blobStore.localStorage.enabled }}
-      volumes:
-      - name: blobstore
-        persistentVolumeClaim:
-          claimName: {{ .Values.blobStore.localStorage.claimName }}
-      {{- end }}
       {{- with .Values.worker.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

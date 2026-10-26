@@ -34,6 +34,7 @@ public class DeliveryFailureMappingTests
         new Mock<IHttpSinkActorInvoker>().Object,
         new Mock<Dapr.Actors.Client.IActorProxyFactory>().Object,
         new Mock<IObjectStore>().Object,
+        new ObjectStoreConfig { StoreName = "daprmq-blobstore", MaxObjectBytes = 1024 },
         new ObjectClaimTokenIssuer(new ObjectClaimTokenConfig { SigningKey = "test-signing-key-that-is-long-enough-for-hmac-sha256"u8.ToArray(), TokenTtl = TimeSpan.FromMinutes(5) }),
         new Mock<IBlobReaperActorInvoker>().Object,
         new BlobReapConfig { BackstopSeconds = 86400, PostDownloadSeconds = 86400 },

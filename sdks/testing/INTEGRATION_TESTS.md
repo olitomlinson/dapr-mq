@@ -17,7 +17,7 @@ Source of truth for the integration scenarios every DaprMQ client SDK must imple
 | Dapr placement | `ghcr.io/dapr/dapr:1.19.0` | `dapr-placement` | `./placement -port 50005` |
 | Dapr scheduler | `ghcr.io/dapr/dapr:1.19.0` | `dapr-scheduler` | `./scheduler --port 50006 --etcd-data-dir <mounted dir>` |
 | API server | `daprmq-api:test` (override `DAPRMQ_API_IMAGE`) | `api-server` | expose 5000 (REST) + 5001 (gRPC); `REGISTER_ACTORS=true`, `DAPR_HTTP_ENDPOINT=http://dapr-sidecar:3500`, `DAPR_GRPC_ENDPOINT=http://dapr-sidecar:50001` |
-| daprd sidecar | `ghcr.io/dapr/daprd:1.19.0` | `dapr-sidecar` | mounts [dapr-components](../../server/tests/DaprMQ.IntegrationTests/dapr-components) at `/tmp/dapr-components` and a temp dir at `/tmp/blobstore` |
+| daprd sidecar | `ghcr.io/dapr/daprd:1.19.0` | `dapr-sidecar` | mounts [dapr-components](../../server/tests/DaprMQ.IntegrationTests/dapr-components) at `/tmp/dapr-components` |
 
 No image comes from Docker Hub: CI runners share its anonymous pull limit, which a PR's dozen
 parallel jobs used to exhaust. Dapr is pulled from `ghcr.io/dapr`, and Postgres, nginx and the

@@ -266,6 +266,19 @@ public class AdminReadServiceTests
     }
 
     [Fact]
+    public async Task MessagePayload_BlobMissingFromStore_IsNotFound()
+    {
+        Queue("orders", Meta((1, 0, 0, 1)));
+        Segment("orders", 1, 0, Item(1, BlobReferenceEnvelope.Build("ref-1")));
+        _objectStore.Setup(s => s.DownloadAsync("ref-1", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ObjectNotFoundException("ref-1"));
+
+        var result = await CreateService().GetMessagePayloadAsync("orders", new MessageLocation(1, 0, 0), 1);
+
+        Assert.Equal(AdminReadStatus.NotFound, result.Status);
+    }
+
+    [Fact]
     public async Task MessagePayload_NotABlob_IsNotFound()
     {
         Queue("orders", Meta((1, 0, 0, 1)));

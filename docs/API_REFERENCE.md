@@ -67,7 +67,7 @@ curl -X POST http://localhost:8002/queue/my-queue/enqueue \
 
 ## Enqueue Large Object
 
-Streams a large binary/object payload directly into an external object store (local volume, S3, Azure Blob — whichever `bindings.*` component is configured) instead of embedding it inline in queue state. The queue state only ever stores a small reference to the object, never the bytes themselves.
+Streams a large binary/object payload directly into an external object store (Azure Blob, S3, GCS — whichever Dapr Binary Store `binarystore.*` component is configured, named by `DAPRMQ_BLOB_STORE_NAME`, default `daprmq-blobstore`) instead of embedding it inline in queue state. The body streams through in chunks, so it is bounded only by `DAPRMQ_OBJECT_MAX_BYTES` (default 100 MiB; `blobStore.maxObjectBytes` in Helm), not by the sidecar's max body size. The queue state only ever stores a small reference to the object, never the bytes themselves.
 
 ```
 POST /queue/{queueId}/enqueue-object
@@ -81,7 +81,7 @@ Unlike `enqueue`, the request **body is the raw object content** (not JSON) — 
 |---|---|---|---|
 | `priority` | no | `1` | Same semantics as `enqueue` — `0` is the fast lane. |
 | `content-type` | no | _(none)_ | Recorded alongside the object reference; returned as-is on dequeue. |
-| `prefix` | no | `{queueId}` | User-controlled path segment the object is stored under, e.g. `store-a`, `store-b`. Combined with an operator-configured global prefix (set at deploy time, never client-controlled) to form the final key: `{globalPrefix}/{prefix}/{objectId}`. Restricted to `[A-Za-z0-9_-]` segments — no `..` or leading `/`. |
+| `prefix` | no | `{queueId}` | User-controlled path segment the object is stored under, e.g. `store-a`, `store-b`. The key is `{prefix}/{objectId}`; an operator-wide prefix, if any, is the component's own `prefix` metadata (never client-controlled). Restricted to `[A-Za-z0-9_-]` segments — no `..` or leading `/`. |
 | `idempotency-key` | no | _(none)_ | Same semantics as `enqueue`'s `idempotencyKey` — there's no JSON body here to carry it, so it's a header instead. |
 | `session-id` | no | _(none)_ | Same semantics as `enqueue`'s `sessionId` — routes to `{queueId}-session-{sessionId}` instead of `{queueId}`. See [Sessions](#sessions). |
 
@@ -90,6 +90,14 @@ Unlike `enqueue`, the request **body is the raw object content** (not JSON) — 
 ```json
 { "success": true, "message": "Enqueued 1 items to queue my-queue", "itemsEnqueued": 1 }
 ```
+
+**Error responses** — as `enqueue`, plus:
+
+| HTTP Status | Meaning |
+|---|---|
+| `400 Bad Request` | Invalid `prefix` |
+| `413 Payload Too Large` | Body exceeds `DAPRMQ_OBJECT_MAX_BYTES`, or the store's own maximum object size |
+| `507 Insufficient Storage` | The object store is full |
 
 **Example — enqueue a file**
 

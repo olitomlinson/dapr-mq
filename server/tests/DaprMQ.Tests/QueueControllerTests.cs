@@ -1,3 +1,4 @@
+using DaprMQ.ApiServer.Services;
 using System.Text.Json;
 using Dapr.Actors;
 using Microsoft.AspNetCore.Mvc;
@@ -47,6 +48,7 @@ public class QueueControllerTests
             _mockHttpSinkActorInvoker.Object,
             _mockActorProxyFactory.Object,
             _mockObjectStore.Object,
+            new ObjectStoreConfig { StoreName = "daprmq-blobstore", MaxObjectBytes = 1024 },
             _objectClaimTokenIssuer,
             _mockBlobReaperActorInvoker.Object,
             _blobReapConfig,
@@ -59,6 +61,7 @@ public class QueueControllerTests
             _mockHttpSinkActorInvoker.Object,
             _mockActorProxyFactory.Object,
             _mockObjectStore.Object,
+            new ObjectStoreConfig { StoreName = "daprmq-blobstore", MaxObjectBytes = 1024 },
             _objectClaimTokenIssuer,
             _mockBlobReaperActorInvoker.Object,
             _blobReapConfig,

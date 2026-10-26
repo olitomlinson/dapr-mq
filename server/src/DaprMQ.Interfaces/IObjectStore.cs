@@ -8,18 +8,19 @@ namespace DaprMQ.Interfaces;
 public interface IObjectStore
 {
     /// <summary>
-    /// Uploads content under {globalPrefix}/{userPrefix}/{objectId} and returns the resulting
-    /// blob reference. globalPrefix is applied internally by the implementation.
+    /// Uploads content under {userPrefix}/{objectId} and returns the resulting blob reference.
+    /// Throws <see cref="ObjectTooLargeException"/> or <see cref="ObjectStoreFullException"/> when the store rejects it.
     /// </summary>
     Task<string> UploadAsync(string userPrefix, string objectId, Stream content, string? contentType, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Opens a stream to read back the content at the given blob reference.
+    /// Throws <see cref="ObjectNotFoundException"/> before returning when nothing is stored there.
     /// </summary>
     Task<Stream> DownloadAsync(string blobReference, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Deletes the content at the given blob reference.
+    /// Deletes the content at the given blob reference. Deleting a missing object succeeds.
     /// </summary>
     Task DeleteAsync(string blobReference, CancellationToken cancellationToken = default);
 }

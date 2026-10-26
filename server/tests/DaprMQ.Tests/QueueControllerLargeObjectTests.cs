@@ -1,3 +1,4 @@
+using DaprMQ.ApiServer.Services;
 using System.Text.Json;
 using Dapr.Actors;
 using Microsoft.AspNetCore.Mvc;
@@ -39,6 +40,7 @@ public class QueueControllerLargeObjectTests
             _mockHttpSinkActorInvoker.Object,
             _mockActorProxyFactory.Object,
             mockObjectStore.Object,
+            new ObjectStoreConfig { StoreName = "daprmq-blobstore", MaxObjectBytes = 1024 },
             _tokenIssuer,
             (mockBlobReaperActorInvoker ?? new Mock<IBlobReaperActorInvoker>()).Object,
             new BlobReapConfig { BackstopSeconds = 86400, PostDownloadSeconds = 86400 },
@@ -266,5 +268,96 @@ public class QueueControllerLargeObjectTests
 
         var statusResult = Assert.IsType<ObjectResult>(result);
         Assert.Equal(410, statusResult.StatusCode);
+    }
+
+    private sealed class MaxRequestBodySizeFeature : Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature
+    {
+        public bool IsReadOnly => false;
+        public long? MaxRequestBodySize { get; set; } = 30_000_000;
+    }
+
+    private static Mock<IQueueActorInvoker> EnqueueSucceeds()
+    {
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        mockInvoker.Setup(i => i.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
+                It.IsAny<ActorId>(), "Enqueue", It.IsAny<EnqueueRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new EnqueueResponse { Success = true, ItemsEnqueued = 1 });
+        return mockInvoker;
+    }
+
+    [Fact]
+    public async Task EnqueueObject_CapsRequestBodyAtConfiguredMaxObjectBytes()
+    {
+        var mockObjectStore = new Mock<IObjectStore>();
+        mockObjectStore.Setup(o => o.UploadAsync("test-queue", It.IsAny<string>(), It.IsAny<Stream>(), null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync("test-queue/obj");
+        var controller = CreateController(EnqueueSucceeds(), mockObjectStore);
+        var sizeFeature = new MaxRequestBodySizeFeature();
+        controller.HttpContext.Features.Set<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>(sizeFeature);
+
+        await controller.EnqueueObject("test-queue");
+
+        Assert.Equal(1024, sizeFeature.MaxRequestBodySize);
+    }
+
+    [Fact]
+    public async Task EnqueueObject_BodyOverSizeCap_Returns413()
+    {
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        var mockObjectStore = new Mock<IObjectStore>();
+        mockObjectStore.Setup(o => o.UploadAsync("test-queue", It.IsAny<string>(), It.IsAny<Stream>(), null, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new BadHttpRequestException("Request body too large.", StatusCodes.Status413PayloadTooLarge));
+        var controller = CreateController(mockInvoker, mockObjectStore);
+
+        var result = await controller.EnqueueObject("test-queue");
+
+        Assert.Equal(413, Assert.IsType<ObjectResult>(result).StatusCode);
+        mockInvoker.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task EnqueueObject_StoreRejectsObjectAsTooLarge_Returns413()
+    {
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        var mockObjectStore = new Mock<IObjectStore>();
+        mockObjectStore.Setup(o => o.UploadAsync("test-queue", It.IsAny<string>(), It.IsAny<Stream>(), null, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ObjectTooLargeException("test-queue/obj"));
+        var controller = CreateController(mockInvoker, mockObjectStore);
+
+        var result = await controller.EnqueueObject("test-queue");
+
+        Assert.Equal(413, Assert.IsType<ObjectResult>(result).StatusCode);
+        mockInvoker.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task EnqueueObject_StoreFull_Returns507()
+    {
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        var mockObjectStore = new Mock<IObjectStore>();
+        mockObjectStore.Setup(o => o.UploadAsync("test-queue", It.IsAny<string>(), It.IsAny<Stream>(), null, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ObjectStoreFullException("test-queue/obj"));
+        var controller = CreateController(mockInvoker, mockObjectStore);
+
+        var result = await controller.EnqueueObject("test-queue");
+
+        Assert.Equal(507, Assert.IsType<ObjectResult>(result).StatusCode);
+        mockInvoker.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task GetObject_BlobMissing_Returns404_WithoutPostponingReap()
+    {
+        var mockObjectStore = new Mock<IObjectStore>();
+        mockObjectStore.Setup(o => o.DownloadAsync("blob-ref-gone", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ObjectNotFoundException("blob-ref-gone"));
+        var mockBlobReaperActorInvoker = new Mock<IBlobReaperActorInvoker>();
+        var controller = CreateController(new Mock<IQueueActorInvoker>(), mockObjectStore, mockBlobReaperActorInvoker: mockBlobReaperActorInvoker);
+        var token = _tokenIssuer.Issue("blob-ref-gone", "application/pdf");
+
+        var result = await controller.GetObject(token, CancellationToken.None);
+
+        Assert.IsType<NotFoundObjectResult>(result);
+        mockBlobReaperActorInvoker.VerifyNoOtherCalls();
     }
 }

@@ -89,7 +89,6 @@ public final class DaprMQServer implements AutoCloseable {
         }
 
         String schedulerDir = worldWritableDir("daprmq-scheduler-");
-        String blobstoreDir = worldWritableDir("daprmq-blobstore-");
         String componentsDir = componentsDir();
         List<GenericContainer<?>> containers = new ArrayList<>();
         Network network = Network.newNetwork();
@@ -141,7 +140,6 @@ public final class DaprMQServer implements AutoCloseable {
                         .withEnv("HTTP_SINK_ACTOR_TYPE_NAME", "HttpSinkActor");
                 GenericContainer<?> sidecar = container("ghcr.io/dapr/daprd:" + DAPR_VERSION, network, sidecarAlias)
                         .withFileSystemBind(componentsDir, "/tmp/dapr-components", BindMode.READ_ONLY)
-                        .withFileSystemBind(blobstoreDir, "/tmp/blobstore", BindMode.READ_WRITE)
                         .withCommand(
                                 "./daprd", "--app-id", "daprmq-api", "--app-channel-address", apiAlias, "--app-port", "5000",
                                 "--dapr-http-port", "3500", "--dapr-grpc-port", "50001",

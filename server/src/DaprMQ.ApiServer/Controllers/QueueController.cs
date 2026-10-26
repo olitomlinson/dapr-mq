@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Dapr.Actors;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
 using DaprMQ.Interfaces;
 using DaprMQ.ApiServer.Constants;
@@ -17,6 +18,7 @@ public class QueueController : ControllerBase
     private readonly IHttpSinkActorInvoker _httpSinkActorInvoker;
     private readonly Dapr.Actors.Client.IActorProxyFactory _actorProxyFactory;
     private readonly IObjectStore _objectStore;
+    private readonly ObjectStoreConfig _objectStoreConfig;
     private readonly IObjectClaimTokenIssuer _objectClaimTokenIssuer;
     private readonly IBlobReaperActorInvoker _blobReaperActorInvoker;
     private readonly BlobReapConfig _blobReapConfig;
@@ -30,6 +32,7 @@ public class QueueController : ControllerBase
         IHttpSinkActorInvoker httpSinkActorInvoker,
         Dapr.Actors.Client.IActorProxyFactory actorProxyFactory,
         IObjectStore objectStore,
+        ObjectStoreConfig objectStoreConfig,
         IObjectClaimTokenIssuer objectClaimTokenIssuer,
         IBlobReaperActorInvoker blobReaperActorInvoker,
         BlobReapConfig blobReapConfig,
@@ -40,6 +43,7 @@ public class QueueController : ControllerBase
         _httpSinkActorInvoker = httpSinkActorInvoker;
         _actorProxyFactory = actorProxyFactory;
         _objectStore = objectStore;
+        _objectStoreConfig = objectStoreConfig;
         _objectClaimTokenIssuer = objectClaimTokenIssuer;
         _blobReaperActorInvoker = blobReaperActorInvoker;
         _blobReapConfig = blobReapConfig;
@@ -222,6 +226,13 @@ public class QueueController : ControllerBase
                 return BadRequest(new ApiErrorResponse(sessionError!));
             }
 
+            // The body streams straight into the store, so the cap applies here rather than at Kestrel's default.
+            var bodySizeFeature = HttpContext.Features.Get<IHttpMaxRequestBodySizeFeature>();
+            if (bodySizeFeature is { IsReadOnly: false })
+            {
+                bodySizeFeature.MaxRequestBodySize = _objectStoreConfig.MaxObjectBytes;
+            }
+
             var effectivePrefix = string.IsNullOrWhiteSpace(prefix) ? queueId : prefix;
             var objectId = Guid.NewGuid().ToString("N");
 
@@ -235,6 +246,18 @@ public class QueueController : ControllerBase
             catch (ArgumentException ex)
             {
                 return BadRequest(new ApiErrorResponse(ex.Message));
+            }
+            catch (BadHttpRequestException ex) when (ex.StatusCode == StatusCodes.Status413PayloadTooLarge)
+            {
+                return StatusCode(413, new ApiErrorResponse($"Object exceeds the maximum size of {_objectStoreConfig.MaxObjectBytes} bytes"));
+            }
+            catch (ObjectTooLargeException ex)
+            {
+                return StatusCode(413, new ApiErrorResponse(ex.Message));
+            }
+            catch (ObjectStoreFullException ex)
+            {
+                return StatusCode(507, new ApiErrorResponse(ex.Message));
             }
 
             var itemJson = BlobReferenceEnvelope.Build(blobReference, Request.ContentLength, contentType);
@@ -830,7 +853,15 @@ public class QueueController : ControllerBase
                 return BadRequest(new ApiErrorResponse("Invalid object claim token"));
             }
 
-            var result = await StreamBlobResponseAsync(claim!.BlobReference, cancellationToken, contentType: claim.ContentType);
+            IActionResult result;
+            try
+            {
+                result = await StreamBlobResponseAsync(claim!.BlobReference, cancellationToken, contentType: claim.ContentType);
+            }
+            catch (ObjectNotFoundException)
+            {
+                return NotFound(new ApiErrorResponse("Object not found"));
+            }
 
             try
             {

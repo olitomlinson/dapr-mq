@@ -11,7 +11,7 @@ public class DaprTestFixture : IAsyncLifetime
     public DaprTestEnvironment Environment { get; private set; } = null!;
     public HttpClient ApiClient => Environment.ApiClient;
     public HttpClient DaprSidecarClient => Environment.DaprSidecarClient;
-    public string BlobStoreDirectory => Environment.BlobStoreDirectory;
+    public Azure.Storage.Blobs.BlobContainerClient BlobContainer => Environment.BlobContainer;
     public QueueActorHttpClient QueueActorHttpClient { get; private set; } = null!;
 
     /// <summary>
