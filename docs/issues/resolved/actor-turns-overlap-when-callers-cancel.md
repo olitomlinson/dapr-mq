@@ -1,6 +1,6 @@
 # Actor turns overlap when callers cancel queued calls
 
-**Status:** Open upstream as [dapr/dapr#10835](https://github.com/dapr/dapr/issues/10835). It's **worked around** in DaprMQ by a temporary per-actor turn guard ([#77](https://github.com/olitomlinson/dapr-mq/pull/77)). An SDK-side backstop is proposed in [dapr/dotnet-sdk#1937](https://github.com/dapr/dotnet-sdk/pull/1937). Move this to `resolved/` once the guard is removed.
+**Status:** Resolved by Dapr 1.19.0 (2026-10-26). The runtime fix ([dapr/dapr#10842](https://github.com/dapr/dapr/pull/10842)) narrowed the overlap but didn't close it: the repro below, on runtime 1.19.0 with `Dapr.Actors` 1.18.10, still overlapped in 3 of 12 trials with reentrancy off and 4 of 12 with it on. The SDK's own turn lock ([dapr/dotnet-sdk#1937](https://github.com/dapr/dotnet-sdk/pull/1937), in `Dapr.Actors` 1.19.0) closes it: on runtime and SDK 1.19.0, 0 of 24 trials overlapped. DaprMQ's temporary turn guard ([#77](https://github.com/olitomlinson/dapr-mq/pull/77)) was removed in the Dapr 1.19.0 upgrade. Keep `Dapr.Actors` at 1.19.0 or later.
 
 **Severity:** **Critical** without the guard. It silently corrupts queue actor state under load.
 
@@ -13,7 +13,7 @@
 When a caller cancels actor calls, through the `CancellationToken` passed to `ActorProxy.InvokeMethodAsync`, while those calls are queued behind the actor's running turn, the Dapr sidecar dispatches them to the app about 50ms later. **The earlier turn is still executing when they arrive.** Several turns then run on the same actor id at once, which breaks turn-based concurrency. Without cancellation, turns are serialised correctly.
 
 DaprMQ cancels actor calls in two places:
-- the gateway's settle calls, after a 10s timeout ([DaprMQGrpcService.cs:39](../../server/src/DaprMQ.ApiServer/Services/DaprMQGrpcService.cs#L39))
+- the gateway's settle calls, after a 10s timeout ([DaprMQGrpcService.cs:39](../../../server/src/DaprMQ.ApiServer/Services/DaprMQGrpcService.cs#L39))
 - a Consume stream's outstanding calls, when the stream ends
 
 Under load, slow queue actor turns (see [lock-sweep-reads-are-unbounded.md](lock-sweep-reads-are-unbounded.md)) make both happen often.
@@ -45,7 +45,7 @@ Both reported overlaps that didn't happen. Count inside the turn, or inside the 
 
 ## The workaround
 
-[ActorTurnGuard.cs](../../server/src/DaprMQ.ApiServer/Services/ActorTurnGuard.cs) is middleware on the actor hosts, added in [Program.cs:387](../../server/src/DaprMQ.ApiServer/Program.cs#L387) when `REGISTER_ACTORS` is set. It's modelled on the `ActorTurnLock` in dotnet-sdk#1937:
+[ActorTurnGuard.cs](../../../server/src/DaprMQ.ApiServer/Services/ActorTurnGuard.cs) is middleware on the actor hosts, added in [Program.cs:387](../../../server/src/DaprMQ.ApiServer/Program.cs#L387) when `REGISTER_ACTORS` is set. It's modelled on the `ActorTurnLock` in dotnet-sdk#1937:
 - **It wraps every request the sidecar sends under `/actors/{type}/{id}/…`:** method calls, reminders, timers and deactivation. It holds one turn per actor until the SDK has finished the request, state save and response included.
 - **A call with the same non-empty `Dapr-Reentrancy-Id`** as the chain holding the turn may enter (A → B → A).
 - **A call whose request is aborted while it waits is dropped without running.**
@@ -55,6 +55,6 @@ Both reported overlaps that didn't happen. Count inside the turn, or inside the 
 
 Once the runtime fixes #10835, or DaprMQ moves to an SDK release that includes #1937 or an equivalent:
 
-1. Remove `app.UseActorTurnGuard(...)` from [Program.cs](../../server/src/DaprMQ.ApiServer/Program.cs), along with `Services/ActorTurnGuard.cs` and `server/tests/DaprMQ.Tests/ActorTurnGuardTests.cs`.
+1. Remove `app.UseActorTurnGuard(...)` from [Program.cs](../../../server/src/DaprMQ.ApiServer/Program.cs), along with `Services/ActorTurnGuard.cs` and `server/tests/DaprMQ.Tests/ActorTurnGuardTests.cs`.
 2. Rerun the load test above, with an in-turn counter or the repro's checks, to confirm there are no overlaps and `LockCount` matches the lock rows.
 3. Move this document to `docs/issues/resolved/`.

@@ -221,5 +221,5 @@ other consumers sooner.
    - 81 × 10 with window 20
 
    For each, record drain time, `ExtendLockBatch` calls and locks renewed a minute, releases or
-   expiries, `DeliveryCount` at the end, settle timeouts, and the turn guard's counts.
+   expiries, `DeliveryCount` at the end and settle timeouts.
 5. **Port** to Go, Java, Python and TypeScript once the .NET results justify it.
