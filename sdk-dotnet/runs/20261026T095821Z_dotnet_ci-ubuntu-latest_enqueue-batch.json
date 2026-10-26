@@ -1,0 +1,206 @@
+{
+  "schemaVersion": 2,
+  "runId": "20261026T095821Z_dotnet_ci-ubuntu-latest_enqueue-batch",
+  "timestampUtc": "2026-10-26T09:58:21.3829011\u002B00:00",
+  "sdk": {
+    "name": "dotnet",
+    "version": "0.0.0-alpha.0",
+    "runtime": ".NET 10.0.14"
+  },
+  "environment": {
+    "label": "ci-ubuntu-latest",
+    "gitSha": "6277feeac3df930e5747d5b9b4781261d2fe4a24",
+    "gitBranch": "main",
+    "gitDirty": false,
+    "os": "Ubuntu 24.04.5 LTS",
+    "cpuCount": 4
+  },
+  "topology": {
+    "apiReplicas": 1,
+    "schedulerReplicas": 3,
+    "loadBalancer": false,
+    "server": "testcontainers daprmq-api:test"
+  },
+  "scale": "pr",
+  "scenario": {
+    "id": "P-02",
+    "name": "enqueue-batch",
+    "profile": "enqueue-batch",
+    "key": "enqueue-batch:c4/q4/b100/256B/3\u002B15s",
+    "params": {
+      "concurrency": [
+        4
+      ],
+      "queues": 4,
+      "batchSize": 100,
+      "dequeueCount": 1,
+      "payloadBytes": 256,
+      "seedPerQueue": 0,
+      "warmupSeconds": 3,
+      "durationSeconds": 15
+    }
+  },
+  "metrics": {
+    "opsPerSecond": 389.8,
+    "messagesPerSecond": 38980,
+    "latencyMs": {
+      "count": 5847,
+      "mean": 10.263872207969927,
+      "p50": 9.844199999999546,
+      "p95": 14.817399999999907,
+      "p99": 17.904199999999037,
+      "max": 24.03229999999985
+    },
+    "ops": 5847,
+    "messages": 584700,
+    "errors": 0
+  },
+  "checks": {
+    "passed": true,
+    "failures": []
+  },
+  "steps": [
+    {
+      "concurrency": 4,
+      "queues": 4,
+      "durationSeconds": 15,
+      "ops": 5847,
+      "messages": 584700,
+      "errors": 0,
+      "opsPerSecond": 389.8,
+      "messagesPerSecond": 38980,
+      "latencyMs": {
+        "count": 5847,
+        "mean": 10.263872207969927,
+        "p50": 9.844199999999546,
+        "p95": 14.817399999999907,
+        "p99": 17.904199999999037,
+        "max": 24.03229999999985
+      }
+    }
+  ],
+  "timeline": {
+    "bucketMs": 1000,
+    "series": {
+      "opsPerSecond": [
+        401,
+        388,
+        379,
+        399,
+        397,
+        396,
+        390,
+        390,
+        393,
+        384,
+        380,
+        390,
+        395,
+        388,
+        377
+      ],
+      "messagesPerSecond": [
+        40100,
+        38800,
+        37900,
+        39900,
+        39700,
+        39600,
+        39000,
+        39000,
+        39300,
+        38400,
+        38000,
+        39000,
+        39500,
+        38800,
+        37700
+      ],
+      "latencyP50Ms": [
+        9.687,
+        9.693,
+        10.071,
+        9.704,
+        9.609,
+        9.653,
+        9.952,
+        9.858,
+        9.95,
+        9.843,
+        10.144,
+        9.658,
+        9.719,
+        9.959,
+        10.109
+      ],
+      "latencyP95Ms": [
+        14.117,
+        15.275,
+        15.649,
+        14.506,
+        14.62,
+        14.832,
+        14.336,
+        14.712,
+        14.151,
+        14.983,
+        15.113,
+        15.525,
+        14.585,
+        14.548,
+        15.229
+      ],
+      "latencyP99Ms": [
+        15.991,
+        17.364,
+        18.831,
+        17.97,
+        17.935,
+        17.24,
+        17.263,
+        18.243,
+        16.851,
+        18.761,
+        19.232,
+        17.904,
+        17.245,
+        17.731,
+        18.359
+      ],
+      "errors": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "concurrency": [
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4
+      ]
+    }
+  }
+}
