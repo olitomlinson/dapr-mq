@@ -255,7 +255,8 @@ public class SessionActivityReporterTests
     {
         _reporter.Observe("orders", "a", hasWork: true);
         await SentAsync();
-        _reporter.Observe("orders", "a", hasWork: false, deactivating: true);
+        _reporter.Observe("orders", "a", hasWork: false);
+        _reporter.MarkDeactivating("orders", "a");
 
         var final = await TickAsync();
         _time.Advance(TimeSpan.FromMinutes(5));
@@ -270,13 +271,23 @@ public class SessionActivityReporterTests
     {
         _reporter.Observe("orders", "a", hasWork: true);
         await SentAsync();
-        _reporter.Observe("orders", "a", hasWork: true, deactivating: true);
+        _reporter.MarkDeactivating("orders", "a");
 
         Assert.Empty(await TickAsync());
         // Forgotten: a later empty observation for a fresh activation starts from unknown.
         _reporter.Observe("orders", "a", hasWork: false);
         _time.Advance(TimeSpan.FromSeconds(31));
         Assert.Equal([("a", false)], Flat(await TickAsync()));
+    }
+
+    [Fact]
+    public async Task Deactivating_UnknownSession_TracksNothing()
+    {
+        // Never observed on this worker: nothing to report early and nothing to forget.
+        _reporter.MarkDeactivating("orders", "a");
+        _time.Advance(TimeSpan.FromMinutes(5));
+
+        Assert.Empty(await TickAsync());
     }
 
     // --- What the coordinator already knows ---

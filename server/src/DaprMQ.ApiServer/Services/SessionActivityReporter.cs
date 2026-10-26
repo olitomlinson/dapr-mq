@@ -63,7 +63,7 @@ public sealed class SessionActivityReporter : BackgroundService, ISessionActivit
     }
 
     /// <inheritdoc />
-    public void Observe(string queueId, string sessionId, bool hasWork, bool deactivating = false, bool reported = false)
+    public void Observe(string queueId, string sessionId, bool hasWork, bool reported = false)
     {
         lock (_gate)
         {
@@ -77,7 +77,7 @@ public sealed class SessionActivityReporter : BackgroundService, ISessionActivit
                 session.ChangedAt = _time.GetUtcNow();
             }
 
-            session.Deactivating = deactivating;
+            session.Deactivating = false;
             if (reported)
             {
                 session.LastSent = hasWork;
@@ -85,6 +85,18 @@ public sealed class SessionActivityReporter : BackgroundService, ISessionActivit
             else if (hasWork && session.LastSent != true)
             {
                 KickLocked(queueId, includeEmpty: false);
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    public void MarkDeactivating(string queueId, string sessionId)
+    {
+        lock (_gate)
+        {
+            if (_sessions.TryGetValue((queueId, sessionId), out var session))
+            {
+                session.Deactivating = true;
             }
         }
     }

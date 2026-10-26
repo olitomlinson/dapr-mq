@@ -331,7 +331,7 @@ public class SessionQueueActorTests
 
         await actor.ReceiveReminderAsync("session-registration", [], TimeSpan.Zero, TimeSpan.Zero);
 
-        reporter.Verify(r => r.Observe("orders", "order-42", true, false, false), Times.AtLeastOnce());
+        reporter.Verify(r => r.Observe("orders", "order-42", true, false), Times.AtLeastOnce());
         Assert.Equal(["reminder:session-registration:30"], events);
     }
 
@@ -401,7 +401,7 @@ public class SessionQueueActorTests
         await actor.ClearSessionLease();
         await actor.AfterActorMethodAsync("ClearSessionLease");
 
-        reporter.Verify(r => r.Observe("orders", "order-42", hasWork, false, true), Times.Once());
+        reporter.Verify(r => r.Observe("orders", "order-42", hasWork, true), Times.Once());
     }
 
     [Fact]
@@ -448,7 +448,7 @@ public class SessionQueueActorTests
 
         await actor.AfterActorMethodAsync(methodName);
 
-        reporter.Verify(r => r.Observe("orders", "order-42", true, false, It.IsAny<bool>()), Times.Once());
+        reporter.Verify(r => r.Observe("orders", "order-42", true, It.IsAny<bool>()), Times.Once());
     }
 
     [Theory]
@@ -469,18 +469,40 @@ public class SessionQueueActorTests
     }
 
     [Fact]
-    public async Task Deactivation_ObservesTheFinalStateAsDeactivating()
+    public async Task Deactivation_MarksTheSessionDeactivating_WithoutTouchingState()
     {
+        // During a placement rebalance daprd halts actors before it acks the update, and a state
+        // call made from deactivation waits on that same round: it deadlocks until the HTTP timeout.
         var (mockStateManager, _) = CreateMockStateManager();
         var reporter = new Mock<ISessionActivityReporter>();
         var actor = await CreateActorAsync(mockStateManager, actorId: "orders-session-order-42", reporter: reporter.Object);
+        mockStateManager.Invocations.Clear();
 
-        await (Task)typeof(QueueActor)
+        await DeactivateAsync(actor);
+
+        Assert.Empty(mockStateManager.Invocations);
+        reporter.Verify(r => r.MarkDeactivating("orders", "order-42"), Times.Once());
+        reporter.VerifyNoOtherCalls();
+    }
+
+    [Theory]
+    [InlineData("orders")]
+    [InlineData("orders-session-order-42-deadletter")]
+    public async Task Deactivation_PlainQueueOrSessionDeadLetter_TellsTheReporterNothing(string actorId)
+    {
+        var (mockStateManager, _) = CreateMockStateManager();
+        var reporter = new Mock<ISessionActivityReporter>();
+        var actor = await CreateActorAsync(mockStateManager, actorId: actorId, reporter: reporter.Object);
+
+        await DeactivateAsync(actor);
+
+        reporter.VerifyNoOtherCalls();
+    }
+
+    private static Task DeactivateAsync(QueueActor actor) =>
+        (Task)typeof(QueueActor)
             .GetMethod("OnDeactivateAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
             .Invoke(actor, null)!;
-
-        reporter.Verify(r => r.Observe("orders", "order-42", false, true), Times.Once());
-    }
 
     [Fact]
     public async Task SetSessionLease_StoresLeaseIdAndExpiry()
