@@ -39,5 +39,5 @@ Dapr configurations ([config.yml](../../server/dapr/config/config.yml),
   (Update, 2026-10-25: session actors no longer call the coordinator at all. Their worker's reporter registers them
   outside the turn, so that cycle and `RegisterSessionTimeout` are gone; see
   [async-session-registration.md](../../proposals/async-session-registration.md).)
-- `ActorTurnGuard` (dapr/dapr#10835) stays: the overlap happens with reentrancy on and off. Without a reentrancy id,
-  every call waits its turn.
+- `ActorTurnGuard` (dapr/dapr#10835) stayed: the overlap happened with reentrancy on and off. (Update, 2026-10-26:
+  the Dapr 1.19.0 runtime fixes #10835, so the guard is removed.)

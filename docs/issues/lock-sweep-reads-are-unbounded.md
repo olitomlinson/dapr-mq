@@ -4,7 +4,7 @@
 
 **Severity:**
 - **High** for a plain queue with a large, bursty backlog consumed by many streams. Queue actor turns take seconds to minutes, callers time out, locks expire and are redelivered, and throughput collapses.
-- Before the turn guard ([#77](https://github.com/olitomlinson/dapr-mq/pull/77)), the slow turns also triggered [dapr/dapr#10835](https://github.com/dapr/dapr/issues/10835): the sidecar dispatched calls into the queue actor while a turn was still in progress, which corrupted its state. See [actor-turns-overlap-when-callers-cancel.md](actor-turns-overlap-when-callers-cancel.md).
+- Before the turn guard ([#77](https://github.com/olitomlinson/dapr-mq/pull/77)), the slow turns also triggered [dapr/dapr#10835](https://github.com/dapr/dapr/issues/10835): the sidecar dispatched calls into the queue actor while a turn was still in progress, which corrupted its state. See [actor-turns-overlap-when-callers-cancel.md](resolved/actor-turns-overlap-when-callers-cancel.md).
 - **Low** for steady traffic with few consumers.
 
 **Affects:** `SweepExpiredLocksAsync` on plain queues ([QueueActor.cs:650](../../server/src/DaprMQ/QueueActor.cs#L650)). It runs at the top of every `Dequeue` and `DequeueLocked` ([QueueActor.cs:1350](../../server/src/DaprMQ/QueueActor.cs#L1350), [QueueActor.cs:1625](../../server/src/DaprMQ/QueueActor.cs#L1625)), so it runs on every Consume-stream refill.
@@ -77,4 +77,4 @@ The first is the essential fix. The others reduce how much work there is.
 
    Also time each call, from `OnPreActorMethodAsync` to `OnPostActorMethodAsync`.
 3. Set the actor hosts to log at Warning, and stream their logs to a file with `kubectl logs -f` for the whole run. At default verbosity the kubelet rotates the logs away within minutes.
-4. Don't infer overlapping sweeps from log timestamps. The console logger writes from a background queue, so under CPU starvation lines are stamped late. Count overlaps inside the turn instead (see [actor-turns-overlap-when-callers-cancel.md](actor-turns-overlap-when-callers-cancel.md)).
+4. Don't infer overlapping sweeps from log timestamps. The console logger writes from a background queue, so under CPU starvation lines are stamped late. Count overlaps inside the turn instead (see [actor-turns-overlap-when-callers-cancel.md](resolved/actor-turns-overlap-when-callers-cancel.md)).
