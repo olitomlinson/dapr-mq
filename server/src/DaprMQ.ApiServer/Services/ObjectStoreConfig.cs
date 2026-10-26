@@ -6,13 +6,13 @@ namespace DaprMQ.ApiServer.Services;
 public class ObjectStoreConfig
 {
     /// <summary>
-    /// Operator-controlled prefix applied to every blob key, set once at deploy time
-    /// (e.g. via DAPRMQ_BLOB_GLOBAL_PREFIX). Never accepted from a request.
+    /// Name of the Dapr Binary Store component (DAPRMQ_BLOB_STORE_NAME). A deployment-wide key prefix,
+    /// if wanted, is set with the component's own <c>prefix</c> metadata.
     /// </summary>
-    public required string GlobalPrefix { get; init; }
+    public required string StoreName { get; init; }
 
     /// <summary>
-    /// Name of the Dapr output binding component used for object storage (e.g. bindings.localstorage).
+    /// Largest request body accepted by enqueue-object, in bytes (DAPRMQ_OBJECT_MAX_BYTES).
     /// </summary>
-    public required string BindingName { get; init; }
+    public required long MaxObjectBytes { get; init; }
 }

@@ -1,0 +1,30 @@
+# Binary Store component for large-object offload (POST /queue/{id}/enqueue-object).
+# Its name must match blobStore.storeName in helm/values.yaml. Any binarystore.* type works;
+# a deployment-wide key prefix goes in the component's `prefix` metadata.
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: daprmq-blobstore
+spec:
+  type: binarystore.azure.blobstorage
+  version: v1
+  metadata:
+    - name: connectionString
+      secretKeyRef:
+        name: daprmq-blobstore
+        key: connectionString
+    - name: containerName
+      value: "daprmq-blobstore"
+    # - name: prefix
+    #   value: "daprmq"
+  # AWS S3 instead:
+  # type: binarystore.aws.s3
+  # metadata:
+  #   - name: bucket
+  #     value: "daprmq-blobstore"
+  #   - name: region
+  #     value: "eu-west-2"
+  #   - name: accessKey
+  #     secretKeyRef: { name: daprmq-blobstore, key: accessKey }
+  #   - name: secretKey
+  #     secretKeyRef: { name: daprmq-blobstore, key: secretKey }

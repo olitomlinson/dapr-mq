@@ -1,3 +1,4 @@
+using Azure.Storage.Blobs;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Configurations;
 using DotNet.Testcontainers.Containers;
@@ -21,6 +22,7 @@ public class DaprTestEnvironment : IAsyncLifetime
     private INetwork? _network;
     private PostgreSqlContainer? _postgresContainer;
     private IContainer? _wireMockContainer;
+    private IContainer? _azuriteContainer;
     private IContainer? _daprPlacementContainer;
     private readonly List<IContainer> _daprSchedulerContainers = [];
     private readonly List<IContainer> _daprSidecarContainers = [];
@@ -29,6 +31,7 @@ public class DaprTestEnvironment : IAsyncLifetime
     private IContainer? _operatorContainer;
     private IContainer? _operatorSidecarContainer;
     private string _componentsPath = string.Empty;
+    private string _blobStoreComponentsPath = string.Empty;
 
     // Containers hosting the actors (the workers when split), for tests that take them down.
     private readonly List<(IContainer App, IContainer Sidecar)> _actorHosts = [];
@@ -54,13 +57,17 @@ public class DaprTestEnvironment : IAsyncLifetime
     public HttpClient DaprSidecarClient { get; private set; } = null!;
 
     /// <summary>
-    /// Host-side directory bind-mounted into the Dapr sidecar's bindings.localstorage rootPath.
-    /// Tests can inspect this directory to verify blob upload/deletion.
+    /// The Azurite container behind the sidecars' binarystore component (see dapr-blobstore/blobstore.yaml).
+    /// Tests can list it to verify blob upload/deletion.
     /// </summary>
-    public string BlobStoreDirectory => _blobStoreTestDirectory;
+    public BlobContainerClient BlobContainer { get; private set; } = null!;
+
+    private const string AzuriteAlias = "azurite";
+    private const int AzuriteBlobPort = 10000;
+    private const string AzuriteAccountKey = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==";
+    private const string BlobContainerName = "daprmq-blobstore";
 
     private string _schedulerTestDirectory;
-    private string _blobStoreTestDirectory;
 
 
     public Task InitializeAsync() => InitializeAsync(null, null, false);
@@ -153,6 +160,23 @@ public class DaprTestEnvironment : IAsyncLifetime
         WireMockUrl = $"http://localhost:{wireMockPort}";
         WireMockInternalUrl = $"http://{wireMockNetworkAlias}:{wireMockInternalPort}";
 
+        // 2b. Azurite for the binarystore component; the sidecars' component creates the container at init
+        _azuriteContainer = new ContainerBuilder()
+            .WithImage("mcr.microsoft.com/azure-storage/azurite:3.37.0")
+            .WithNetwork(_network)
+            .WithNetworkAliases(AzuriteAlias)
+            .WithCommand("azurite-blob", "--blobHost", "0.0.0.0", "--blobPort", AzuriteBlobPort.ToString(), "--skipApiVersionCheck", "--loose")
+            .WithPortBinding(AzuriteBlobPort, true)
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(AzuriteBlobPort))
+            .Build();
+
+        await _azuriteContainer.StartAsync();
+
+        var azuriteHostEndpoint = $"http://127.0.0.1:{_azuriteContainer.GetMappedPublicPort(AzuriteBlobPort)}/devstoreaccount1";
+        BlobContainer = new BlobServiceClient(
+                $"DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey={AzuriteAccountKey};BlobEndpoint={azuriteHostEndpoint};")
+            .GetBlobContainerClient(BlobContainerName);
+
         // 3. Start Dapr placement service
         _daprPlacementContainer = new ContainerBuilder()
             .WithImage("ghcr.io/dapr/dapr:1.19.0")
@@ -169,7 +193,6 @@ public class DaprTestEnvironment : IAsyncLifetime
 
         const string schedulerContainerDataDir = "/data/dapr-scheduler";
         _schedulerTestDirectory = TestDirectoryManager.CreateTestDirectory("scheduler");
-        _blobStoreTestDirectory = TestDirectoryManager.CreateTestDirectory("blobstore");
         // 4. Start Dapr scheduler service (one member, or an HA cluster of topology.SchedulerReplicas)
         for (var member = 0; member < topology.SchedulerReplicas; member++)
         {
@@ -201,6 +224,9 @@ public class DaprTestEnvironment : IAsyncLifetime
         var testProjectRoot = Path.Combine(Directory.GetCurrentDirectory(), "..", "..", "..");
         var componentsPath = Path.GetFullPath(Path.Combine(testProjectRoot, "dapr-components"));
         _componentsPath = componentsPath;
+        // Kept apart from dapr-components, which the SDK integration stacks share and which run no Azurite.
+        // Projects reusing this environment without a dapr-blobstore folder (the .NET SDK tests) skip it.
+        _blobStoreComponentsPath = Path.GetFullPath(Path.Combine(testProjectRoot, "dapr-blobstore"));
 
         var apiRole = topology.IsSplit ? ReplicaRole.Gateway : ReplicaRole.Combined;
         var replicas = await Task.WhenAll(
@@ -292,7 +318,10 @@ public class DaprTestEnvironment : IAsyncLifetime
             .WithEnvironment("HTTP_SINK_ACTOR_TYPE_NAME", Environment.GetEnvironmentVariable("HTTP_SINK_ACTOR_TYPE_NAME") ?? "HttpSinkActor")
             // Short reap TTLs so LargeObjectTests can observe deletion within a reasonable test timeout
             .WithEnvironment("DAPRMQ_BLOB_REAP_BACKSTOP_SECONDS", "30")
-            .WithEnvironment("DAPRMQ_BLOB_REAP_POST_DOWNLOAD_SECONDS", "30");
+            .WithEnvironment("DAPRMQ_BLOB_REAP_POST_DOWNLOAD_SECONDS", "30")
+            // Small enough that LargeObjectTests can exceed it quickly, large enough to prove bodies
+            // past daprd's 16Mi max body size stream through
+            .WithEnvironment("DAPRMQ_OBJECT_MAX_BYTES", (32 * 1024 * 1024).ToString());
 
         if (extraApiServerEnvironment != null)
         {
@@ -321,26 +350,35 @@ public class DaprTestEnvironment : IAsyncLifetime
 
         // Dapr sidecar (connects to its API server via Docker network). Mounts the components
         // directory from the project root (3 levels up from bin/Debug/net10.0).
+        var withBlobStore = Directory.Exists(_blobStoreComponentsPath);
+        string[] daprdCommand =
+        [
+            "./daprd",
+            // Actor state is keyed by the hosting app-id, so actor hosts keep "daprmq-api".
+            "--app-id", role == ReplicaRole.Gateway ? GatewayAppId : WorkerAppId,
+            "--app-channel-address", apiAliases[0],  // Connect to API server via Docker network
+            "--app-port", "5000",
+            "--dapr-http-port", "3500",
+            "--dapr-grpc-port", "50001",
+            "--placement-host-address", "dapr-placement:50005",
+            "--scheduler-host-address", topology.SchedulerHostAddress,
+            "--resources-path", "/tmp/dapr-components",
+            .. (withBlobStore ? new[] { "--resources-path", "/tmp/dapr-blobstore" } : []),
+            "--config", "/tmp/dapr-components/config.yml",
+            "--log-level", "info",
+        ];
         var daprSidecarBuilder = new ContainerBuilder()
             .WithImage("ghcr.io/dapr/daprd:1.19.0")
             .WithNetwork(_network)
             .WithNetworkAliases(sidecarAliases)
-            .WithCommand("./daprd",
-                // Actor state is keyed by the hosting app-id, so actor hosts keep "daprmq-api".
-                "--app-id", role == ReplicaRole.Gateway ? GatewayAppId : WorkerAppId,
-                "--app-channel-address", apiAliases[0],  // Connect to API server via Docker network
-                "--app-port", "5000",
-                "--dapr-http-port", "3500",
-                "--dapr-grpc-port", "50001",
-                "--placement-host-address", "dapr-placement:50005",
-                "--scheduler-host-address", topology.SchedulerHostAddress,
-                "--resources-path", "/tmp/dapr-components",
-                "--config", "/tmp/dapr-components/config.yml",
-                "--log-level", "info")  // Enable debug logging for Dapr
+            .WithCommand(daprdCommand)
             .WithBindMount(componentsPath, "/tmp/dapr-components")
-            .WithBindMount(_blobStoreTestDirectory, "/tmp/blobstore")
             .WithPortBinding(3500, true)
             .WithPortBinding(50001, true);
+        if (withBlobStore)
+        {
+            daprSidecarBuilder = daprSidecarBuilder.WithBindMount(_blobStoreComponentsPath, "/tmp/dapr-blobstore");
+        }
 
         // Conditionally redirect container logs to console
         if (enableContainerLogs)
@@ -530,7 +568,6 @@ public class DaprTestEnvironment : IAsyncLifetime
                 "--config", "/tmp/dapr-components/config.yml",
                 "--log-level", "info")
             .WithBindMount(_componentsPath, "/tmp/dapr-components")
-            .WithBindMount(_blobStoreTestDirectory, "/tmp/blobstore")
             .WithPortBinding(3500, true)
             .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(r => r.ForPort(3500).ForPath("/v1.0/healthz/outbound").ForStatusCode(System.Net.HttpStatusCode.NoContent)))
             .Build();
@@ -590,8 +627,6 @@ public class DaprTestEnvironment : IAsyncLifetime
             await sidecar.DisposeAsync();
         }
 
-        TestDirectoryManager.CleanUpDirectory(_blobStoreTestDirectory);
-
         if (_daprPlacementContainer != null)
         {
             await _daprPlacementContainer.DisposeAsync();
@@ -612,6 +647,11 @@ public class DaprTestEnvironment : IAsyncLifetime
         if (_wireMockContainer != null)
         {
             await _wireMockContainer.DisposeAsync();
+        }
+
+        if (_azuriteContainer != null)
+        {
+            await _azuriteContainer.DisposeAsync();
         }
 
         if (_network != null)

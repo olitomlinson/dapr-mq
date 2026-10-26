@@ -1,3 +1,4 @@
+using Dapr.BinaryStore.Extensions;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -201,14 +202,15 @@ builder.Services.AddSingleton<DaprMQ.IAdminReadService>(sp =>
 builder.Services.AddSingleton(new TopicActorConfig());
 builder.Services.TryAddSingleton(TimeProvider.System);
 
-// Register object store used to offload large item payloads (backed by a Dapr output binding)
+// Register object store used to offload large item payloads (backed by a Dapr Binary Store component)
 var objectStoreConfig = new ObjectStoreConfig
 {
-    GlobalPrefix = builder.Configuration.GetValue("DAPRMQ_BLOB_GLOBAL_PREFIX", string.Empty) ?? string.Empty,
-    BindingName = builder.Configuration.GetValue("DAPRMQ_BLOB_BINDING_NAME", "daprmq-blobstore") ?? "daprmq-blobstore"
+    StoreName = builder.Configuration.GetValue("DAPRMQ_BLOB_STORE_NAME", "daprmq-blobstore") ?? "daprmq-blobstore",
+    MaxObjectBytes = builder.Configuration.GetValue("DAPRMQ_OBJECT_MAX_BYTES", 100L * 1024 * 1024)
 };
 builder.Services.AddSingleton(objectStoreConfig);
-builder.Services.AddSingleton<IObjectStore, DaprBindingObjectStore>();
+builder.Services.AddDaprBinaryStoreClient();
+builder.Services.AddSingleton<IObjectStore, DaprBinaryStoreObjectStore>();
 
 // Register ObjectClaimToken issuer, used in place of exposing raw BlobReferences to end users.
 // Signing key defaults to a dev-only value - deployments must override DAPRMQ_OBJECT_CLAIM_SIGNING_KEY.

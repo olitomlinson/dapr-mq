@@ -1,4 +1,5 @@
 using System.Net;
+using Azure.Storage.Blobs.Models;
 using System.Net.Http.Json;
 using System.Text.Json;
 using DaprMQ.ApiServer.Models;
@@ -31,31 +32,45 @@ public class LargeObjectTests(DaprTestFixture fixture)
 
     /// <summary>
     /// Sizes of the blobs stored for <paramref name="queueId"/> (keyed "{queueId}/{objectId}" when no
-    /// prefix is given), so other tests' blobs in the shared directory don't count. The reaper deletes
-    /// files at any moment, so one that vanishes between listing and reading is simply gone.
+    /// prefix is given), so other tests' blobs in the shared container don't count.
     /// </summary>
-    private long[] BlobSizes(string queueId)
+    private async Task<long[]> BlobSizesAsync(string queueId)
     {
-        if (!Directory.Exists(fixture.BlobStoreDirectory))
+        var sizes = new List<long>();
+        await foreach (var blob in fixture.BlobContainer.GetBlobsAsync(BlobTraits.None, BlobStates.None, $"{queueId}/", CancellationToken.None))
         {
-            return [];
+            sizes.Add(blob.Properties.ContentLength ?? 0);
         }
 
-        return Directory.GetFiles(fixture.BlobStoreDirectory, "*", SearchOption.AllDirectories)
-            .Where(f => Path.GetFileName(Path.GetDirectoryName(f)) == queueId)
-            .Select(f =>
-            {
-                try
-                {
-                    return new FileInfo(f).Length;
-                }
-                catch (FileNotFoundException)
-                {
-                    return -1L;
-                }
-            })
-            .Where(length => length >= 0)
-            .ToArray();
+        return sizes.ToArray();
+    }
+
+    private async Task<(string Token, string LockId)> EnqueueAndDequeueLockedAsync(string queueId, byte[] content)
+    {
+        var enqueueResponse = await fixture.ApiClient.SendAsync(BuildEnqueueObjectRequest(queueId, content));
+        Assert.Equal(HttpStatusCode.OK, enqueueResponse.StatusCode);
+
+        var dequeueResponse = await fixture.ApiClient.SendAsync(BuildDequeueRequest(queueId, requireAck: true));
+        Assert.Equal(HttpStatusCode.OK, dequeueResponse.StatusCode);
+        using var dequeueBody = JsonDocument.Parse(await dequeueResponse.Content.ReadAsStringAsync());
+        var item = dequeueBody.RootElement.GetProperty("items")[0];
+        return (item.GetProperty("item").GetProperty("objectClaimToken").GetString()!, item.GetProperty("lockId").GetString()!);
+    }
+
+    /// <summary>A read-only stream of unknown length, so HttpClient sends it chunked.</summary>
+    private sealed class UnknownLengthStream(byte[] content) : Stream
+    {
+        private readonly MemoryStream _inner = new(content);
+        public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, count);
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     [Fact]
@@ -86,7 +101,7 @@ public class LargeObjectTests(DaprTestFixture fixture)
         Assert.Equal(content, downloadedBytes);
 
         // Recoverable until ack - the blob must still exist right after Dequeue and download.
-        Assert.Contains(content.LongLength, BlobSizes(queueId));
+        Assert.Contains(content.LongLength, await BlobSizesAsync(queueId));
 
         var ackResponse = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/acknowledge", new ApiAcknowledgeRequest(lockId!));
         Assert.Equal(HttpStatusCode.OK, ackResponse.StatusCode);
@@ -98,7 +113,7 @@ public class LargeObjectTests(DaprTestFixture fixture)
         var stillPresent = true;
         while (DateTime.UtcNow < deadline)
         {
-            stillPresent = BlobSizes(queueId).Contains(content.LongLength);
+            stillPresent = (await BlobSizesAsync(queueId)).Contains(content.LongLength);
             if (!stillPresent)
             {
                 break;
@@ -119,7 +134,7 @@ public class LargeObjectTests(DaprTestFixture fixture)
         var enqueueResponse = await fixture.ApiClient.SendAsync(BuildEnqueueObjectRequest(queueId, content));
         Assert.Equal(HttpStatusCode.OK, enqueueResponse.StatusCode);
 
-        Assert.Contains(content.LongLength, BlobSizes(queueId));
+        Assert.Contains(content.LongLength, await BlobSizesAsync(queueId));
 
         var dequeueResponse = await fixture.ApiClient.SendAsync(BuildDequeueRequest(queueId, requireAck: false));
         Assert.Equal(HttpStatusCode.OK, dequeueResponse.StatusCode);
@@ -141,7 +156,7 @@ public class LargeObjectTests(DaprTestFixture fixture)
         var stillPresent = true;
         while (DateTime.UtcNow < deadline)
         {
-            stillPresent = BlobSizes(queueId).Contains(content.LongLength);
+            stillPresent = (await BlobSizesAsync(queueId)).Contains(content.LongLength);
             if (!stillPresent)
             {
                 break;
@@ -162,8 +177,59 @@ public class LargeObjectTests(DaprTestFixture fixture)
         var enqueueResponse = await fixture.ApiClient.SendAsync(BuildEnqueueObjectRequest(queueId, content, prefix: customPrefix));
         Assert.Equal(HttpStatusCode.OK, enqueueResponse.StatusCode);
 
-        var prefixDir = Path.Combine(fixture.BlobStoreDirectory, customPrefix);
-        Assert.True(Directory.Exists(prefixDir), $"Expected blob to land under prefix directory {prefixDir}");
+        var stored = new List<string>();
+        await foreach (var blob in fixture.BlobContainer.GetBlobsAsync(BlobTraits.None, BlobStates.None, $"{customPrefix}/", CancellationToken.None))
+        {
+            stored.Add(blob.Name);
+        }
+
+        Assert.NotEmpty(stored);
+    }
+
+    [Fact]
+    public async Task EnqueueObject_LargerThanSidecarMaxBodySize_RoundTripsBytes()
+    {
+        var queueId = $"{fixture.QueueId}-largeobj-big-{Guid.NewGuid():N}";
+        var content = new byte[20 * 1024 * 1024];
+        new Random(11).NextBytes(content);
+
+        var (token, _) = await EnqueueAndDequeueLockedAsync(queueId, content);
+
+        var downloadResponse = await fixture.ApiClient.GetAsync($"/object/{token}");
+        Assert.Equal(HttpStatusCode.OK, downloadResponse.StatusCode);
+        Assert.Equal(content, await downloadResponse.Content.ReadAsByteArrayAsync());
+    }
+
+    [Fact]
+    public async Task EnqueueObject_OverMaxObjectBytes_Returns413_AndStoresNothing()
+    {
+        var queueId = $"{fixture.QueueId}-largeobj-cap-{Guid.NewGuid():N}";
+        var request = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/enqueue-object")
+        {
+            Content = new StreamContent(new UnknownLengthStream(new byte[33 * 1024 * 1024]))
+        };
+
+        var response = await fixture.ApiClient.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+        Assert.Empty(await BlobSizesAsync(queueId));
+        var dequeueResponse = await fixture.ApiClient.SendAsync(BuildDequeueRequest(queueId, requireAck: false));
+        Assert.Equal(HttpStatusCode.NoContent, dequeueResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetObject_BlobGoneFromStore_Returns404()
+    {
+        var queueId = $"{fixture.QueueId}-largeobj-gone-{Guid.NewGuid():N}";
+        var (token, _) = await EnqueueAndDequeueLockedAsync(queueId, [1, 2, 3]);
+        await foreach (var blob in fixture.BlobContainer.GetBlobsAsync(BlobTraits.None, BlobStates.None, $"{queueId}/", CancellationToken.None))
+        {
+            await fixture.BlobContainer.DeleteBlobAsync(blob.Name);
+        }
+
+        var response = await fixture.ApiClient.GetAsync($"/object/{token}");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
     [Fact]

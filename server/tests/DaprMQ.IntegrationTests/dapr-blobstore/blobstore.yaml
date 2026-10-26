@@ -1,11 +1,12 @@
 apiVersion: dapr.io/v1alpha1
 kind: Component
 metadata:
-  name: daprmq-blobstore-azure
+  name: daprmq-blobstore
 spec:
-  type: bindings.azure.blobstorage
+  type: binarystore.azure.blobstorage
   version: v1
   metadata:
+    # Azurite's well-known development account; the Azurite container answers to "azurite"
     - name: accountName
       value: "devstoreaccount1"
     - name: accountKey
@@ -14,6 +15,3 @@ spec:
       value: "daprmq-blobstore"
     - name: endpoint
       value: "http://azurite:10000"
-scopes:
-  - daprmq-service
-  - daprmq-gateway

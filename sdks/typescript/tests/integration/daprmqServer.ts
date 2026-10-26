@@ -179,7 +179,6 @@ export async function startDaprMQServer(topology = new DaprTopology(), image = A
   }
 
   const schedulerDir = worldWritableDir("daprmq-scheduler-");
-  const blobstoreDir = worldWritableDir("daprmq-blobstore-");
   const containers: StartedTestContainer[] = [];
   let network: StartedNetwork | undefined;
 
@@ -258,7 +257,6 @@ export async function startDaprMQServer(topology = new DaprTopology(), image = A
           .withNetworkAliases(...(legacy ? [sidecarAlias, "dapr-sidecar"] : [sidecarAlias]))
           .withBindMounts([
             { source: COMPONENTS_DIR, target: "/tmp/dapr-components", mode: "ro" },
-            { source: blobstoreDir, target: "/tmp/blobstore", mode: "rw" },
           ])
           .withCommand([
             "./daprd", "--app-id", "daprmq-api", "--app-channel-address", apiAlias, "--app-port", "5000",

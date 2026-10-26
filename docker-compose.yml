@@ -77,7 +77,6 @@ services:
       - ENABLE_API=true
       # The workers' app-id, for the daprmq.DaprMQ.operations health signal
       - WORKER_APP_ID=daprmq-service
-      - DAPRMQ_BLOB_BINDING_NAME=${DAPRMQ_BLOB_BINDING_NAME:-daprmq-blobstore}
     ports:
       - "8002:8080" # REST HTTP/1.1
       - "8102:8081" # gRPC HTTP/2
@@ -119,7 +118,6 @@ services:
       ]
     volumes:
       - "./server/dapr/components:/components"
-      - "./server/dapr/blobstore-data:/blobstore"
       - "./server/dapr/config:/dapr-config"
     ports:
       - "3504:3500" # Dapr HTTP port for host access
@@ -155,7 +153,6 @@ services:
       - DAPR_HTTP_ENDPOINT=http://worker-1-dapr:3500
       - REGISTER_ACTORS=true
       - ENABLE_API=false
-      - DAPRMQ_BLOB_BINDING_NAME=${DAPRMQ_BLOB_BINDING_NAME:-daprmq-blobstore}
     depends_on:
       worker-1-dapr:
         condition: service_started
@@ -190,7 +187,6 @@ services:
       ]
     volumes:
       - "./server/dapr/components:/components"
-      - "./server/dapr/blobstore-data:/blobstore"
       - "./server/dapr/config:/dapr-config"
     ports:
       - "3502:3500" # Dapr HTTP port for host access
@@ -226,7 +222,6 @@ services:
       - DAPR_HTTP_ENDPOINT=http://worker-2-dapr:3500
       - REGISTER_ACTORS=true
       - ENABLE_API=false
-      - DAPRMQ_BLOB_BINDING_NAME=${DAPRMQ_BLOB_BINDING_NAME:-daprmq-blobstore}
     depends_on:
       worker-2-dapr:
         condition: service_started
@@ -261,7 +256,6 @@ services:
       ]
     volumes:
       - "./server/dapr/components:/components"
-      - "./server/dapr/blobstore-data:/blobstore"
       - "./server/dapr/config:/dapr-config"
     ports:
       - "3503:3500" # Dapr HTTP port for host access
@@ -298,7 +292,6 @@ services:
       - DAPR_HTTP_ENDPOINT=http://worker-3-dapr:3500
       - REGISTER_ACTORS=true
       - ENABLE_API=false
-      - DAPRMQ_BLOB_BINDING_NAME=${DAPRMQ_BLOB_BINDING_NAME:-daprmq-blobstore}
     depends_on:
       worker-3-dapr:
         condition: service_started
@@ -334,7 +327,6 @@ services:
       ]
     volumes:
       - "./server/dapr/components:/components"
-      - "./server/dapr/blobstore-data:/blobstore"
       - "./server/dapr/config:/dapr-config"
     ports:
       - "3505:3500" # Dapr HTTP port for host access
@@ -499,7 +491,7 @@ services:
   azurite:
     container_name: azurite
     image: mcr.microsoft.com/azure-storage/azurite:latest
-    command: ["azurite-blob", "--blobHost", "0.0.0.0", "--blobPort", "10000"]
+    command: ["azurite-blob", "--blobHost", "0.0.0.0", "--blobPort", "10000", "--skipApiVersionCheck", "--loose"]
     restart: unless-stopped
     ports:
       - "10000:10000"

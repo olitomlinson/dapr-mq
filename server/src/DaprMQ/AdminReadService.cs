@@ -373,7 +373,17 @@ public class AdminReadService : IAdminReadService
             return AdminReadResult<AdminPayload>.NotFound();
         }
 
-        await using var stream = await _objectStore.DownloadAsync(envelope.BlobReference, cancellationToken);
+        Stream stream;
+        try
+        {
+            stream = await _objectStore.DownloadAsync(envelope.BlobReference, cancellationToken);
+        }
+        catch (ObjectNotFoundException)
+        {
+            return AdminReadResult<AdminPayload>.NotFound();
+        }
+
+        await using var _ = stream;
         var buffer = new byte[MaxPayloadBytes + 1];
         var read = 0;
         int n;

@@ -97,10 +97,6 @@ func startStack(ctx context.Context, apiImage string) (stop func(), err error) {
 	if err != nil {
 		return stop, err
 	}
-	blobstoreDir, err := worldWritableDir("daprmq-blobstore-")
-	if err != nil {
-		return stop, err
-	}
 	_, thisFile, _, _ := runtime.Caller(0)
 	componentsDir := filepath.Join(filepath.Dir(thisFile), "../../../server/tests/DaprMQ.IntegrationTests/dapr-components")
 
@@ -154,7 +150,7 @@ func startStack(ctx context.Context, apiImage string) (stop func(), err error) {
 			"--resources-path", "/tmp/dapr-components", "--config", "/tmp/dapr-components/config.yml", "--log-level", "info",
 		},
 		HostConfigModifier: func(hc *container.HostConfig) {
-			hc.Binds = append(hc.Binds, componentsDir+":/tmp/dapr-components:ro", blobstoreDir+":/tmp/blobstore:rw")
+			hc.Binds = append(hc.Binds, componentsDir+":/tmp/dapr-components:ro")
 		},
 	}); err != nil {
 		return stop, err

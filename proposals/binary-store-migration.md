@@ -1,7 +1,11 @@
 # Proposal: Binary Store for large-message offload (Dapr 1.19)
 
-> **Status: proposal only.** Build this once Dapr 1.19.0 and a GA `Dapr.BinaryStore` package ship.
-> On 2026-10-17 the latest releases are runtime `v1.19.0-rc.4` and dotnet-sdk `v1.19.0-rc.2`.
+> **Status: implemented** on Dapr 1.19.0 / `Dapr.BinaryStore` 1.19.0 (2026-10-26). Deviations from the plan below:
+> - 413 and 507 both arrive as gRPC `ResourceExhausted` with no error detail; the store tells them apart by the "store is full" message.
+> - The SDK's streaming upload waits on the call's response when a source read fails, so a body read failure (e.g. over `DAPRMQ_OBJECT_MAX_BYTES`) cancels the call before rethrowing.
+> - `DAPRMQ_OBJECT_MAX_BYTES` defaults to 100 MiB (`blobStore.maxObjectBytes` in Helm).
+> - The integration-test component lives in `dapr-blobstore/`, a second `--resources-path` only the server harness loads, so the SDK stacks (which share `dapr-components/`) need no Azurite.
+> - The Azurite endpoint is `http://azurite:10000`; the component appends `/{accountName}/{containerName}`.
 
 ## Context
 

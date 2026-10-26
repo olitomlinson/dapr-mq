@@ -176,7 +176,6 @@ def start_stack(topology: DaprTopology = DaprTopology(), image: str = API_IMAGE)
     """Starts the stack, waits until every API replica can serve queue operations, and yields the
     endpoints the SDK should use (the load balancer's when there is one)."""
     scheduler_dir = _world_writable_dir("daprmq-scheduler-")
-    blobstore_dir = _world_writable_dir("daprmq-blobstore-")
     nginx_conf: str | None = None
     containers: list[DockerContainer] = []
 
@@ -248,7 +247,6 @@ def start_stack(topology: DaprTopology = DaprTopology(), image: str = API_IMAGE)
                     .with_network(network)
                     .with_network_aliases(*([sidecar_alias, "dapr-sidecar"] if legacy else [sidecar_alias]))
                     .with_volume_mapping(str(COMPONENTS_DIR), "/tmp/dapr-components", "ro")
-                    .with_volume_mapping(blobstore_dir, "/tmp/blobstore", "rw")
                     .with_command(
                         f"./daprd --app-id daprmq-api --app-channel-address {api_alias} --app-port 5000 "
                         "--dapr-http-port 3500 --dapr-grpc-port 50001 "
