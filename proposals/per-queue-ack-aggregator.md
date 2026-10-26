@@ -38,9 +38,9 @@ gateway pods):
 - **Acks wait behind each other.** With up to 81 ack calls queued on the actor at once, each waits
   behind the others. Past the gateway's 10-second `SettleTimeout`, the whole batch fails and its
   locks are left to expire and redeliver.
-- **Timeouts make it worse.** Each timed-out call is also a cancelled actor call, which is the
-  trigger for [dapr/dapr#10835](https://github.com/dapr/dapr/issues/10835). The temporary turn guard
-  absorbs that today.
+- **Timeouts make it worse.** Each timed-out call is also a cancelled actor call. Before Dapr 1.19 that
+  could start overlapping turns ([dapr/dapr#10835](https://github.com/dapr/dapr/issues/10835), fixed in the
+  1.19.0 runtime); now it only wastes the call.
 
 Batching is already at its maximum per stream. The batches are small because the window is small,
 and the window should stay small: see "Prefetch sizing" below. The lever left is to combine acks
