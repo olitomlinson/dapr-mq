@@ -1468,7 +1468,8 @@ public class QueueActor : Actor, IQueueActor, IRemindable
             {
                 ItemJson = itemJson!,
                 Priority = priority,
-                ObjectClaimToken = isBlobRef ? _objectClaimTokenIssuer.Issue(envelope!.BlobReference, envelope.ContentType) : null
+                ObjectClaimToken = isBlobRef ? _objectClaimTokenIssuer.Issue(envelope!.BlobReference, envelope.ContentType) : null,
+                BlobContentType = isBlobRef ? envelope!.ContentType : null
             });
 
             // Plain Dequeue has no lock/ack step - this is the sole finalization point for the item,

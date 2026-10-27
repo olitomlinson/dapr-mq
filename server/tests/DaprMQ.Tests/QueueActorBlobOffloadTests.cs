@@ -106,6 +106,18 @@ public class QueueActorBlobOffloadTests
     }
 
     [Fact]
+    public async Task Dequeue_BlobRefItem_ReportsItsContentType()
+    {
+        var mockStateManager = CreateMockStateManager();
+        var (actor, _) = await CreateActorAsync(mockStateManager);
+
+        await actor.Enqueue(new EnqueueRequest { Items = new List<EnqueueItem> { new() { ItemJson = BlobReferenceEnvelope.Build("blob-3", contentType: "application/pdf"), Priority = 0 } } });
+        var result = await actor.Dequeue(new DequeueRequest());
+
+        Assert.Equal("application/pdf", result.Items[0].BlobContentType);
+    }
+
+    [Fact]
     public async Task Dequeue_NormalItem_LeavesObjectClaimTokenNullAndDoesNotSchedule()
     {
         var mockStateManager = CreateMockStateManager();
