@@ -270,6 +270,12 @@ public record DequeueItem
     /// via the object download endpoint. Null for normal inline items. Never a raw BlobReference.
     /// </summary>
     public string? ObjectClaimToken { get; init; }
+
+    /// <summary>
+    /// Content type recorded at enqueue-object time, if this item is a blob reference. Null for
+    /// normal inline items or if no content type was supplied.
+    /// </summary>
+    public string? BlobContentType { get; init; }
 }
 
 /// <summary>

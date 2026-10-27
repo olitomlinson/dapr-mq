@@ -262,6 +262,23 @@ public class LargeObjectTests(DaprTestFixture fixture)
     }
 
     [Fact]
+    public async Task EnqueueObject_PlainDequeue_ReportsContentType()
+    {
+        var queueId = $"{fixture.QueueId}-largeobj-ctype-{Guid.NewGuid():N}";
+        var request = BuildEnqueueObjectRequest(queueId, [1, 2, 3]);
+        request.Content!.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/pdf");
+        var enqueueResponse = await fixture.ApiClient.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, enqueueResponse.StatusCode);
+
+        var dequeueResponse = await fixture.ApiClient.SendAsync(BuildDequeueRequest(queueId, requireAck: false));
+
+        Assert.Equal(HttpStatusCode.OK, dequeueResponse.StatusCode);
+        using var dequeueBody = JsonDocument.Parse(await dequeueResponse.Content.ReadAsStringAsync());
+        var item = dequeueBody.RootElement.GetProperty("items")[0].GetProperty("item");
+        Assert.Equal("application/pdf", item.GetProperty("contentType").GetString());
+    }
+
+    [Fact]
     public async Task GetObject_InvalidToken_Returns400()
     {
         var response = await fixture.ApiClient.GetAsync("/object/not-a-valid-token");

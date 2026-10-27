@@ -181,6 +181,27 @@ public class QueueControllerLargeObjectTests
     }
 
     [Fact]
+    public async Task Dequeue_BlobRefItem_ReturnsItsContentType()
+    {
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        mockInvoker.Setup(i => i.InvokeMethodAsync<DequeueRequest, DequeueResponse>(
+                It.IsAny<ActorId>(), "Dequeue", It.IsAny<DequeueRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DequeueResponse
+            {
+                Items = new List<DequeueItem> { new() { ItemJson = "{}", Priority = 0, ObjectClaimToken = "claim-token-1", BlobContentType = "application/pdf" } },
+                Locked = false,
+                IsEmpty = false
+            });
+        var controller = CreateController(mockInvoker, new Mock<IObjectStore>());
+
+        var result = await controller.Dequeue("test-queue", require_ack: false);
+
+        var response = Assert.IsType<ApiDequeueResponse>(Assert.IsType<OkObjectResult>(result).Value);
+        var itemElement = (JsonElement)response.Items[0].Item;
+        Assert.Equal("application/pdf", itemElement.GetProperty("contentType").GetString());
+    }
+
+    [Fact]
     public async Task Dequeue_MultipleItemsWithOneBlobRef_ReturnsObjectClaimTokenForBlobItem()
     {
         var mockInvoker = new Mock<IQueueActorInvoker>();

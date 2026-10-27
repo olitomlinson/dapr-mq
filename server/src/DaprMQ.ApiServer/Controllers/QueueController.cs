@@ -405,7 +405,7 @@ public class QueueController : ControllerBase
                 foreach (var item in result.Items)
                 {
                     apiItems.Add(new ApiDequeueItem(
-                        ResolveItemElement(item.ItemJson, item.ObjectClaimToken, contentType: null),
+                        ResolveItemElement(item.ItemJson, item.ObjectClaimToken, item.BlobContentType),
                         item.Priority));
                 }
 
