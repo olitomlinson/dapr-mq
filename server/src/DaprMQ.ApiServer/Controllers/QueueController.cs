@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
 using DaprMQ.Interfaces;
 using DaprMQ.ApiServer.Constants;
+using DaprMQ.ApiServer.Filters;
 using DaprMQ.ApiServer.Models;
 using DaprMQ.ApiServer.Services;
 
@@ -205,6 +206,7 @@ public class QueueController : ControllerBase
     /// enqueuing only a small reference envelope to the actor.
     /// </summary>
     [HttpPost("{queueId}/enqueue-object")]
+    [DisableFormValueBinding]
     public async Task<IActionResult> EnqueueObject(
         string queueId,
         [FromHeader(Name = "priority")] int priority = 1,
