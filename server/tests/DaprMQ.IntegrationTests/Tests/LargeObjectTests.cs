@@ -232,6 +232,35 @@ public class LargeObjectTests(DaprTestFixture fixture)
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
+    [Theory]
+    [InlineData("application/x-www-form-urlencoded")]
+    [InlineData("multipart/form-data; boundary=not-really-a-form")]
+    public async Task EnqueueObject_FormContentType_IsStoredAsIs_NotParsedAsAForm(string contentType)
+    {
+        var queueId = $"{fixture.QueueId}-largeobj-form-{Guid.NewGuid():N}";
+        var content = System.Text.Encoding.UTF8.GetBytes("a=1&b=2 is just bytes here");
+        var request = new HttpRequestMessage(HttpMethod.Post, $"/queue/{queueId}/enqueue-object")
+        {
+            Content = new ByteArrayContent(content)
+        };
+        request.Content.Headers.TryAddWithoutValidation("Content-Type", contentType);
+
+        var enqueueResponse = await fixture.ApiClient.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, enqueueResponse.StatusCode);
+
+        // Locked dequeue: plain dequeue doesn't report contentType on blob items
+        var dequeueResponse = await fixture.ApiClient.SendAsync(BuildDequeueRequest(queueId, requireAck: true));
+        Assert.Equal(HttpStatusCode.OK, dequeueResponse.StatusCode);
+        using var dequeueBody = JsonDocument.Parse(await dequeueResponse.Content.ReadAsStringAsync());
+        var item = dequeueBody.RootElement.GetProperty("items")[0].GetProperty("item");
+        Assert.Equal(contentType, item.GetProperty("contentType").GetString());
+
+        var downloadResponse = await fixture.ApiClient.GetAsync($"/object/{item.GetProperty("objectClaimToken").GetString()}");
+        Assert.Equal(HttpStatusCode.OK, downloadResponse.StatusCode);
+        Assert.Equal(content, await downloadResponse.Content.ReadAsByteArrayAsync());
+        Assert.Equal(contentType, downloadResponse.Content.Headers.ContentType?.ToString());
+    }
+
     [Fact]
     public async Task GetObject_InvalidToken_Returns400()
     {
