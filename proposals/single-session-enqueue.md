@@ -15,137 +15,119 @@ endpoints group the items by target actor and make one actor `Enqueue` call per 
   ([DaprMQGrpcService.cs](../server/src/DaprMQ.ApiServer/Services/DaprMQGrpcService.cs)), which does
   the same and is commented "Mirrors QueueController.Enqueue".
 
-This has a problem: **a mixed batch is not atomic, and a failure doesn't say what happened.** Each
-group commits on its own actor. If a later group fails, the endpoint returns an error after earlier
-groups have already committed. The caller can't tell which items were enqueued. Retrying the whole
-batch duplicates the committed groups at any target with dedup off, and without idempotency keys
-dedup can't help at all. That falls short of the rule that a success response means the items were
-processed and a failure means they weren't.
+**A mixed batch is not atomic, and a failure doesn't say what happened.**
+- Each group commits on its own actor, so if a later group fails, the endpoint returns an error after
+  earlier groups have already committed.
+- The caller can't tell which items were enqueued.
+- Retrying the whole batch duplicates the committed groups at any target with dedup off. Without
+  idempotency keys, dedup can't help at all.
 
-Azure Service Bus doesn't allow this either. Its SDK requires all messages in one send call to have
-the same session id: "All messages passed to the same sendMessages() call should have the same
+That falls short of the rule that a success response means the items were processed and a failure
+means they weren't.
+
+Azure Service Bus doesn't allow it either. The session id is set on each message, but all messages in
+one send call must share it: "All messages passed to the same sendMessages() call should have the same
 sessionId (if using sessions)"
 ([ServiceBusSender](https://learn.microsoft.com/en-us/javascript/api/@azure/service-bus/servicebussender)).
 
-Scheduled delivery is also affected. Its `ScheduleActor` needs a clear outcome for each target it
+Scheduled delivery depends on this too: its `ScheduleActor` needs a clear outcome for each target it
 delivers to, and one call per session gives it that.
 
 ## Proposal
 
-**The session id moves from each item to the enqueue request.** One enqueue call targets exactly one
-actor: the plain queue, or one session of it. A mixed batch can then no longer be expressed at all,
-so no validation is needed, and the grouping code is removed.
+**Reject a batch whose items don't all have the same session id,** and remove the per-target grouping.
+`sessionId` stays on each item, as in Azure Service Bus, so the API shape and the SDKs don't change.
 
-This is preferred over keeping a session id on each item and rejecting batches where they differ,
-because that would keep a field the server then has to check. A request-level field makes the rule
-part of the API's shape. It also matches the shape `enqueue-object` already has: one `session-id`
-header per call.
+### Rule
 
-### API
+- All items in one enqueue must have the same `sessionId`: either all without one, or all with the
+  same value.
+- A mix of items with and without a session is rejected too, because it also spans two actors.
+- The check runs in the endpoint, before any actor call, alongside the existing format checks
+  (controller validates format, per CLAUDE.md).
+- Rejection:
+  - REST: `400` with `ApiErrorResponse("All items in one enqueue must have the same sessionId")`.
+  - gRPC: `InvalidArgument` with the same message.
+- Nothing is enqueued when a batch is rejected.
 
-**REST: `POST /queue/{queueId}/enqueue`**
-
-```json
-{ "sessionId": "order-42", "items": [ { "item": { … }, "priority": 1, "idempotencyKey": "…" } ] }
-```
-
-- `ApiEnqueueRequest` gains `string? SessionId`. `ApiEnqueueItem` loses `SessionId`.
-- `sessionId` is validated once per request, with the existing `IsValidSessionId`.
-- `enqueue-object` is unchanged: it already takes a single `session-id` header.
-
-**Topic publish: `POST /topic/{topicId}/publish`**
-
-`ApiPublishRequest` currently reuses `ApiEnqueueItem`, so it accepts a per-item `sessionId` and
-silently drops it: `TopicController.Publish` never reads it. Topics don't support sessions. Once
-`SessionId` is removed from `ApiEnqueueItem`, publish no longer carries the field. No other change is
-needed.
-
-**gRPC** ([daprmq.proto](../server/src/DaprMQ.ApiServer/Protos/daprmq.proto))
-
-- `EnqueueRequest` gains `optional string session_id = 3`.
-- `EnqueueItem.session_id` (field 4) is removed, and the field is marked `reserved 4;` so the number
-  isn't reused.
+There's no shim for old clients. A client that sends a mixed batch gets the `400` and must split by
+session, one call per session.
 
 ### Server code removed
 
-Both endpoints become a single target resolve plus a single `Enqueue`:
+Both endpoints become: validate, resolve one target, make one `Enqueue` call.
 
-- **`QueueController.Enqueue`:** remove the `GroupBy` loop and the running totals, and validate
-  `sessionId` once. Then call the existing `EnqueueItemsAsync(queueId, ResolveTargetActorId(queueId,
-  request.SessionId), items)`, the same path `enqueue-object` already uses. The result and error
-  mapping come with it.
-- **`DaprMQGrpcService.Enqueue`:** remove the `GroupBy` loop and the running totals. Make one
-  `Enqueue` call to `ResolveTargetActorId(request.QueueId, request.SessionId)`.
+- **`QueueController.Enqueue`:**
+  1. Validate each item's `sessionId` format, as today, and then that all items share the first
+     item's `sessionId`.
+  2. Remove the `GroupBy` loop and the running totals.
+  3. Call the existing `EnqueueItemsAsync(queueId, ResolveTargetActorId(queueId, items[0].SessionId),
+     actorItems)`, the same path `enqueue-object` already uses. The result and error mapping come
+     with it.
+- **`DaprMQGrpcService.Enqueue`:** the same session check, then one `Enqueue` call to
+  `ResolveTargetActorId(request.QueueId, sessionId of the first item)`. Remove the `GroupBy` loop and
+  the running totals.
 - Remove the "mixed-session batch costs one Enqueue per distinct session" comments in both files.
 
-Nothing changes in `QueueActor`, `SessionCoordinatorActor` or the session directory: they already
-see one target per call.
+Nothing changes in `QueueActor`, `SessionCoordinatorActor` or the session directory: they already see
+one target per call.
 
 ### SDKs
 
-All five SDKs move the session id from the enqueue item to an enqueue option:
-
-| SDK | Removed from the item | Added to enqueue |
-|---|---|---|
-| .NET | `EnqueueItemDto.SessionId` | `sessionId` parameter or option |
-| Go | `EnqueueItem.SessionID` (`types.go`, `enqueueWireItem` in `client.go`) | `SessionID` on the enqueue options |
-| Python | `EnqueueItem.session_id` | `session_id` keyword argument |
-| TypeScript | `sessionId` on the enqueue item (`types.ts`, `client.ts`) | `sessionId` in the enqueue options |
-| Java | `EnqueueItem.sessionId` | `sessionId` parameter or option |
-
-Each follows the SDK's existing pattern for optional enqueue settings. Generated protos are
-regenerated (Go `generate.go`, TypeScript `proto/`, .NET at build).
-
-Callers that enqueue for several sessions make one call per session, as with Azure Service Bus.
+No API change. Each SDK's enqueue already sends `sessionId` on each item, and now the server rejects a
+mixed batch. Update each SDK's doc comment on the item's session field (.NET `EnqueueItemDto`, Go
+`EnqueueItem.SessionID`, Python `EnqueueItem.session_id`, TypeScript enqueue item, Java `EnqueueItem`)
+to say that all items in one call must share it. Any SDK test that sends a mixed batch changes to one
+call per session.
 
 ### Pubsub component
 
-Check `pubsub.daprmq` (in its own repository) for any path that sends several messages with
-different session ids in one enqueue, such as bulk publish. If it has one, it must split by session
-before calling enqueue.
+Check `pubsub.daprmq` (in its own repository) for any path that sends several messages with different
+session ids in one enqueue, such as bulk publish. If it has one, it must split by session before
+calling enqueue.
 
 ### Docs
 
-- [API_REFERENCE.md](../docs/API_REFERENCE.md): move `sessionId` from the item list to the request.
-  Delete the sentence "A single request can mix items with different (or no) `sessionId`; each
-  distinct target is enqueued to in one batched call".
+- [API_REFERENCE.md](../docs/API_REFERENCE.md): replace "A single request can mix items with
+  different (or no) `sessionId`; each distinct target is enqueued to in one batched call" with the
+  rule and the `400`.
 - [design/sessions.md](../docs/design/sessions.md): note that one enqueue targets one session.
-- [scheduled-delivery.md](scheduled-delivery.md): its "Mixed batches" section is updated to drop the
-  per-session split.
+- [scheduled-delivery.md](scheduled-delivery.md): drop the per-session split from its "Mixed batches"
+  section.
 
 ### Not changed
 
-- `enqueue-object`, which already has one session per call.
-- Session lease operations (accept, renew, release) and the `lease-id` header on dequeue, acknowledge
-  and the other operations on a held lock.
-- Pre-v1, there is no compatibility shim: an old client that sends a per-item `sessionId` loses its
-  session routing. The JSON field is ignored on REST and the field number is reserved on gRPC.
+- `enqueue-object`, which already takes one `session-id` header per call.
+- Session lease operations (accept, renew, release) and the `lease-id` header on dequeue,
+  acknowledge and the other operations on a held lock.
+- Topic publish. Its request reuses `ApiEnqueueItem`, so it accepts a per-item `sessionId` and silently
+  drops it, because topics don't support sessions. That's a separate fix: reject a `sessionId` on
+  publish.
 
 ## Tests (TDD order, per CLAUDE.md)
 
-1. **Integration** ([SessionTests.cs](../server/tests/DaprMQ.IntegrationTests/Tests/SessionTests.cs)
-   and the other integration tests that enqueue to sessions): move `sessionId` to the request. A
-   session enqueue still reaches the session and is accepted after it.
+1. **Integration** ([SessionTests.cs](../server/tests/DaprMQ.IntegrationTests/Tests/SessionTests.cs)):
+   - A mixed-session batch gets `400`, and nothing is enqueued to the plain queue or to either session.
+   - A single-session batch still reaches its session.
 2. **Controller**
    ([QueueControllerSessionTests.cs](../server/tests/DaprMQ.Tests/QueueControllerSessionTests.cs)):
-   - Replace `Enqueue_MixedSessionAndPlainItems_IssuesOneCallPerTarget` with a test that a request
-     with `sessionId` makes exactly one `Enqueue` call, to `{queueId}-session-{sessionId}`.
-   - `Enqueue_WithSessionId_RoutesToSessionActorId`, `Enqueue_WithoutSessionId_RoutesToPlainQueueActorId`
-     and `Enqueue_InvalidSessionId_Returns400` move to the request-level field.
-   - An actor failure returns the error with nothing committed elsewhere, because there is one call.
+   - Replace `Enqueue_MixedSessionAndPlainItems_IssuesOneCallPerTarget` with tests that these return
+     `400` with no actor call:
+     - two different session ids;
+     - session and no-session items.
+   - A same-session batch makes exactly one `Enqueue` call, to `{queueId}-session-{sessionId}`.
+   - The existing routing and `Enqueue_InvalidSessionId_Returns400` tests stay.
 3. **gRPC**
    ([DaprMQGrpcServiceSessionTests.cs](../server/tests/DaprMQ.Tests/DaprMQGrpcServiceSessionTests.cs)):
-   the same changes, including replacing its `Enqueue_MixedSessionAndPlainItems_IssuesOneCallPerTarget`.
-4. **SDKs:** each SDK's enqueue tests send `sessionId` at request level, and no item type has a
-   session field.
+   the same, with `InvalidArgument`, replacing its `Enqueue_MixedSessionAndPlainItems_IssuesOneCallPerTarget`.
+4. **SDKs:** only tests that sent a mixed batch change.
 
 Run `dotnet test` in `server/tests/DaprMQ.Tests/` after each step, and `./build-and-test.sh` before
 commit.
 
 ## Phases
 
-1. Server: REST, gRPC, proto, tests.
-2. SDKs: all five.
-3. Pubsub component check, then docs.
+1. Server: REST, gRPC, tests.
+2. SDK doc comments, the pubsub component check, and docs.
 
 Scheduled delivery work starts after this lands.
