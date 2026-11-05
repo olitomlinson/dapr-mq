@@ -14,7 +14,7 @@ func TestEnqueuePostsItemsAndReturnsTheCounts(t *testing.T) {
 
 	result, err := newTestClient(t, transport, fastRetry).Enqueue(bg, "my queue", []EnqueueItem{
 		{Item: map[string]string{"task": "a"}, Priority: Ptr(PriorityFastLane), IdempotencyKey: "k1", SessionID: "s1"},
-		{Item: "b"},
+		{Item: "b", SessionID: "s1"},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)

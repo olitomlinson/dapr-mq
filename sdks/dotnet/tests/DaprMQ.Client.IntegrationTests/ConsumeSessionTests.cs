@@ -103,9 +103,9 @@ public class ConsumeSessionTests(DaprTestFixture fixture) : IntegrationTestBase(
 
         await client.EnqueueAsync(queueId, [
             new EnqueueItemDto(new { seq = 1 }, SessionId: "wanted"),
-            new EnqueueItemDto(new { seq = 2 }, SessionId: "wanted"),
-            new EnqueueItemDto(new { seq = 99 }, SessionId: "unwanted")
+            new EnqueueItemDto(new { seq = 2 }, SessionId: "wanted")
         ]);
+        await client.EnqueueAsync(queueId, [new EnqueueItemDto(new { seq = 99 }, SessionId: "unwanted")]);
 
         using var cts = Deadline();
         var stream = client.ConsumeSessionAsync(queueId, "wanted", DefaultLeaseSeconds, prefetchCount: 5, cts.Token);

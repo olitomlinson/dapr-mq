@@ -26,6 +26,7 @@ public class QueueController : ControllerBase
     private readonly ISessionCoordinatorActorInvoker _sessionCoordinatorActorInvoker;
 
     private const int MaxSessionIdLength = 256;
+    private const string MixedSessionsError = "All items in one enqueue must have the same sessionId";
 
     public QueueController(
         ILogger<QueueController> logger,
@@ -110,7 +111,9 @@ public class QueueController : ControllerBase
                 return BadRequest(new ApiErrorResponse("Maximum 10000 items per enqueue"));
             }
 
-            // Validate priorities and sessionId format
+            // Validate priorities and sessionId format. One enqueue targets one actor - the plain
+            // queue or a single session - so it commits as one transaction or not at all.
+            var sessionId = request.Items[0].SessionId;
             foreach (var item in request.Items)
             {
                 if (item.Priority < 0)
@@ -122,39 +125,23 @@ public class QueueController : ControllerBase
                 {
                     return BadRequest(new ApiErrorResponse(sessionError!));
                 }
+
+                if (item.SessionId != sessionId)
+                {
+                    return BadRequest(new ApiErrorResponse(MixedSessionsError));
+                }
             }
 
             _logger.LogDebug($"Enqueue request for queue {queueId} with {request.Items.Count} items");
 
-            // Group by target actor (the plain queue, or a per-session QueueActor instance) so
-            // each actor call stays a single batched Enqueue - a mixed-session batch costs one Enqueue
-            // per distinct session, an ordinary (session-free) batch costs exactly what it always
-            // did: one call (plan §2.2, invariant 2).
-            var groups = request.Items.GroupBy(apiItem => ResolveTargetActorId(queueId, apiItem.SessionId));
-
-            int totalEnqueued = 0;
-            int totalDeduplicated = 0;
-            foreach (var group in groups)
+            var actorItems = request.Items.Select(apiItem => new EnqueueItem
             {
-                var actorItems = group.Select(apiItem => new EnqueueItem
-                {
-                    ItemJson = apiItem.Item.GetRawText(),
-                    Priority = apiItem.Priority,
-                    IdempotencyKey = apiItem.IdempotencyKey
-                }).ToList();
+                ItemJson = apiItem.Item.GetRawText(),
+                Priority = apiItem.Priority,
+                IdempotencyKey = apiItem.IdempotencyKey
+            }).ToList();
 
-                var result = await InvokeEnqueueAsync(group.Key, actorItems);
-                if (!result.Success)
-                {
-                    DeliveryFailures.ThrowIfUnavailable(result.ErrorCode, result.ErrorMessage);
-                    return BadRequest(new ApiErrorResponse(result.ErrorMessage ?? "Failed to enqueue items"));
-                }
-
-                totalEnqueued += result.ItemsEnqueued;
-                totalDeduplicated += result.ItemsDeduplicated;
-            }
-
-            return BuildEnqueueResponse(queueId, totalEnqueued, totalDeduplicated);
+            return await EnqueueItemsAsync(queueId, ResolveTargetActorId(queueId, sessionId), actorItems);
         }
         catch (ActorCallException ex)
         {
@@ -174,7 +161,10 @@ public class QueueController : ControllerBase
     /// </summary>
     private async Task<IActionResult> EnqueueItemsAsync(string queueId, string targetActorId, List<EnqueueItem> items)
     {
-        var result = await InvokeEnqueueAsync(targetActorId, items);
+        var result = await _actorInvoker.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
+            new ActorId(targetActorId),
+            ActorMethodNames.Enqueue,
+            new EnqueueRequest { Items = items });
 
         if (!result.Success)
         {
@@ -183,14 +173,6 @@ public class QueueController : ControllerBase
         }
 
         return BuildEnqueueResponse(queueId, result.ItemsEnqueued, result.ItemsDeduplicated);
-    }
-
-    private async Task<EnqueueResponse> InvokeEnqueueAsync(string targetActorId, List<EnqueueItem> items)
-    {
-        return await _actorInvoker.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
-            new ActorId(targetActorId),
-            ActorMethodNames.Enqueue,
-            new EnqueueRequest { Items = items });
     }
 
     private static IActionResult BuildEnqueueResponse(string queueId, int itemsEnqueued, int itemsDeduplicated)

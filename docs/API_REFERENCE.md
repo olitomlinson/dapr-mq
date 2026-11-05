@@ -44,7 +44,7 @@ Content-Type: application/json
 - `item` — arbitrary JSON, stored and returned as-is.
 - `priority` — `0` is the fast lane, `1+` is normal (lower value = higher priority). Default `1`.
 - `idempotencyKey` — optional. If set and this queue has dedup enabled (the default), an item is silently skipped instead of being enqueued again if the same key was already used within the configured TTL window (`IDEMPOTENCY_KEY_TTL_SECONDS`, default 24h). Max 128 characters, no control characters (including NUL).
-- `sessionId` — optional, per-item. Routes this item to the session-scoped queue `{queueId}-session-{sessionId}` instead of `{queueId}` — see [Sessions](#sessions). A single request can mix items with different (or no) `sessionId`; each distinct target is enqueued to in one batched call.
+- `sessionId` — optional, per-item. Routes this item to the session-scoped queue `{queueId}-session-{sessionId}` instead of `{queueId}` — see [Sessions](#sessions). All items in one request must have the same `sessionId` (or all have none), so one enqueue targets one queue and commits as a whole; a request that mixes them gets `400`. To enqueue to several sessions, make one call per session.
 - Up to 1000 items per request.
 
 **Response — `200 OK`**

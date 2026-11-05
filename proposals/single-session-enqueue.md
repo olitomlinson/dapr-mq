@@ -1,7 +1,8 @@
 # One session per enqueue
 
-**Status:** proposed. Not yet implemented. A prerequisite for
-[scheduled-delivery.md](scheduled-delivery.md).
+**Status:** implemented (server, REST, gRPC, SDK doc comments, docs, the Python example producer).
+Still to do: the `pubsub.daprmq` component check, which lives in its own repository. A
+prerequisite for [scheduled-delivery.md](scheduled-delivery.md).
 
 ## Context
 

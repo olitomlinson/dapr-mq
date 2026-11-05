@@ -165,6 +165,27 @@ public class SessionTests(DaprTestFixture fixture)
     }
 
     [Fact]
+    public async Task Enqueue_MixedSessionBatch_Returns400AndEnqueuesNothing()
+    {
+        var queueId = NewQueueId();
+        var itemElement = JsonSerializer.SerializeToElement(new { seq = 1 });
+        var request = new ApiEnqueueRequest(new List<ApiEnqueueItem>
+        {
+            new ApiEnqueueItem(itemElement),
+            new ApiEnqueueItem(itemElement, SessionId: "s1"),
+            new ApiEnqueueItem(itemElement, SessionId: "s2")
+        });
+
+        var response = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/enqueue", request);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var plainDequeue = await fixture.ApiClient.PostAsync($"/queue/{queueId}/dequeue", null);
+        Assert.Equal(HttpStatusCode.NoContent, plainDequeue.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await AcceptSessionAsync(queueId, "s1")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await AcceptSessionAsync(queueId, "s2")).StatusCode);
+    }
+
+    [Fact]
     public async Task AcceptSession_UnknownSessionId_Returns404()
     {
         var queueId = NewQueueId();

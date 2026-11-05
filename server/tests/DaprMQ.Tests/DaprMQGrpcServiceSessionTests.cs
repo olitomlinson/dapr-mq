@@ -244,28 +244,56 @@ public class DaprMQGrpcServiceSessionTests
     }
 
     [Fact]
-    public async Task Enqueue_MixedSessionAndPlainItems_IssuesOneCallPerTarget()
+    public async Task Enqueue_SameSessionBatch_IssuesOneCallToSessionActor()
     {
         var mockInvoker = new Mock<IQueueActorInvoker>();
-        var callsByActorId = new Dictionary<ActorId, ActorModels.EnqueueRequest>();
+        var calls = new List<(ActorId Id, ActorModels.EnqueueRequest Request)>();
         mockInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.EnqueueRequest, ActorModels.EnqueueResponse>(
                 It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<ActorModels.EnqueueRequest>(), It.IsAny<CancellationToken>()))
-            .Callback<ActorId, string, ActorModels.EnqueueRequest, CancellationToken>((id, _, req, _) => callsByActorId[id] = req)
-            .ReturnsAsync(new ActorModels.EnqueueResponse { Success = true, ItemsEnqueued = 1 });
+            .Callback<ActorId, string, ActorModels.EnqueueRequest, CancellationToken>((id, _, req, _) => calls.Add((id, req)))
+            .ReturnsAsync(new ActorModels.EnqueueResponse { Success = true, ItemsEnqueued = 2 });
 
         var service = CreateService(queueActorInvoker: mockInvoker.Object);
         var request = new ApiServer.Grpc.EnqueueRequest { QueueId = "test-queue" };
         request.Items.Add(new ApiServer.Grpc.EnqueueItem { ItemJson = "{}", Priority = 1, SessionId = "s1" });
-        request.Items.Add(new ApiServer.Grpc.EnqueueItem { ItemJson = "{}", Priority = 1 });
-        request.Items.Add(new ApiServer.Grpc.EnqueueItem { ItemJson = "{}", Priority = 1, SessionId = "s2" });
+        request.Items.Add(new ApiServer.Grpc.EnqueueItem { ItemJson = "{}", Priority = 1, SessionId = "s1" });
 
         var response = await service.Enqueue(request, _mockContext.Object);
 
-        Assert.Equal(3, response.ItemsEnqueued);
-        Assert.Equal(3, callsByActorId.Count);
-        Assert.Contains(new ActorId("test-queue-session-s1"), callsByActorId.Keys);
-        Assert.Contains(new ActorId("test-queue-session-s2"), callsByActorId.Keys);
-        Assert.Contains(new ActorId("test-queue"), callsByActorId.Keys);
+        Assert.Equal(2, response.ItemsEnqueued);
+        var call = Assert.Single(calls);
+        Assert.Equal(new ActorId("test-queue-session-s1"), call.Id);
+        Assert.Equal(2, call.Request.Items.Count);
+    }
+
+    [Fact]
+    public async Task Enqueue_DifferentSessionIds_ThrowsInvalidArgumentWithoutActorCall()
+    {
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        var service = CreateService(queueActorInvoker: mockInvoker.Object);
+        var request = new ApiServer.Grpc.EnqueueRequest { QueueId = "test-queue" };
+        request.Items.Add(new ApiServer.Grpc.EnqueueItem { ItemJson = "{}", Priority = 1, SessionId = "s1" });
+        request.Items.Add(new ApiServer.Grpc.EnqueueItem { ItemJson = "{}", Priority = 1, SessionId = "s2" });
+
+        var ex = await Assert.ThrowsAsync<RpcException>(() => service.Enqueue(request, _mockContext.Object));
+
+        Assert.Equal(StatusCode.InvalidArgument, ex.StatusCode);
+        mockInvoker.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Enqueue_SessionAndPlainItems_ThrowsInvalidArgumentWithoutActorCall()
+    {
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        var service = CreateService(queueActorInvoker: mockInvoker.Object);
+        var request = new ApiServer.Grpc.EnqueueRequest { QueueId = "test-queue" };
+        request.Items.Add(new ApiServer.Grpc.EnqueueItem { ItemJson = "{}", Priority = 1 });
+        request.Items.Add(new ApiServer.Grpc.EnqueueItem { ItemJson = "{}", Priority = 1, SessionId = "s1" });
+
+        var ex = await Assert.ThrowsAsync<RpcException>(() => service.Enqueue(request, _mockContext.Object));
+
+        Assert.Equal(StatusCode.InvalidArgument, ex.StatusCode);
+        mockInvoker.VerifyNoOtherCalls();
     }
 
     // ---- lease_id threading ----

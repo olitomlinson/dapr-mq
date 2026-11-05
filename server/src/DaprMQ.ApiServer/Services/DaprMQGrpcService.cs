@@ -75,56 +75,49 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                 throw new RpcException(new Status(StatusCode.InvalidArgument, "Maximum 10000 items per enqueue"));
             }
 
-            // Validate priorities
+            // Validate priorities, and that every item targets the same actor - the plain queue or a
+            // single session - so the enqueue commits as one transaction or not at all.
+            var targetActorId = ResolveTargetActorId(request.QueueId, request.Items[0].HasSessionId ? request.Items[0].SessionId : null);
             foreach (var item in request.Items)
             {
                 if (item.Priority < 0)
                 {
                     throw new RpcException(new Status(StatusCode.InvalidArgument, "Priority must be non-negative"));
                 }
+
+                if (ResolveTargetActorId(request.QueueId, item.HasSessionId ? item.SessionId : null) != targetActorId)
+                {
+                    throw new RpcException(new Status(StatusCode.InvalidArgument, "All items in one enqueue must have the same sessionId"));
+                }
             }
 
             _logger.LogDebug($"gRPC Enqueue request for queue {request.QueueId} with {request.Items.Count} items");
 
-            // Group by target actor (the plain queue, or a per-session QueueActor instance) so
-            // each actor call stays a single batched Enqueue - a mixed-session batch costs one Enqueue
-            // per distinct session, an ordinary (session-free) batch costs exactly what it always
-            // did: one call (plan §2.2, invariant 2). Mirrors QueueController.Enqueue.
-            var groups = request.Items.GroupBy(grpcItem => ResolveTargetActorId(request.QueueId, grpcItem.HasSessionId ? grpcItem.SessionId : null));
-
-            int totalEnqueued = 0;
-            int totalDeduplicated = 0;
-            foreach (var group in groups)
+            var actorItems = request.Items.Select(grpcItem => new ActorModels.EnqueueItem
             {
-                var actorItems = group.Select(grpcItem => new ActorModels.EnqueueItem
-                {
-                    ItemJson = grpcItem.ItemJson,
-                    Priority = grpcItem.Priority,
-                    IdempotencyKey = grpcItem.HasIdempotencyKey ? grpcItem.IdempotencyKey : null
-                }).ToList();
+                ItemJson = grpcItem.ItemJson,
+                Priority = grpcItem.Priority,
+                IdempotencyKey = grpcItem.HasIdempotencyKey ? grpcItem.IdempotencyKey : null
+            }).ToList();
 
-                var result = await _queueActorInvoker.InvokeMethodAsync<ActorModels.EnqueueRequest, ActorModels.EnqueueResponse>(
-                    new ActorId(group.Key),
-                    ActorMethodNames.Enqueue,
-                    new ActorModels.EnqueueRequest { Items = actorItems },
-                    context.CancellationToken);
+            var result = await _queueActorInvoker.InvokeMethodAsync<ActorModels.EnqueueRequest, ActorModels.EnqueueResponse>(
+                new ActorId(targetActorId),
+                ActorMethodNames.Enqueue,
+                new ActorModels.EnqueueRequest { Items = actorItems },
+                context.CancellationToken);
 
-                if (!result.Success)
-                {
-                    DeliveryFailures.ThrowIfUnavailable(result.ErrorCode, result.ErrorMessage);
-                    throw new RpcException(new Status(StatusCode.Internal, result.ErrorMessage ?? "Failed to enqueue items"));
-                }
-
-                totalEnqueued += result.ItemsEnqueued;
-                totalDeduplicated += result.ItemsDeduplicated;
+            if (!result.Success)
+            {
+                DeliveryFailures.ThrowIfUnavailable(result.ErrorCode, result.ErrorMessage);
+                throw new RpcException(new Status(StatusCode.Internal, result.ErrorMessage ?? "Failed to enqueue items"));
             }
 
             return new EnqueueResponse
             {
                 Success = true,
-                Message = $"Enqueued {totalEnqueued} items to queue {request.QueueId}",
-                ItemsEnqueued = totalEnqueued,
-                ItemsDeduplicated = totalDeduplicated
+                Message = $"Enqueued {result.ItemsEnqueued} items to queue {request.QueueId}",
+                ItemsEnqueued = result.ItemsEnqueued,
+                ItemsDeduplicated = result.ItemsDeduplicated
             };
         }
         catch (RpcException)

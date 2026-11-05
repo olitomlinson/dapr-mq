@@ -300,33 +300,67 @@ public class QueueControllerSessionTests
     }
 
     [Fact]
-    public async Task Enqueue_MixedSessionAndPlainItems_IssuesOneCallPerTarget()
+    public async Task Enqueue_SameSessionBatch_IssuesOneCallToSessionActor()
     {
         var mockInvoker = new Mock<IQueueActorInvoker>();
-        var callsByActorId = new Dictionary<ActorId, EnqueueRequest>();
+        var calls = new List<(ActorId Id, EnqueueRequest Request)>();
         mockInvoker.Setup(i => i.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
                 It.IsAny<ActorId>(), ActorMethodNames.Enqueue, It.IsAny<EnqueueRequest>(), It.IsAny<CancellationToken>()))
-            .Callback<ActorId, string, EnqueueRequest, CancellationToken>((id, _, req, _) => callsByActorId[id] = req)
-            .ReturnsAsync(new EnqueueResponse { Success = true, ItemsEnqueued = 1 });
+            .Callback<ActorId, string, EnqueueRequest, CancellationToken>((id, _, req, _) => calls.Add((id, req)))
+            .ReturnsAsync(new EnqueueResponse { Success = true, ItemsEnqueued = 2 });
 
         var controller = CreateController(actorInvoker: mockInvoker.Object);
         var itemElement = JsonSerializer.SerializeToElement(new { value = "test" });
         var request = new ApiEnqueueRequest(new List<ApiEnqueueItem>
         {
             new ApiEnqueueItem(itemElement, SessionId: "s1"),
-            new ApiEnqueueItem(itemElement),
-            new ApiEnqueueItem(itemElement, SessionId: "s2")
+            new ApiEnqueueItem(itemElement, SessionId: "s1")
         });
 
         var result = await controller.Enqueue("test-queue", request);
 
         var okResult = Assert.IsType<OkObjectResult>(result);
         var response = Assert.IsType<ApiEnqueueResponse>(okResult.Value);
-        Assert.Equal(3, response.ItemsEnqueued);
-        Assert.Equal(3, callsByActorId.Count);
-        Assert.Contains(new ActorId("test-queue-session-s1"), callsByActorId.Keys);
-        Assert.Contains(new ActorId("test-queue-session-s2"), callsByActorId.Keys);
-        Assert.Contains(new ActorId("test-queue"), callsByActorId.Keys);
+        Assert.Equal(2, response.ItemsEnqueued);
+        var call = Assert.Single(calls);
+        Assert.Equal(new ActorId("test-queue-session-s1"), call.Id);
+        Assert.Equal(2, call.Request.Items.Count);
+    }
+
+    [Fact]
+    public async Task Enqueue_DifferentSessionIds_Returns400WithoutActorCall()
+    {
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        var controller = CreateController(actorInvoker: mockInvoker.Object);
+        var itemElement = JsonSerializer.SerializeToElement(new { value = "test" });
+        var request = new ApiEnqueueRequest(new List<ApiEnqueueItem>
+        {
+            new ApiEnqueueItem(itemElement, SessionId: "s1"),
+            new ApiEnqueueItem(itemElement, SessionId: "s2")
+        });
+
+        var result = await controller.Enqueue("test-queue", request);
+
+        Assert.IsType<BadRequestObjectResult>(result);
+        mockInvoker.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Enqueue_SessionAndPlainItems_Returns400WithoutActorCall()
+    {
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+        var controller = CreateController(actorInvoker: mockInvoker.Object);
+        var itemElement = JsonSerializer.SerializeToElement(new { value = "test" });
+        var request = new ApiEnqueueRequest(new List<ApiEnqueueItem>
+        {
+            new ApiEnqueueItem(itemElement),
+            new ApiEnqueueItem(itemElement, SessionId: "s1")
+        });
+
+        var result = await controller.Enqueue("test-queue", request);
+
+        Assert.IsType<BadRequestObjectResult>(result);
+        mockInvoker.VerifyNoOtherCalls();
     }
 
     [Fact]

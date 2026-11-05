@@ -4,7 +4,8 @@ package com.daprmq.client.types;
  * @param item             Item payload - any Jackson-serializable value.
  * @param priority         0 = fast lane, 1 (default) = normal. Lower is processed first.
  * @param idempotencyKey   Optional client-supplied dedup key.
- * @param sessionId        Optional session id to route this item to a per-session queue actor.
+ * @param sessionId        Optional session id to route this item to a per-session queue actor. Every item in one
+ *                         enqueue call must have the same session id (or none); the server rejects a mixed call.
  */
 public record EnqueueItem(Object item, int priority, String idempotencyKey, String sessionId) {
     public EnqueueItem(Object item) {

@@ -67,13 +67,12 @@ async def run_priority(client: DaprMQClient, queue_id: str, log: LogFn) -> list[
 
 
 async def run_sessions(client: DaprMQClient, queue_id: str, log: LogFn) -> list[dict]:
-    items = [
-        EnqueueItem(item={"sessionId": "session-a", "seq": 1}, session_id="session-a"),
-        EnqueueItem(item={"sessionId": "session-a", "seq": 2}, session_id="session-a"),
-        EnqueueItem(item={"sessionId": "session-b", "seq": 1}, session_id="session-b"),
-        EnqueueItem(item={"sessionId": "session-b", "seq": 2}, session_id="session-b"),
-    ]
-    await client.enqueue(queue_id, items)
+    items = []
+    # One enqueue targets one session, so each session gets its own call.
+    for session_id in ("session-a", "session-b"):
+        session_items = [EnqueueItem(item={"sessionId": session_id, "seq": seq}, session_id=session_id) for seq in (1, 2)]
+        await client.enqueue(queue_id, session_items)
+        items.extend(session_items)
 
     steps = []
     for pi in items:
