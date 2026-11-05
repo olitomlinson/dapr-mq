@@ -4,6 +4,7 @@ export interface EnqueueItem {
   item: unknown;
   priority?: number;
   idempotencyKey?: string;
+  /** Routes the item to that session of the queue. Every item in one enqueue call must have the same sessionId (or none); the server rejects a call that mixes them. */
   sessionId?: string;
 }
 

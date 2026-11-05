@@ -10,6 +10,8 @@ class EnqueueItem:
     item: Any
     priority: int = 1
     idempotency_key: str | None = None
+    # Routes the item to that session of the queue. Every item in one enqueue call must have the
+    # same session_id (or none); the server rejects a call that mixes them.
     session_id: str | None = None
 
 

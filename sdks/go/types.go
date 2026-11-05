@@ -63,7 +63,8 @@ type EnqueueItem struct {
 	// IdempotencyKey, when set and the queue has de-duplication on, makes a repeat of this item
 	// within the server's window a no-op (counted in ItemsDeduplicated).
 	IdempotencyKey string
-	// SessionID routes the item to that session of the queue.
+	// SessionID routes the item to that session of the queue. Every item in one Enqueue call must
+	// have the same SessionID (or none); the server rejects a call that mixes them.
 	SessionID string
 }
 

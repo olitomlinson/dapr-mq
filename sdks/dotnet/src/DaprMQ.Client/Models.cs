@@ -2,6 +2,7 @@ using System.Text.Json;
 
 namespace DaprMQ.Client;
 
+/// <summary>An item to enqueue. Every item in one EnqueueAsync call must have the same SessionId (or none); the server rejects a call that mixes them.</summary>
 public record EnqueueItemDto(object Item, int Priority = 1, string? IdempotencyKey = null, string? SessionId = null);
 
 public record EnqueueResult(bool Success, string Message, int ItemsEnqueued, int ItemsDeduplicated);

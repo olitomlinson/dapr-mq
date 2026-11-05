@@ -313,15 +313,13 @@ public class SessionTests(DaprTestFixture fixture) : IntegrationTestBase(fixture
         var client = CreateClient();
         var queueId = NewQueueId();
 
-        // Interleaved on the wire, so shared ordering would show up as interleaved delivery.
-        await client.EnqueueAsync(queueId, [
-            new EnqueueItemDto(new { seq = 1 }, SessionId: "s1"),
-            new EnqueueItemDto(new { seq = 1 }, SessionId: "s2"),
-            new EnqueueItemDto(new { seq = 2 }, SessionId: "s1"),
-            new EnqueueItemDto(new { seq = 2 }, SessionId: "s2"),
-            new EnqueueItemDto(new { seq = 3 }, SessionId: "s1"),
-            new EnqueueItemDto(new { seq = 3 }, SessionId: "s2")
-        ]);
+        // Interleaved across calls (one enqueue targets one session), so shared ordering would show
+        // up as interleaved delivery.
+        for (int seq = 1; seq <= 3; seq++)
+        {
+            await client.EnqueueAsync(queueId, [new EnqueueItemDto(new { seq }, SessionId: "s1")]);
+            await client.EnqueueAsync(queueId, [new EnqueueItemDto(new { seq }, SessionId: "s2")]);
+        }
 
         var leaseA = await client.AcceptSessionAsync(queueId, "s1", leaseSeconds: 300);
         var leaseB = await client.AcceptSessionAsync(queueId, "s2", leaseSeconds: 300);
