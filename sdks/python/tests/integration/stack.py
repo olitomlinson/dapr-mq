@@ -28,7 +28,7 @@ from testcontainers.core.container import DockerContainer
 from testcontainers.core.network import Network
 
 API_IMAGE = os.environ.get("DAPRMQ_API_IMAGE", "daprmq-api:test")
-DAPR_VERSION = "1.19.0"
+DAPR_VERSION = "1.19.1"
 POSTGRES_PASSWORD = "test_password"
 COMPONENTS_DIR = Path(__file__).resolve().parents[4] / "server" / "tests" / "DaprMQ.IntegrationTests" / "dapr-components"
 STARTUP_TIMEOUT_SECONDS = 90
