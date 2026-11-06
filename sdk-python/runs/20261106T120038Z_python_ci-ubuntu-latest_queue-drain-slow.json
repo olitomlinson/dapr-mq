@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 2,
+  "runId": "20261106T120038Z_python_ci-ubuntu-latest_queue-drain-slow",
+  "timestampUtc": "2026-11-06T12:00:38.419404+00:00",
+  "sdk": {
+    "name": "python",
+    "version": "0.0.0a0",
+    "runtime": "CPython 3.12.16"
+  },
+  "environment": {
+    "label": "ci-ubuntu-latest",
+    "gitSha": "0a43a46bdf77491b0c18395b48d7bcc66b73b1ac",
+    "gitBranch": "main",
+    "gitDirty": false,
+    "os": "Linux-7.0.0-1017-azure-x86_64-with-glibc2.39",
+    "cpuCount": 4
+  },
+  "topology": {
+    "apiReplicas": 1,
+    "schedulerReplicas": 3,
+    "loadBalancer": false,
+    "server": "testcontainers daprmq-api:test"
+  },
+  "scale": "pr",
+  "scenario": {
+    "id": "P-05",
+    "name": "queue-drain",
+    "profile": "queue-drain-slow",
+    "key": "queue:3000@100ms/active100",
+    "params": {
+      "messages": 3000,
+      "settleMs": 100,
+      "maxActiveMessages": 100,
+      "maxConcurrentHandlers": 0,
+      "strictOrder": false,
+      "publishIntervalMs": 0,
+      "publishJitterMs": 0,
+      "tailEvery": 0,
+      "tailMs": 0
+    }
+  },
+  "metrics": {
+    "seedSeconds": 0.20577391200004058,
+    "wallClockSeconds": 5.516178190000005,
+    "messagesPerSecond": 543.8548024859939,
+    "idealSeconds": 3.0,
+    "efficiency": 0.5438548024859938,
+    "timeToFirstMessageSeconds": 0.01711823800002321,
+    "peakConcurrentHandlers": 100,
+    "deliveryLatencyMs": {
+      "count": 3000,
+      "mean": 2705.4423333333334,
+      "p50": 2807,
+      "p95": 4810,
+      "p99": 5477,
+      "max": 5479
+    },
+    "messagesHandled": 3000,
+    "duplicates": 0,
+    "missing": 0,
+    "orderViolations": 6
+  },
+  "checks": {
+    "passed": true,
+    "failures": []
+  },
+  "timeline": {
+    "bucketMs": 1000,
+    "series": {
+      "messagesPerSecond": [
+        558,
+        459,
+        700,
+        652,
+        587,
+        44
+      ],
+      "busyHandlers": [
+        55.942,
+        52.074,
+        64.062,
+        65.363,
+        58.814,
+        4.422
+      ]
+    }
+  }
+}
