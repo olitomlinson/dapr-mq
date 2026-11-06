@@ -1514,6 +1514,34 @@ public partial class QueueActorTests
         Assert.Contains("Test corruption error", dequeueEx.Message);
     }
 
+    /// <summary>
+    /// A segment recorded as offloaded but missing from the store must stop the queue rather than be
+    /// skipped: the dequeue throws, and the corruption is saved so every later call refuses too.
+    /// </summary>
+    [Fact]
+    public async Task Dequeue_OffloadedSegmentMissing_MarksTheQueueCorruptedAndThrows()
+    {
+        var mockStateManager = CreateMockStateManager();
+        var actor = await CreateActorAsync(mockStateManager);
+        await mockStateManager.Object.SetStateAsync(QueueActor.SegmentKey(1, 0), new Queue<QueueSegmentItem>([new QueueSegmentItem { ItemJson = "{}", Sequence = 0 }]));
+        await mockStateManager.Object.SetStateAsync("metadata", new ActorMetadata
+        {
+            Config = new MetadataConfig(),
+            Queues = new Dictionary<int, QueueMetadata>
+            {
+                // Segment 1 is offloaded but was never written.
+                [1] = new QueueMetadata { HeadSegment = 0, TailSegment = 2, Count = 201, HeadOffloadedSegment = 1, TailOffloadedSegment = 1 }
+            }
+        });
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => actor.Dequeue(new Interfaces.DequeueRequest()));
+
+        Assert.Contains("CORRUPTED: Segment 1 priority 1 missing or empty", ex.Message);
+        var metadata = await mockStateManager.Object.GetStateAsync<ActorMetadata>("metadata");
+        Assert.Equal(ex.Message, metadata.ErrorMessage);
+        mockStateManager.Verify(m => m.SaveStateAsync(It.IsAny<CancellationToken>()), Times.AtLeastOnce);
+    }
+
     [Fact]
     public async Task ExtendLock_ValidLock_ExtendsExpiry()
     {

@@ -952,52 +952,11 @@ public class QueueActor : Actor, IQueueActor, IRemindable
             int priority = group.Key;
 
             // A drained priority has had its entry removed entirely, which is the usual case when a
-            // consumer had locked everything. Falling back to segment 0 keeps the restore in the live
-            // range instead of special-casing an absent queue.
+            // consumer had locked everything; the merge then restores into segment 0, keeping the
+            // restore in the live range. The batch arrives in whatever order the buckets were walked;
+            // the merge sorts it by Sequence, the order the items originally held.
             metadata.Queues.TryGetValue(priority, out var queueMeta);
-            int headSegment = queueMeta?.HeadSegment ?? 0;
-            int tailSegment = queueMeta?.TailSegment ?? headSegment - 1;
-            int count = queueMeta?.Count ?? 0;
-
-            string headKey = $"queue_{priority}_seg_{headSegment}";
-            var headState = await StateManager.TryGetStateAsync<Queue<QueueSegmentItem>>(headKey);
-            var headItems = headState.HasValue ? headState.Value.ToList() : new List<QueueSegmentItem>();
-
-            // The batch arrives in whatever order the buckets were walked, so it gets sorted; the
-            // head segment is already in Sequence order, so combining the two is a linear merge.
-            var restored = group.Select(i => i.Item).OrderBy(i => i.Sequence).ToList();
-            var merged = new List<QueueSegmentItem>(restored.Count + headItems.Count);
-            int r = 0, h = 0;
-            while (r < restored.Count || h < headItems.Count)
-            {
-                merged.Add(h >= headItems.Count || (r < restored.Count && restored[r].Sequence <= headItems[h].Sequence)
-                    ? restored[r++]
-                    : headItems[h++]);
-            }
-
-            // Lay the merged run out ending on the original head slot, so anything already sitting in
-            // later segments still follows it. Overflow spills into HeadSegment-1, -2, ...
-            int chunks = (merged.Count + MaxSegmentSize - 1) / MaxSegmentSize;
-            int firstSegment = headSegment - (chunks - 1);
-
-            for (int c = 0; c < chunks; c++)
-            {
-                var chunk = merged.Skip(c * MaxSegmentSize).Take(MaxSegmentSize);
-                var segmentQueue = new Queue<QueueSegmentItem>();
-                foreach (var item in chunk)
-                {
-                    segmentQueue.Enqueue(item);
-                }
-
-                await StateManager.SetStateAsync($"queue_{priority}_seg_{firstSegment + c}", segmentQueue);
-            }
-
-            queueMeta = (queueMeta ?? new QueueMetadata()) with
-            {
-                HeadSegment = firstSegment,
-                TailSegment = Math.Max(tailSegment, headSegment),
-                Count = count + restored.Count
-            };
+            queueMeta = await Segments(priority).MergeAtHeadAsync(queueMeta, group.Select(i => i.Item).ToList(), i => i.Sequence);
             metadata = metadata with
             {
                 Queues = new Dictionary<int, QueueMetadata>(metadata.Queues) { [priority] = queueMeta }
@@ -1085,64 +1044,26 @@ public class QueueActor : Actor, IQueueActor, IRemindable
             return false;
         }
 
-        // Get metadata
         var metadata = await GetMetadataAsync();
+        metadata.Queues.TryGetValue(priority, out var queueMeta);
 
-        // Ensure priority queue exists
-        if (!metadata.Queues.TryGetValue(priority, out var queueMeta))
-        {
-            queueMeta = new QueueMetadata
-            {
-                HeadSegment = 0,
-                TailSegment = 0,
-                Count = 0
-            };
-            metadata = metadata with { Queues = new Dictionary<int, QueueMetadata>(metadata.Queues) { [priority] = queueMeta } };
-        }
-
-        int tailSegment = queueMeta.TailSegment;
-        int headSegment = queueMeta.HeadSegment;
-        int count = queueMeta.Count;
-
-        // Get current tail segment
-        string segmentKey = $"queue_{priority}_seg_{tailSegment}";
-        var segment = await StateManager.TryGetStateAsync<Queue<QueueSegmentItem>>(segmentKey);
-        var segmentQueue = segment.HasValue ? segment.Value : new Queue<QueueSegmentItem>();
-
-        // Check if segment is full BEFORE appending
-        if (segmentQueue.Count >= MaxSegmentSize)
-        {
-            // Allocate new segment
-            tailSegment++;
-            segmentKey = $"queue_{priority}_seg_{tailSegment}";
-            segmentQueue = new Queue<QueueSegmentItem>();
-        }
-
-        // Append item to segment (FIFO)
         var segmentItem = new QueueSegmentItem
         {
             ItemJson = itemJson,
             DeliveryCount = 0,
             Sequence = metadata.NextSequence
         };
-        segmentQueue.Enqueue(segmentItem);
-        metadata = metadata with { NextSequence = metadata.NextSequence + 1 };
-
-        // Update metadata (count and pointers)
-        count++;
-        queueMeta = queueMeta with
-        {
-            HeadSegment = headSegment,
-            TailSegment = tailSegment,
-            Count = count
-        };
-        metadata = metadata with { Queues = new Dictionary<int, QueueMetadata>(metadata.Queues) { [priority] = queueMeta } };
+        queueMeta = await Segments(priority).AppendAsync(queueMeta, segmentItem);
 
         // Stage segment and metadata (don't commit)
-        await StateManager.SetStateAsync(segmentKey, segmentQueue);
+        metadata = metadata with
+        {
+            NextSequence = metadata.NextSequence + 1,
+            Queues = new Dictionary<int, QueueMetadata>(metadata.Queues) { [priority] = queueMeta }
+        };
         await SetMetadataAsync(metadata);
 
-        Logger.LogDebug($"Staged enqueue to priority {priority}, count now {count}");
+        Logger.LogDebug($"Staged enqueue to priority {priority}, count now {queueMeta.Count}");
 
         return true;
     }
@@ -1541,98 +1462,31 @@ public class QueueActor : Actor, IQueueActor, IRemindable
 
                 if (queueMeta.Count == 0) continue;
 
-                int headSegment = queueMeta.HeadSegment;
-                int tailSegment = queueMeta.TailSegment;
-                int count = queueMeta.Count;
+                var (segmentItem, newQueueMeta, desync) = await Segments(priority).PopHeadAsync(queueMeta);
 
-                // Get head segment
-                string segmentKey = $"queue_{priority}_seg_{headSegment}";
-                var segment = await StateManager.TryGetStateAsync<Queue<QueueSegmentItem>>(segmentKey);
-
-                if (!segment.HasValue || segment.Value.Count == 0)
+                // A drained priority, or one whose count claimed items its head segment doesn't have
+                // (defensive desync repair), loses its record.
+                var updatedQueues = new Dictionary<int, QueueMetadata>(metadata.Queues);
+                if (newQueueMeta == null)
                 {
-                    // Defensive: fix count desync
-                    Logger.LogWarning($"Count desync detected for priority {priority}, removing queue metadata");
-                    var updatedQueues = new Dictionary<int, QueueMetadata>(metadata.Queues);
                     updatedQueues.Remove(priority);
-                    metadata = metadata with { Queues = updatedQueues };
-                    await SetMetadataAsync(metadata);
-                    continue;
-                }
-
-                // Dequeue single item from front (FIFO)
-                var segmentQueue = segment.Value;
-                var segmentItem = segmentQueue.Dequeue();
-
-                // Handle segment cleanup
-                if (segmentQueue.Count == 0)
-                {
-                    if (headSegment < tailSegment)
-                    {
-                        // More segments exist, move to next
-                        // Delete the empty segment from state
-                        await StateManager.RemoveStateAsync(segmentKey);
-
-                        int oldHeadSegment = headSegment;
-                        headSegment++;
-
-                        // Update metadata pointers
-                        count--;
-                        queueMeta = queueMeta with
-                        {
-                            HeadSegment = headSegment,
-                            TailSegment = tailSegment,
-                            Count = count
-                        };
-                        metadata = metadata with { Queues = new Dictionary<int, QueueMetadata>(metadata.Queues) { [priority] = queueMeta } };
-                        await SetMetadataAsync(metadata);
-
-                        Logger.LogDebug($"[HEAD-ADVANCE] Actor {Id.GetId()}, Priority {priority}: " +
-                            $"headSegment advancing from {oldHeadSegment} to {headSegment}, " +
-                            $"tailSegment={tailSegment}, count={count}, " +
-                            $"offloadedRange=({queueMeta.HeadOffloadedSegment}, {queueMeta.TailOffloadedSegment})");
-
-                        Logger.LogDebug($"Dequeued item from priority {priority}, count now {count}");
-
-                        // Return item JSON string directly with priority
-                        return (new DequeueResponse { Locked = false, IsEmpty = false }, priority, segmentItem);
-                    }
-                    else
-                    {
-                        // Last segment empty, queue is now empty
-                        // Delete the segment from state
-                        await StateManager.RemoveStateAsync(segmentKey);
-                        // Delete queue metadata
-                        var updatedQueues = new Dictionary<int, QueueMetadata>(metadata.Queues);
-                        updatedQueues.Remove(priority);
-                        metadata = metadata with { Queues = updatedQueues };
-                        await SetMetadataAsync(metadata);
-
-                        Logger.LogDebug($"Dequeued last item from priority {priority}, queue now empty");
-
-                        // Return item JSON string directly with priority
-                        return (new DequeueResponse { Locked = false, IsEmpty = false }, priority, segmentItem);
-                    }
                 }
                 else
                 {
-                    // Segment still has items, save it
-                    await StateManager.SetStateAsync(segmentKey, segmentQueue);
-                    count--;
-                    queueMeta = queueMeta with
-                    {
-                        HeadSegment = headSegment,
-                        TailSegment = tailSegment,
-                        Count = count
-                    };
-                    metadata = metadata with { Queues = new Dictionary<int, QueueMetadata>(metadata.Queues) { [priority] = queueMeta } };
-                    await SetMetadataAsync(metadata);
-
-                    Logger.LogDebug($"Dequeued item from priority {priority}, count now {count}");
-
-                    // Return item JSON string directly with priority
-                    return (new DequeueResponse { Locked = false, IsEmpty = false }, priority, segmentItem);
+                    updatedQueues[priority] = newQueueMeta;
                 }
+                metadata = metadata with { Queues = updatedQueues };
+                await SetMetadataAsync(metadata);
+
+                if (desync)
+                {
+                    Logger.LogWarning($"Count desync detected for priority {priority}, removing queue metadata");
+                    continue;
+                }
+
+                Logger.LogDebug($"Dequeued item from priority {priority}, count now {newQueueMeta?.Count ?? 0}");
+
+                return (new DequeueResponse { Locked = false, IsEmpty = false }, priority, segmentItem);
             }
 
             return (new DequeueResponse { Locked = false, IsEmpty = true }, -1, null);
@@ -2506,290 +2360,63 @@ public class QueueActor : Actor, IQueueActor, IRemindable
         return result.ToString();
     }
 
-    /// <summary>
-    /// Get configured buffer_segments value (default 1).
-    /// </summary>
-    private int GetBufferSegments(ActorMetadata metadata)
-    {
-        return metadata.Config.BufferSegments;
-    }
+    /// <summary>A priority's segmented list. Segments live at "queue_{priority}_seg_{n}" (see SegmentKey).</summary>
+    private SegmentedQueue<QueueSegmentItem> Segments(int priority) =>
+        new(StateManager, $"queue_{priority}", MaxSegmentSize, Logger);
 
     /// <summary>
-    /// Get offloaded segment range for a priority queue.
-    /// Returns (head, tail) or (null, null) if no offloaded segments exist.
-    /// </summary>
-    private (int? head, int? tail) GetOffloadedRange(ActorMetadata metadata, int priority)
-    {
-        if (!metadata.Queues.TryGetValue(priority, out var queueMeta))
-            return (null, null);
-
-        if (queueMeta.HeadOffloadedSegment.HasValue && queueMeta.TailOffloadedSegment.HasValue)
-        {
-            return (queueMeta.HeadOffloadedSegment.Value, queueMeta.TailOffloadedSegment.Value);
-        }
-
-        return (null, null);
-    }
-
-    /// <summary>
-    /// Add a segment to the offloaded range (extends tail). Returns updated metadata.
-    /// </summary>
-    private ActorMetadata AddOffloadedSegment(ActorMetadata metadata, int priority, int segmentNum)
-    {
-        if (!metadata.Queues.TryGetValue(priority, out var queueMeta))
-        {
-            queueMeta = new QueueMetadata
-            {
-                HeadSegment = 0,
-                TailSegment = 0,
-                Count = 0
-            };
-        }
-
-        // If no offloaded range exists, initialize both head and tail
-        if (!queueMeta.HeadOffloadedSegment.HasValue)
-        {
-            queueMeta = queueMeta with
-            {
-                HeadOffloadedSegment = segmentNum,
-                TailOffloadedSegment = segmentNum
-            };
-        }
-        else
-        {
-            // Extend tail (segments added sequentially)
-            queueMeta = queueMeta with { TailOffloadedSegment = segmentNum };
-        }
-
-        return metadata with { Queues = new Dictionary<int, QueueMetadata>(metadata.Queues) { [priority] = queueMeta } };
-    }
-
-    /// <summary>
-    /// Remove a segment from the offloaded range (shrinks from head). Returns updated metadata.
-    /// </summary>
-    private ActorMetadata RemoveOffloadedSegment(ActorMetadata metadata, int priority, int segmentNum)
-    {
-        if (!metadata.Queues.TryGetValue(priority, out var queueMeta))
-            return metadata;
-
-        if (!queueMeta.HeadOffloadedSegment.HasValue || !queueMeta.TailOffloadedSegment.HasValue)
-            return metadata;
-
-        int head = queueMeta.HeadOffloadedSegment.Value;
-        int tail = queueMeta.TailOffloadedSegment.Value;
-
-        // Should only remove from head (FIFO)
-        if (segmentNum == head)
-        {
-            if (head == tail)
-            {
-                // Last segment in range, clear both
-                queueMeta = queueMeta with
-                {
-                    HeadOffloadedSegment = null,
-                    TailOffloadedSegment = null
-                };
-            }
-            else
-            {
-                // Move head forward
-                queueMeta = queueMeta with { HeadOffloadedSegment = head + 1 };
-            }
-
-            return metadata with { Queues = new Dictionary<int, QueueMetadata>(metadata.Queues) { [priority] = queueMeta } };
-        }
-
-        return metadata;
-    }
-
-    /// <summary>
-    /// Offload a full segment to the external state store.
-    /// Returns updated metadata if successful, null otherwise (logs warning, doesn't throw).
-    /// </summary>
-    private async Task<ActorMetadata?> OffloadSegmentAsync(int priority, int segmentNum, Queue<QueueSegmentItem> segmentData, ActorMetadata metadata)
-    {
-        try
-        {
-            string segmentKey = $"queue_{priority}_seg_{segmentNum}";
-
-            Logger.LogDebug($"[OFFLOAD-START] Actor {Id.GetId()}, Segment {segmentNum}, Priority {priority}");
-
-            // Add to offloaded range in metadata
-            var updatedMetadata = AddOffloadedSegment(metadata, priority, segmentNum);
-
-            // Unload from actor memory (stays in permanent store at same key)
-            await StateManager.UnloadStateAsync(segmentKey);
-
-            // Save metadata (staging only - commit happens in caller)
-            await SetMetadataAsync(updatedMetadata);
-
-            Logger.LogDebug($"[OFFLOAD-SUCCESS] Actor {Id.GetId()}, Segment {segmentNum}, Priority {priority}: Unloaded from actor memory");
-
-            return updatedMetadata;
-        }
-        catch (Exception ex)
-        {
-            Logger.LogWarning($"[OFFLOAD-FAILED] Actor {Id.GetId()}, Segment {segmentNum}, Priority {priority}: " +
-                $"Failed to offload - {ex.Message}");
-            return null;
-        }
-    }
-
-
-    /// <summary>
-    /// Load an offloaded segment from state store back into actor state.
-    /// Returns updated metadata if successful, throws on error.
-    /// </summary>
-    private async Task<ActorMetadata?> LoadOffloadedSegmentAsync(int priority, int segmentNum, ActorMetadata metadata)
-    {
-        try
-        {
-            string segmentKey = $"queue_{priority}_seg_{segmentNum}";
-
-            Logger.LogDebug($"[LOAD-START] Actor {Id.GetId()}, Segment {segmentNum}, Priority {priority}");
-
-            // Load segment from permanent store (Dapr hydrates automatically)
-            var segmentData = await StateManager.TryGetStateAsync<Queue<QueueSegmentItem>>(segmentKey);
-
-            if (!segmentData.HasValue || segmentData.Value == null || segmentData.Value.Count == 0)
-            {
-                string errorMsg = $"CORRUPTED: Segment {segmentNum} priority {priority} missing or empty. " +
-                                  $"Offloaded range: {GetOffloadedRange(metadata, priority)}. " +
-                                  $"Actor ID: {Id.GetId()}. Manual intervention required.";
-
-                var corruptedMetadata = metadata with { ErrorMessage = errorMsg };
-                await SetMetadataAsync(corruptedMetadata);
-                await StateManager.SaveStateAsync();  // Persist error state immediately
-
-                Logger.LogCritical($"[LOAD-MISSING] Actor {Id.GetId()}, Segment {segmentNum}, Priority {priority}: {errorMsg}");
-                throw new InvalidOperationException(errorMsg);
-            }
-
-            // Remove from offloaded range
-            var updatedMetadata = RemoveOffloadedSegment(metadata, priority, segmentNum);
-
-            // Save metadata (staging only - commit happens in caller)
-            await SetMetadataAsync(updatedMetadata);
-
-            Logger.LogDebug($"[LOAD-SUCCESS] Actor {Id.GetId()}, Segment {segmentNum}, Priority {priority}: Loaded {segmentData.Value.Count} items from permanent store");
-
-            return updatedMetadata;
-        }
-        catch (Exception ex)
-        {
-            Logger.LogError(ex, $"Failed to load offloaded segment {segmentNum} for priority {priority} (actor {Id.GetId()})");
-            throw;  // Changed from return null - loading failures should be fatal
-        }
-    }
-
-
-    /// <summary>
-    /// Check and offload eligible segments for a priority queue.
-    /// Called after Enqueue. Non-blocking - failures are logged but don't throw.
+    /// Offloads a priority's full segments beyond the buffer, and stages the updated range. Called after
+    /// Enqueue. Best-effort: failures are logged, never thrown.
     /// </summary>
     private async Task CheckAndOffloadSegmentsAsync(int priority, ActorMetadata metadata)
     {
-        try
+        if (!metadata.Queues.TryGetValue(priority, out var queueMeta))
+            return;
+
+        var updated = await Segments(priority).OffloadAsync(queueMeta, metadata.Config.BufferSegments);
+        if (updated != queueMeta)
         {
-            if (!metadata.Queues.TryGetValue(priority, out var queueMeta))
-                return;
-
-            int headSegment = queueMeta.HeadSegment;
-            int tailSegment = queueMeta.TailSegment;
-            int bufferSegments = GetBufferSegments(metadata);
-            var offloadedRange = GetOffloadedRange(metadata, priority);
-
-            // Calculate eligible segment range
-            int minOffload = headSegment + bufferSegments + 1;
-            int maxOffload = tailSegment;
-
-            Logger.LogDebug($"[OFFLOAD-CHECK] Actor {Id.GetId()}, Priority {priority}: " +
-                $"headSegment={headSegment}, tailSegment={tailSegment}, bufferSegments={bufferSegments}, " +
-                $"minOffload={minOffload}, maxOffload={maxOffload}, " +
-                $"offloadedRange=({offloadedRange.head}, {offloadedRange.tail})");
-
-            // Check each segment in range
-            for (int segmentNum = minOffload; segmentNum < maxOffload; segmentNum++)
-            {
-                // Skip if already offloaded
-                if (offloadedRange.head != null && offloadedRange.tail != null)
-                {
-                    if (segmentNum >= offloadedRange.head && segmentNum <= offloadedRange.tail)
-                        continue;
-                }
-
-                // Check if segment exists and is full
-                string segmentKey = $"queue_{priority}_seg_{segmentNum}";
-                var segment = await StateManager.TryGetStateAsync<Queue<QueueSegmentItem>>(segmentKey);
-
-                if (segment.HasValue && segment.Value.Count == MaxSegmentSize)
-                {
-                    bool alreadyOffloaded = (offloadedRange.head != null && offloadedRange.tail != null &&
-                                            segmentNum >= offloadedRange.head && segmentNum <= offloadedRange.tail);
-
-                    Logger.LogDebug($"[OFFLOAD-ELIGIBLE] Actor {Id.GetId()}, Segment {segmentNum}, Priority {priority}: " +
-                        $"Full={segment.Value.Count == MaxSegmentSize}, AlreadyOffloaded={alreadyOffloaded}");
-
-                    // Offload this segment (non-blocking on failure)
-                    var updatedMetadata = await OffloadSegmentAsync(priority, segmentNum, segment.Value, metadata);
-                    if (updatedMetadata != null)
-                    {
-                        metadata = updatedMetadata;
-                    }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.LogWarning(ex, $"Error checking/offloading segments for priority {priority} (actor {Id.GetId()})");
+            await SetMetadataAsync(metadata with { Queues = new Dictionary<int, QueueMetadata>(metadata.Queues) { [priority] = updated } });
         }
     }
 
     /// <summary>
-    /// Check and load offloaded segments that are needed for consumption.
-    /// Called before Dequeue. Blocking - throws exceptions on failure to prevent data corruption.
-    /// Returns updated metadata if segments were loaded, otherwise returns input metadata.
+    /// Loads back a priority's offloaded segments that are now within the buffer, and stages the updated
+    /// range. Called before Dequeue. A missing segment marks the queue corrupted (saved at once, so it
+    /// survives this turn) and throws: serving past it would lose items.
     /// </summary>
     private async Task<ActorMetadata> CheckAndLoadSegmentsAsync(int priority, ActorMetadata metadata)
     {
-        var (head, tail) = GetOffloadedRange(metadata, priority);
-        if (head == null || tail == null)
-            return metadata;
-
         if (!metadata.Queues.TryGetValue(priority, out var queueMeta))
             return metadata;
 
-        int headSegment = queueMeta.HeadSegment;
-        int bufferSegments = GetBufferSegments(metadata);
-
-        // Calculate which segments should be loaded
-        int maxOffloaded = headSegment + bufferSegments;
-
-        Logger.LogDebug($"[LOAD-CHECK] Actor {Id.GetId()}, Priority {priority}: " +
-            $"headSegment={headSegment}, bufferSegments={bufferSegments}, " +
-            $"maxOffloaded={maxOffloaded}, " +
-            $"offloadedRange=({head}, {tail})");
-
-        // Load segments that are within the buffer zone (from head of offloaded range)
-        for (int segmentNum = head.Value; segmentNum <= tail.Value; segmentNum++)
+        QueueMetadata updated;
+        try
         {
-            if (segmentNum <= maxOffloaded)
-            {
-                Logger.LogDebug($"[LOAD-ELIGIBLE] Actor {Id.GetId()}, Segment {segmentNum}, Priority {priority}: " +
-                    $"segmentNum ({segmentNum}) <= maxOffloaded ({maxOffloaded}), attempting load");
+            updated = await Segments(priority).LoadAsync(queueMeta, metadata.Config.BufferSegments);
+        }
+        catch (SegmentMissingException ex)
+        {
+            string errorMsg = $"CORRUPTED: Segment {ex.Segment} priority {priority} missing or empty. " +
+                              $"Offloaded range: {(ex.Range.HeadOffloadedSegment, ex.Range.TailOffloadedSegment)}. " +
+                              $"Actor ID: {Id.GetId()}. Manual intervention required.";
 
-                // LoadOffloadedSegmentAsync now throws on failure instead of returning null
-                metadata = await LoadOffloadedSegmentAsync(priority, segmentNum, metadata);
-            }
-            else
+            await SetMetadataAsync(metadata with
             {
-                // Since segments are contiguous, we can break early
-                break;
-            }
+                Queues = new Dictionary<int, QueueMetadata>(metadata.Queues) { [priority] = ex.Range },
+                ErrorMessage = errorMsg
+            });
+            await StateManager.SaveStateAsync();  // Persist error state immediately
+
+            Logger.LogCritical($"[LOAD-MISSING] Actor {Id.GetId()}, Segment {ex.Segment}, Priority {priority}: {errorMsg}");
+            throw new InvalidOperationException(errorMsg);
         }
 
-        // Return updated metadata so caller can use it
+        if (updated == queueMeta)
+            return metadata;
+
+        metadata = metadata with { Queues = new Dictionary<int, QueueMetadata>(metadata.Queues) { [priority] = updated } };
+        await SetMetadataAsync(metadata);
         return metadata;
     }
-
 }
