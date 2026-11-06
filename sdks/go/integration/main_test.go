@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	daprVersion      = "1.19.0"
+	daprVersion      = "1.19.1"
 	postgresPassword = "test_password"
 	startupTimeout   = 90 * time.Second
 )

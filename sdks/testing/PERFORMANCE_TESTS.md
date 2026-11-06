@@ -26,7 +26,7 @@ can put the SDKs side by side.
 Each SDK's own Testcontainers fixture builds the perf stack. It's the integration stack
 ([INTEGRATION_TESTS.md](INTEGRATION_TESTS.md)) with these changes:
 
-- **Scheduler HA.** Three `ghcr.io/dapr/dapr:1.19.0` containers, aliases `dapr-scheduler-0..2`, each run as
+- **Scheduler HA.** Three `ghcr.io/dapr/dapr:1.19.1` containers, aliases `dapr-scheduler-0..2`, each run as
   `./scheduler --port 50006 --id dapr-scheduler-<i> --etcd-initial-cluster dapr-scheduler-0=http://dapr-scheduler-0:2380,dapr-scheduler-1=http://dapr-scheduler-1:2380,dapr-scheduler-2=http://dapr-scheduler-2:2380 --etcd-client-listen-address 0.0.0.0 --etcd-data-dir /tmp/etcd --override-broadcast-host-port dapr-scheduler-<i>:50006`.
   Every daprd gets `--scheduler-host-address dapr-scheduler-0:50006,dapr-scheduler-1:50006,dapr-scheduler-2:50006`.
   This matches production. Placement stays as one container. Dapr 1.19 can serve placement from the scheduler
