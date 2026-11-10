@@ -321,7 +321,7 @@ payloads up to 100 MB in the broker, and anything larger is left to client-side 
      deletes no blobs, and NServiceBus deprecated its built-in cleanup in favour of time-based external
      cleanup. Neither reference-counts.
    - *Recommendation:* topic publishes stay inline until DaprMQ has **message expiry**, proposed in
-     `proposals/message-expiry.md` (on `feature/message-expiry`), which defines the details. Then the
+     [message-expiry.md](message-expiry.md), which defines the details. Then the
      API server uploads the payload once and every subscriber queue references the same blob. The blob
      is reaped after the message expires, not when any subscriber settles it. No subscriber can be
      delivered the message after that, because an expired message is never delivered.
