@@ -333,8 +333,9 @@ payloads up to 100 MB in the broker, and anything larger is left to client-side 
        `BlobReaperActor.ScheduleDeletion` for `reapAt` first, then uploads, then publishes. A crash
        at any point leaves at most a scheduled deletion of a blob that doesn't exist, which succeeds
        harmlessly. Nothing leaks, which also closes open question 4 for these blobs.
-     - **Only publishes with a time to live are offloaded.** A topic publish over the threshold with no
-       time to live stays inline, so every shared blob has a deletion time.
+     - **Every publish has a deletion time.** Message expiry gives every message an expiry, from the
+       producer or a one-year broker default, so every topic publish over the threshold can share a
+       blob.
      - **Dead-lettering copies the blob.** Dead-lettered items expire 28 days after being
        dead-lettered, so a dead-lettered item gets its own copy of the blob with its own `reapAt`. The
        original is left to its own schedule.
@@ -342,8 +343,9 @@ payloads up to 100 MB in the broker, and anything larger is left to client-side 
        item after it expires, and a claim token redeemed late. Locks aren't capped at `reapAt`; an
        item held more than 24 hours past expiry may lose its blob, which is accepted as rare.
      - **Storage cost:** one copy is kept for the message's full lifetime plus the grace period, even
-       after every subscriber has finished. That's still less than today's one inline copy per
-       subscriber.
+       after every subscriber has finished: a year by default. That's still less than today's one
+       inline copy per subscriber, but producers of large topic messages should set a short time to
+       live.
 
      A blob copy per subscriber (what the broker does internally) was considered and rejected. It
      costs N uploads inside `TopicActor`'s publish turn. A reference count in `BlobReaperActor` was
