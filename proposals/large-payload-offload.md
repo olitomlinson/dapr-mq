@@ -320,33 +320,30 @@ payloads up to 100 MB in the broker, and anything larger is left to client-side 
      settlement never affects another's. The libraries don't solve this: the attachment plugin
      deletes no blobs, and NServiceBus deprecated its built-in cleanup in favour of time-based external
      cleanup. Neither reference-counts.
-   - *Recommendation:* topic publishes stay inline until DaprMQ has **message expiry** (a separate
-     proposal). Then the API server uploads the payload once and every subscriber queue references
-     the same blob. The blob is reaped when the message expires, not when any subscriber settles it.
-     No subscriber can need the blob after that, because an expired message is never delivered.
+   - *Recommendation:* topic publishes stay inline until DaprMQ has **message expiry**, proposed in
+     `proposals/message-expiry.md` (on `feature/message-expiry`), which defines the details. Then the
+     API server uploads the payload once and every subscriber queue references the same blob. The blob
+     is reaped after the message expires, not when any subscriber settles it. No subscriber can be
+     delivered the message after that, because an expired message is never delivered.
      - **One upload per publish,** and no reference counting.
-     - **The envelope records when the blob is reaped:** a new `reapAt` field, the message's expiry.
-       `ScheduleBlobReapingIfNeeded` skips any envelope with `reapAt`, so a subscriber's acknowledge
-       or dequeue never schedules a deletion.
+     - **The envelope records when the blob is reaped:** a new `reapAt` field, the message's expiry
+       plus a 24-hour grace period. `ScheduleBlobReapingIfNeeded` skips any envelope with `reapAt`, so
+       a subscriber's acknowledge or dequeue never schedules a deletion.
      - **Deletion is scheduled before the upload.** The API server calls
        `BlobReaperActor.ScheduleDeletion` for `reapAt` first, then uploads, then publishes. A crash
        at any point leaves at most a scheduled deletion of a blob that doesn't exist, which succeeds
        harmlessly. Nothing leaks, which also closes open question 4 for these blobs.
-     - **Storage cost:** one copy is kept for the message's full lifetime, even after every subscriber
-       has finished. That's still less than today's one inline copy per subscriber.
-
-     What message expiry must provide for this to be safe:
-     - **No delivery past expiry.** Dequeue, the consume streams and the HTTP sink skip expired
-       items.
-     - **A finite expiry on every offloaded topic message,** either required on publish or set by a
-       topic default (for example 14 days). Without one, the blob is never reaped.
-     - **Expired messages aren't dead-lettered with the blob.** They are dropped, or dead-lettered
-       without the payload. Otherwise the reference points at a deleted blob.
-     - **Objects need a grace period.** Offloaded items are put back inline at delivery, but an
-       object's claim token is redeemed later. The token must expire with the message, or `reapAt`
-       must sit a little after the expiry.
-     - **Scheduled delivery:** expiry counts from `deliverAt`, not from when the message was
-       scheduled.
+     - **Only publishes with a time to live are offloaded.** A topic publish over the threshold with no
+       time to live stays inline, so every shared blob has a deletion time.
+     - **Dead-lettering copies the blob.** Dead-lettered items expire 28 days after being
+       dead-lettered, so a dead-lettered item gets its own copy of the blob with its own `reapAt`. The
+       original is left to its own schedule.
+     - **The grace period covers late work.** It covers clock skew, a consumer still holding a locked
+       item after it expires, and a claim token redeemed late. Locks aren't capped at `reapAt`; an
+       item held more than 24 hours past expiry may lose its blob, which is accepted as rare.
+     - **Storage cost:** one copy is kept for the message's full lifetime plus the grace period, even
+       after every subscriber has finished. That's still less than today's one inline copy per
+       subscriber.
 
      A blob copy per subscriber (what the broker does internally) was considered and rejected. It
      costs N uploads inside `TopicActor`'s publish turn. A reference count in `BlobReaperActor` was
