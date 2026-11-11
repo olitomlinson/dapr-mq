@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 2,
+  "runId": "20261111T114930Z_python_ci-ubuntu-latest_queue-drain-slow",
+  "timestampUtc": "2026-11-11T11:49:30.938472+00:00",
+  "sdk": {
+    "name": "python",
+    "version": "0.0.0a0",
+    "runtime": "CPython 3.12.16"
+  },
+  "environment": {
+    "label": "ci-ubuntu-latest",
+    "gitSha": "f458a51481f69a719812bbec26444f7ce47058fa",
+    "gitBranch": "main",
+    "gitDirty": false,
+    "os": "Linux-7.0.0-1017-azure-x86_64-with-glibc2.39",
+    "cpuCount": 4
+  },
+  "topology": {
+    "apiReplicas": 1,
+    "schedulerReplicas": 3,
+    "loadBalancer": false,
+    "server": "testcontainers daprmq-api:test"
+  },
+  "scale": "pr",
+  "scenario": {
+    "id": "P-05",
+    "name": "queue-drain",
+    "profile": "queue-drain-slow",
+    "key": "queue:3000@100ms/active100",
+    "params": {
+      "messages": 3000,
+      "settleMs": 100,
+      "maxActiveMessages": 100,
+      "maxConcurrentHandlers": 0,
+      "strictOrder": false,
+      "publishIntervalMs": 0,
+      "publishJitterMs": 0,
+      "tailEvery": 0,
+      "tailMs": 0
+    }
+  },
+  "metrics": {
+    "seedSeconds": 0.12517380899998898,
+    "wallClockSeconds": 4.0503790320000235,
+    "messagesPerSecond": 740.6714226739022,
+    "idealSeconds": 3.0,
+    "efficiency": 0.7406714226739022,
+    "timeToFirstMessageSeconds": 0.022508411999979216,
+    "peakConcurrentHandlers": 100,
+    "deliveryLatencyMs": {
+      "count": 3000,
+      "mean": 2087.3643333333334,
+      "p50": 2054,
+      "p95": 3912,
+      "p99": 3993,
+      "max": 3997
+    },
+    "messagesHandled": 3000,
+    "duplicates": 0,
+    "missing": 0,
+    "orderViolations": 15
+  },
+  "checks": {
+    "passed": true,
+    "failures": []
+  },
+  "timeline": {
+    "bucketMs": 1000,
+    "series": {
+      "messagesPerSecond": [
+        700,
+        700,
+        800,
+        700,
+        100
+      ],
+      "busyHandlers": [
+        71.428,
+        76.232,
+        73.401,
+        75.607,
+        3.927
+      ]
+    }
+  }
+}
