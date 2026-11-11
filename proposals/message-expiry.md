@@ -254,15 +254,15 @@ expired items count towards depth until then.
 3. **Dead-lettered items expire** after `DAPRMQ_DEADLETTER_TTL_SECONDS`, 28 days by default. Per-queue
    and per-topic overrides later.
 4. **No background sweep;** see [Queue depth](#queue-depth).
+5. **Dead-letter queue state storage is deferred.** Blobs in a dead-letter queue are deleted on
+   schedule, but its expired items are removed only when a dequeue reaches them, and a dead-letter
+   queue is often never dequeued. Its state store entries can stay past 28 days, never delivered but
+   taking space and counting in its depth. This is the one case where a sweep might earn its cost; it
+   will be decided once dead-letter queues are seen to grow.
 
 ## Open questions
 
-1. **Dead-letter queue state storage.** Blobs in the dead-letter queue are deleted on schedule, but
-   expired items are removed only when a dequeue reaches them, and a dead-letter queue is often never
-   dequeued. Its state store entries would stay past 28 days: never delivered, but taking space and
-   counting in its depth. This is the one case where a sweep might earn its cost (see
-   [Queue depth](#queue-depth)). Recommendation: decide once dead-letter queues are seen to grow.
-2. **Shared blob storage under the one-year default.** A large topic message without its own time to
+1. **Shared blob storage under the one-year default.** A large topic message without its own time to
    live keeps its shared blob for a year. Options: a per-topic default time to live sooner than
    planned, or a shorter default for topic publishes only. Recommendation: document it, and bring the
    per-topic default forward if blob storage cost shows up.
