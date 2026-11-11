@@ -102,9 +102,8 @@ A per-queue override can come later.
   ([QueueActor.cs:991](../server/src/DaprMQ/QueueActor.cs#L991)). A failure leaves the items in
   place for the next turn, so an item may be dead-lettered twice but never lost. Each gets the
   dead-letter expiry described below, and a shared topic blob is copied as described there.
-- **Never from a dead-letter queue.** An expired item in a dead-letter queue (`{id}-deadletter`) is
-  always dropped, whatever the setting. Otherwise expired items would be moved forever. ASB doesn't
-  allow dead-lettering from a dead-letter queue either.
+- **Never from a dead-letter queue.** An expired item in a dead-letter queue is always dropped,
+  whatever the setting. See [Dead-letter queues never dead-letter](#dead-letter-queues-never-dead-letter).
 - The same rule applies on every path in the table above: dequeue, lock sweep, nack and session lease
   lapse.
 
@@ -142,6 +141,27 @@ original blob is left alone and is deleted on its own schedule.
   without its payload: the envelope is kept with a `PAYLOAD_EXPIRED` marker, so the dead-letter queue
   still shows what was lost.
 
+### Dead-letter queues never dead-letter
+
+An item in a dead-letter queue can't move to another dead-letter queue under any circumstances. Today
+a dead-letter queue is an ordinary `QueueActor` whose id ends in `-deadletter`
+([QueueActor.cs:192](../server/src/DaprMQ/QueueActor.cs#L192)). Three paths can therefore create
+`{id}-deadletter-deadletter`, and expiry would add a fourth. ASB doesn't allow dead-lettering from a
+dead-letter queue either.
+
+A `QueueActor` whose id ends in `DeadLetterActorIdSuffix` handles each path as follows. This includes
+a session queue's dead-letter queue, `{queueId}-session-{sessionId}-deadletter`.
+
+| Path | In a dead-letter queue |
+|---|---|
+| Expiry | The item is dropped, whatever `DAPRMQ_DEADLETTER_ON_EXPIRY` says. |
+| Explicit `DeadLetter` (HTTP, gRPC, consume stream frame) | Rejected with a new error code, `DEADLETTER_NOT_ALLOWED`: HTTP 400, gRPC `FailedPrecondition`, a `ConsumeSettleFailed` frame on a consume stream. The lock is left as it was. |
+| Lock sweep or nack past `MaxDeliveryCount` | The item is restored to its position as usual, and `MaxDeliveryCount` isn't applied. It still expires after 28 days. |
+
+Dropping on `MaxDeliveryCount` was rejected: it would silently lose an item that someone is still
+trying to process. Without the cap a poison item can be redelivered repeatedly, but only until its
+28-day expiry.
+
 ### Offloaded payloads
 
 How expiry interacts with [large-payload offload](large-payload-offload.md):
@@ -154,11 +174,8 @@ How expiry interacts with [large-payload offload](large-payload-offload.md):
   Dropping an expired item schedules nothing; the blob's deletion was scheduled at publish.
 - **Locks aren't capped at `reapAt`.** A consumer can extend a lock, and consume streams renew locks
   for as long as the stream is open, so an item can be held past `reapAt`. Most times to live are
-  long, so an item still being worked on 24 hours after it expires is accepted as rare. If it happens:
-  - an offloaded item (`kind: "item"`) is unaffected, because its payload was put back inline when it
-    was dequeued;
-  - an object's claim token returns 404;
-  - dead-lettering it records `PAYLOAD_EXPIRED` (see [Dead-letter queue](#dead-letter-queue)).
+  long, so an item still being worked on 24 hours after it expires is an
+  [accepted risk](#accepted-risks).
 - **Claim tokens** for an item with an expiry are issued to expire no later than `reapAt`, so a token
   never outlives its blob.
 - **Every topic publish has an expiry,** because of the broker default, so every topic publish over
@@ -169,7 +186,7 @@ How expiry interacts with [large-payload offload](large-payload-offload.md):
   [Open questions](#open-questions) 2.
 - **Dead-letter on expiry copies the blob late.** An expired item is only dead-lettered when a dequeue
   reaches it. If that's more than 24 hours after it expired, the shared blob is gone and the item is
-  dead-lettered with `PAYLOAD_EXPIRED`.
+  dead-lettered with `PAYLOAD_EXPIRED`. This is an [accepted risk](#accepted-risks).
 
 ### Queue depth
 
@@ -219,6 +236,7 @@ expired items count towards depth until then.
      `DAPRMQ_DEFAULT_MESSAGE_TTL_SECONDS`.
    - A broker default over 10 years fails startup.
    - An `ExpiredMore` result is retried until items, empty or locked come back.
+   - `DEADLETTER_NOT_ALLOWED` maps to HTTP 400 and gRPC `FailedPrecondition`.
 3. **Actor** (mocked state):
    - Dequeue skips and removes expired items at the head, in one save.
    - Removes at most `SweepBatchSize` expired items, then returns `ExpiredMore`.
@@ -227,6 +245,10 @@ expired items count towards depth until then.
    - With `DAPRMQ_DEADLETTER_ON_EXPIRY` off, expired items are dropped; on, they are dead-lettered in
      one call per turn, before the local commit, and a failed call leaves them in place.
    - An expired item in a dead-letter queue is dropped even with the setting on.
+   - In a dead-letter queue, `DeadLetter` returns `DEADLETTER_NOT_ALLOWED` and leaves the lock; a lock
+     sweep or nack past `MaxDeliveryCount` restores the item instead of dead-lettering it. Also for a
+     session queue's dead-letter queue.
+   - No path ever enqueues to an id ending `-deadletter-deadletter`.
    - Dead-lettering sets `MessageExpiresAt` to dead-letter time + `DAPRMQ_DEADLETTER_TTL_SECONDS`,
      with or without an original expiry.
    - Dead-lettering a shared-blob item schedules the copy's deletion, then copies, then enqueues to
@@ -259,6 +281,28 @@ expired items count towards depth until then.
    queue is often never dequeued. Its state store entries can stay past 28 days, never delivered but
    taking space and counting in its depth. This is the one case where a sweep might earn its cost; it
    will be decided once dead-letter queues are seen to grow.
+6. **Dead-letter queues never dead-letter,** by any path; see
+   [Dead-letter queues never dead-letter](#dead-letter-queues-never-dead-letter).
+
+## Accepted risks
+
+Both come from deleting a shared topic blob 24 hours after its message expires, without capping locks
+or forcing expired items out on time. Most times to live are long, so both cases are expected to be
+rare.
+
+1. **A consumer holds an item more than 24 hours past its expiry.** Locks can be extended, and consume
+   streams renew them for as long as the stream is open, so nothing stops this. The shared blob is
+   deleted on schedule:
+   - an offloaded item (`kind: "item"`) is unaffected, because its payload was put back inline when it
+     was dequeued;
+   - an object's claim token returns 404;
+   - dead-lettering the item records `PAYLOAD_EXPIRED`.
+2. **Late dead-lettering on expiry.** With `DAPRMQ_DEADLETTER_ON_EXPIRY` on, an expired item is
+   dead-lettered only when a dequeue reaches it, because removal is lazy. If that is more than 24
+   hours after it expired, its shared blob is already gone, and it is dead-lettered as
+   `PAYLOAD_EXPIRED`: the dead-letter queue shows the item, but not its payload. A queue that's
+   consumed regularly reaches its expired items well within 24 hours. A queue left idle for more than
+   a day doesn't.
 
 ## Open questions
 
