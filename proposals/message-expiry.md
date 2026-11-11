@@ -181,9 +181,9 @@ How expiry interacts with [large-payload offload](large-payload-offload.md):
 - **Every topic publish has an expiry,** because of the broker default, so every topic publish over
   the offload threshold can use a shared blob.
 - **A shared blob is kept until its message expires,** even if every subscriber finished in seconds.
-  With the one-year default, that's a year of blob storage per large topic message. Producers that
-  publish large topic messages should set a short time to live. See
-  [Open questions](#open-questions) 2.
+  With the one-year default, that's a year of blob storage per large topic message, an
+  [accepted risk](#accepted-risks). A producer that wants the blob deleted sooner sets a shorter time
+  to live.
 - **Dead-letter on expiry copies the blob late.** An expired item is only dead-lettered when a dequeue
   reaches it. If that's more than 24 hours after it expired, the shared blob is gone and the item is
   dead-lettered with `PAYLOAD_EXPIRED`. This is an [accepted risk](#accepted-risks).
@@ -286,9 +286,9 @@ expired items count towards depth until then.
 
 ## Accepted risks
 
-Both come from deleting a shared topic blob 24 hours after its message expires, without capping locks
-or forcing expired items out on time. Most times to live are long, so both cases are expected to be
-rare.
+All three come from deleting a shared topic blob 24 hours after its message expires, rather than when
+subscribers finish with it. The first two need an item to be held, or left in the queue, more than a
+day past its expiry, which is expected to be rare because most times to live are long.
 
 1. **A consumer holds an item more than 24 hours past its expiry.** Locks can be extended, and consume
    streams renew them for as long as the stream is open, so nothing stops this. The shared blob is
@@ -303,10 +303,7 @@ rare.
    `PAYLOAD_EXPIRED`: the dead-letter queue shows the item, but not its payload. A queue that's
    consumed regularly reaches its expired items well within 24 hours. A queue left idle for more than
    a day doesn't.
-
-## Open questions
-
-1. **Shared blob storage under the one-year default.** A large topic message without its own time to
-   live keeps its shared blob for a year. Options: a per-topic default time to live sooner than
-   planned, or a shorter default for topic publishes only. Recommendation: document it, and bring the
-   per-topic default forward if blob storage cost shows up.
+3. **Shared topic blobs are kept for the message's full time to live.** A shared blob is deleted 24
+   hours after its message expires, however quickly subscribers consume it. Under the one-year
+   default, that's a year of blob storage per large topic message. A producer that wants the blob
+   cleaned up sooner sets a shorter time to live on the message, which brings its deletion forward.
