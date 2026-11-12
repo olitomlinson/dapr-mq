@@ -1,4 +1,4 @@
-import type { ConsumeOptions, QueueDelivery } from "./types.js";
+import type { ConsumeOptions, MessageExpiry, QueueDelivery } from "./types.js";
 
 /** nack returns the message to its original position for redelivery (+1 delivery count). */
 export type QueueHandlerFailureAction = "nack" | "deadLetter";
@@ -32,7 +32,7 @@ export interface QueueConsumerOptions {
   drainTimeoutMs?: number;
 }
 
-export interface QueueMessageContext {
+export interface QueueMessageContext extends MessageExpiry {
   queueId: string;
   lockId: string;
   item: unknown;
@@ -229,6 +229,9 @@ export class QueueConsumer {
       item: delivery.item,
       priority: delivery.priority,
       deliveryCount: delivery.deliveryCount,
+      expiryAt: delivery.expiryAt,
+      expiryTtlSeconds: delivery.expiryTtlSeconds,
+      originalExpiryTtlSeconds: delivery.originalExpiryTtlSeconds,
     };
     try {
       try {

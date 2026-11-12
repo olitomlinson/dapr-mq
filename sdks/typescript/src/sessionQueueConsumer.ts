@@ -5,7 +5,7 @@ import {
   SessionLostError,
   SessionNotFoundError,
 } from "./errors.js";
-import type { SessionDelivery } from "./types.js";
+import type { MessageExpiry, SessionDelivery } from "./types.js";
 
 /** nackMessage returns the message to the front of the session for redelivery. */
 export type SessionHandlerFailureAction = "deadLetterMessage" | "abandonSession" | "both" | "nackMessage";
@@ -46,7 +46,7 @@ interface ResolvedOptions {
  * never exposes one to the client, since the server tracks the lease internally. See
  * SessionDelivery.
  */
-export interface SessionMessageContext {
+export interface SessionMessageContext extends MessageExpiry {
   queueId: string;
   sessionId: string;
   lockId: string;
@@ -262,6 +262,9 @@ export class SessionQueueConsumer {
       lockId: delivery.lockId,
       item: delivery.item,
       priority: delivery.priority,
+      expiryAt: delivery.expiryAt,
+      expiryTtlSeconds: delivery.expiryTtlSeconds,
+      originalExpiryTtlSeconds: delivery.originalExpiryTtlSeconds,
     };
 
     try {

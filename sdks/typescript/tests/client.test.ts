@@ -44,6 +44,35 @@ describe("DaprMQClient.enqueue", () => {
   });
 });
 
+describe("DaprMQClient message expiry", () => {
+  const expiryOf = (d: { expiryAt?: number; expiryTtlSeconds?: number; originalExpiryTtlSeconds?: number }) => ({ expiryAt: d.expiryAt, expiryTtlSeconds: d.expiryTtlSeconds, originalExpiryTtlSeconds: d.originalExpiryTtlSeconds });
+
+  it("enqueue sends expiryTtlSeconds only when set", async () => {
+    const fake = fakeFetch(200, { success: true, message: "ok", itemsEnqueued: 2, itemsDeduplicated: 0 });
+
+    await createClient(fake.fetch).enqueue("q", [{ item: 1, expiryTtlSeconds: 3600 }, { item: 2 }]);
+
+    const [first, second] = JSON.parse(fake.lastRequest!.body!).items;
+    expect(first.expiryTtlSeconds).toBe(3600);
+    expect(second).not.toHaveProperty("expiryTtlSeconds");
+  });
+
+  it("dequeueLocked maps each item's expiry", async () => {
+    const fake = fakeFetch(200, {
+      items: [
+        { item: 1, priority: 1, lockId: "L1", lockExpiresAt: 1, expiryAt: 1800003600, expiryTtlSeconds: 3600, originalExpiryTtlSeconds: 600 },
+        { item: 2, priority: 1, lockId: "L2", lockExpiresAt: 1 },
+      ],
+      locked: false,
+    });
+
+    const result = await createClient(fake.fetch).dequeueLocked("q", { count: 2 });
+
+    expect(expiryOf(result!.items[0])).toEqual({ expiryAt: 1800003600, expiryTtlSeconds: 3600, originalExpiryTtlSeconds: 600 });
+    expect(expiryOf(result!.items[1])).toEqual({ expiryAt: undefined, expiryTtlSeconds: undefined, originalExpiryTtlSeconds: undefined });
+  });
+});
+
 describe("DaprMQClient.dequeueLocked", () => {
   it("sends headers and maps items", async () => {
     const fake = fakeFetch(200, {

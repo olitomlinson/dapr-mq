@@ -13,6 +13,9 @@ export interface DequeueLockedItemWire {
   priority: number;
   lockId: string;
   lockExpiresAt: number;
+  expiryAt?: number;
+  expiryTtlSeconds?: number;
+  originalExpiryTtlSeconds?: number;
 }
 
 export interface DequeueLockedResponseWire {

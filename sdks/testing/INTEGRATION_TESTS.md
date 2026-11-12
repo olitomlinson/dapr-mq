@@ -77,9 +77,9 @@ Legend: ✅ implemented and passing · ⬜ not yet · 🚫 permanently out of sc
 | N-01 | `Nack` returns the item to its original position; it is redelivered ahead of later items with `DeliveryCount` incremented | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
 | N-02 | `Nack` past the max delivery count dead-letters the item (`DeadLettered`, appears on `{queueId}-deadletter`) | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |
 | **Message expiry** ([message-expiry.md](../../proposals/message-expiry.md); the test stack sets `DAPRMQ_MIN_EXPIRY_TTL_SECONDS` to 1) | | | | | | |
-| E-01 | An item enqueued with `expiryTtlSeconds` 1 is not delivered once it has expired (dequeue returns null/none) | ✅ | ✅ | ⬜ | ⬜ | ✅ |
-| E-02 | Dequeued and consumed items carry `expiryAt` and `expiryTtlSeconds` | ✅ | ✅ | ⬜ | ⬜ | ✅ |
-| E-03 | A dead-lettered item carries the dead-letter `expiryTtlSeconds` and the producer's `originalExpiryTtlSeconds` | ✅ | ✅ | ⬜ | ⬜ | ✅ |
+| E-01 | An item enqueued with `expiryTtlSeconds` 1 is not delivered once it has expired (dequeue returns null/none) | ✅ | ✅ | ✅ | ⬜ | ✅ |
+| E-02 | Dequeued and consumed items carry `expiryAt` and `expiryTtlSeconds` | ✅ | ✅ | ✅ | ⬜ | ✅ |
+| E-03 | A dead-lettered item carries the dead-letter `expiryTtlSeconds` and the producer's `originalExpiryTtlSeconds` | ✅ | ✅ | ✅ | ⬜ | ✅ |
 | **Batch acknowledge** | | | | | | |
 | B-01 | `AcknowledgeBatch` settles every lock from one bulk dequeue in one call; all `ACKNOWLEDGED`, nothing redelivered | ✅ | ⬜ | ⬜ | ⬜ | ✅ |
 | B-02 | `AcknowledgeBatch` with an already-settled and an unknown lock reports `LOCK_NOT_FOUND` for those and still settles the rest | ✅ | ⬜ | ⬜ | ⬜ | ⬜ |

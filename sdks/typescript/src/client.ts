@@ -33,6 +33,7 @@ import type {
   DequeueLockedResult,
   EnqueueItem,
   EnqueueResult,
+  MessageExpiry,
   NackResult,
   QueueDelivery,
   SessionDelivery,
@@ -82,6 +83,15 @@ export interface DaprMQClientOptions {
   /** Test/DI seam - substitute a health client instead of dialing grpcAddress. */
   healthClient?: HealthGrpcClient;
   retry?: RetryOptions;
+}
+
+/** Copies a delivered item's message expiry, leaving absent fields undefined. */
+function expiryOf(source: MessageExpiry): MessageExpiry {
+  return {
+    expiryAt: source.expiryAt ?? undefined,
+    expiryTtlSeconds: source.expiryTtlSeconds ?? undefined,
+    originalExpiryTtlSeconds: source.originalExpiryTtlSeconds ?? undefined,
+  };
 }
 
 export class DaprMQClient {
@@ -142,6 +152,7 @@ export class DaprMQClient {
         priority: i.priority ?? 1,
         idempotencyKey: keys[n],
         sessionId: i.sessionId,
+        expiryTtlSeconds: i.expiryTtlSeconds,
       })),
     };
 
@@ -214,7 +225,7 @@ export class DaprMQClient {
     const text = await this.readBodyText(response);
     const result = this.requireParsed<DequeueLockedResponseWire>(text, response.url);
     return {
-      items: result.items.map((i) => ({ item: i.item, priority: i.priority, lockId: i.lockId, lockExpiresAt: i.lockExpiresAt })),
+      items: result.items.map((i) => ({ item: i.item, priority: i.priority, lockId: i.lockId, lockExpiresAt: i.lockExpiresAt, ...expiryOf(i) })),
       locked: result.locked,
       message: result.message,
     };
@@ -493,6 +504,7 @@ export class DaprMQClient {
               item: JSON.parse(delivered.itemJson),
               priority: delivered.priority,
               lockExpiresAt: delivered.lockExpiresAt,
+              ...expiryOf(delivered),
               ack: () => settle({ ack: { lockId: delivered.lockId } }),
               deadLetter: () => settle({ deadLetter: { lockId: delivered.lockId } }),
               nack: () => settle({ nack: { lockId: delivered.lockId } }),
@@ -602,6 +614,7 @@ export class DaprMQClient {
               priority: delivered.priority,
               lockExpiresAt: delivered.lockExpiresAt,
               deliveryCount: delivered.deliveryCount,
+              ...expiryOf(delivered),
               ack: () => settle({ ack: { lockId: delivered.lockId } }),
               nack: () => settle({ nack: { lockId: delivered.lockId } }),
               deadLetter: () => settle({ deadLetter: { lockId: delivered.lockId } }),

@@ -6,6 +6,25 @@ export interface EnqueueItem {
   idempotencyKey?: string;
   /** Routes the item to that session of the queue. Every item in one enqueue call must have the same sessionId (or none); the server rejects a call that mixes them. */
   sessionId?: string;
+  /**
+   * The message's time to live in seconds. Omitted uses the server's default (one year unless
+   * configured); the server rejects values below its minimum (10 minutes by default) or over 10
+   * years. An item still queued past its expiry is never delivered.
+   */
+  expiryTtlSeconds?: number;
+}
+
+/**
+ * A delivered message's expiry. Every field is undefined when absent: an item with no expiry, or one
+ * that was never dead-lettered.
+ */
+export interface MessageExpiry {
+  /** When the message expires, in Unix seconds. */
+  expiryAt?: number;
+  /** The time to live expiryAt was computed from. */
+  expiryTtlSeconds?: number;
+  /** On an item from a dead-letter queue, the producer's original time to live. */
+  originalExpiryTtlSeconds?: number;
 }
 
 export interface EnqueueResult {
@@ -15,7 +34,7 @@ export interface EnqueueResult {
   itemsDeduplicated: number;
 }
 
-export interface DequeueLockedItem {
+export interface DequeueLockedItem extends MessageExpiry {
   item: unknown;
   priority: number;
   lockId: string;
@@ -74,7 +93,7 @@ export interface SessionLease {
  * applies it when it calls Acknowledge/DeadLetter/Nack on the caller's behalf), so
  * ack/deadLetter/nack are the only way to resolve this item.
  */
-export interface SessionDelivery {
+export interface SessionDelivery extends MessageExpiry {
   sessionId: string;
   lockId: string;
   item: unknown;
@@ -91,7 +110,7 @@ export interface SessionDelivery {
  * rejected settlement arrives later through `onSettleFailed`; the promises here only cover sending
  * the frame.
  */
-export interface QueueDelivery {
+export interface QueueDelivery extends MessageExpiry {
   lockId: string;
   item: unknown;
   priority: number;

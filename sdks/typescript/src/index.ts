@@ -21,6 +21,7 @@ export type {
   SessionLease,
   SessionDelivery,
   QueueDelivery,
+  MessageExpiry,
   ConsumeOptions,
   NackResult,
   AcknowledgeBatchResult,

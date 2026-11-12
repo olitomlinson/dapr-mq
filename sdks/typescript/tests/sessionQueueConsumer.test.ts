@@ -6,6 +6,7 @@ import type { SessionDelivery } from "../src/types.js";
 function makeDelivery(
   sessionId: string,
   lockId: string,
+  expiry: Partial<Pick<SessionDelivery, "expiryAt" | "expiryTtlSeconds" | "originalExpiryTtlSeconds">> = {},
 ): { delivery: SessionDelivery; acked: () => boolean; deadLettered: () => boolean; nacked: () => boolean } {
   let acked = false;
   let deadLettered = false;
@@ -25,6 +26,7 @@ function makeDelivery(
     nack: async () => {
       nacked = true;
     },
+    ...expiry,
   };
   return { delivery, acked: () => acked, deadLettered: () => deadLettered, nacked: () => nacked };
 }
@@ -51,6 +53,21 @@ async function waitUntil(condition: () => boolean, timeoutMs: number): Promise<v
 }
 
 describe("SessionQueueConsumer", () => {
+  it("passes the message's expiry to the handler", async () => {
+    const { delivery } = makeDelivery("s1", "L1", { expiryAt: 1800003600, expiryTtlSeconds: 3600, originalExpiryTtlSeconds: 600 });
+    let seen: SessionMessageContext | undefined;
+    const client: SessionCapableClient = { consumeSession: () => singleItemThenComplete(delivery) };
+    const consumer = new SessionQueueConsumer(client, "q", { maxConcurrentSessions: 1 }, async (ctx) => {
+      seen = ctx;
+    });
+
+    consumer.start();
+    await waitUntil(() => seen !== undefined, 2000);
+    await consumer.stop();
+
+    expect([seen!.expiryAt, seen!.expiryTtlSeconds, seen!.originalExpiryTtlSeconds]).toEqual([1800003600, 3600, 600]);
+  });
+
   it("claims, delivers, handles, and acks on the happy path", async () => {
     const { delivery, acked, deadLettered } = makeDelivery("s1", "L1");
     let handlerCalled: () => void;

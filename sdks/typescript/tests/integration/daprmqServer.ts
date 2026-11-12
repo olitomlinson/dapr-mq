@@ -246,6 +246,8 @@ export async function startDaprMQServer(topology = new DaprTopology(), image = A
           Logging__LogLevel__Default: "Warning",
           QUEUE_ACTOR_TYPE_NAME: "QueueActor",
           HTTP_SINK_ACTOR_TYPE_NAME: "HttpSinkActor",
+          // Lets the E- tests use a time to live short enough to expire within a test.
+          DAPRMQ_MIN_EXPIRY_TTL_SECONDS: "1",
         })
         .start();
       containers.push(api);
