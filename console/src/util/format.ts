@@ -16,6 +16,25 @@ export function formatTimeLeft(deadlineSeconds: number, nowMs: number): string {
   return `${Math.floor(left / 60)}m ${String(left % 60).padStart(2, '0')}s`
 }
 
+/** A duration as its two largest units, the second omitted when zero: "1h 2m", "28d", "45s". */
+export function formatDuration(seconds: number): string {
+  const units: [string, number][] = [['d', 86_400], ['h', 3_600], ['m', 60], ['s', 1]]
+  let rest = Math.max(0, Math.floor(seconds))
+  const first = units.findIndex(([, size]) => rest >= size)
+  if (first < 0) return '0s'
+  const [unit, size] = units[first]
+  const head = `${Math.floor(rest / size)}${unit}`
+  rest %= size
+  const next = units[first + 1]
+  return next && rest >= next[1] ? `${head} ${Math.floor(rest / next[1])}${next[0]}` : head
+}
+
+/** Time until a message's expiry (Unix seconds), or "expired". */
+export function formatExpiresIn(expiryAt: number, nowMs: number): string {
+  const left = Math.floor(expiryAt - nowMs / 1000)
+  return left <= 0 ? 'expired' : formatDuration(left)
+}
+
 export const formatTime = (unixSeconds: number) => new Date(unixSeconds * 1000).toLocaleTimeString()
 
 /** Pretty JSON if the text parses, else null. */

@@ -85,6 +85,12 @@ public record AdminMessage
     public int Priority { get; init; }
     public long Sequence { get; init; }
     public int DeliveryCount { get; init; }
+    /// <summary>When the message expires (Unix seconds); null if it never does. See proposals/message-expiry.md.</summary>
+    public double? ExpiryAt { get; init; }
+    public int? ExpiryTtlSeconds { get; init; }
+
+    /// <summary>The producer's time to live, kept on a dead-lettered message.</summary>
+    public int? OriginalExpiryTtlSeconds { get; init; }
     public long SizeBytes { get; init; }
     public string Text { get; init; } = string.Empty;
     public bool TextTruncated { get; init; }
@@ -108,6 +114,12 @@ public record AdminLock
     public int Priority { get; init; }
     public long Sequence { get; init; }
     public int DeliveryCount { get; init; }
+    /// <summary>When the locked message expires - not the lock (Unix seconds); null if it never does. See proposals/message-expiry.md.</summary>
+    public double? ExpiryAt { get; init; }
+    public int? ExpiryTtlSeconds { get; init; }
+
+    /// <summary>The producer's time to live, kept on a dead-lettered message.</summary>
+    public int? OriginalExpiryTtlSeconds { get; init; }
     public bool CompetingConsumerMode { get; init; }
     public long SizeBytes { get; init; }
     public string Text { get; init; } = string.Empty;

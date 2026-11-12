@@ -101,6 +101,11 @@ export interface Message extends ItemText {
   priority: number
   sequence: number
   deliveryCount: number
+  /** When the message expires (Unix seconds); absent if it never does. */
+  expiryAt?: number | null
+  expiryTtlSeconds?: number | null
+  /** The producer's time to live, kept on a dead-lettered message. */
+  originalExpiryTtlSeconds?: number | null
 }
 
 export interface MessagePage {
@@ -116,6 +121,11 @@ export interface Lock extends ItemText {
   sequence: number
   deliveryCount: number
   competingConsumerMode: boolean
+  /** When the locked message expires - not the lock (Unix seconds); absent if it never does. */
+  expiryAt?: number | null
+  expiryTtlSeconds?: number | null
+  /** The producer's time to live, kept on a dead-lettered message. */
+  originalExpiryTtlSeconds?: number | null
 }
 
 export interface LockPage {

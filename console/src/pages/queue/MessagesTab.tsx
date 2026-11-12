@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMessages, type ItemRef } from '../../api/hooks'
-import { formatBytes, formatCount } from '../../util/format'
+import { formatBytes, formatCount, formatExpiresIn } from '../../util/format'
 import { QueryState, ui } from '../../components/ui'
 import { MessageDrawer } from '../../components/MessageDrawer'
 
@@ -10,6 +10,8 @@ export function MessagesTab({ queueId, maxDeliveryCount }: { queueId: string; ma
   const [open, setOpen] = useState<ItemRef | null>(null)
   const messages = useMessages(queueId, priority)
   const items = messages.data?.pages.flatMap((p) => p.items) ?? []
+  // Expired messages stay listed until a dequeue reaches and removes them.
+  const now = Date.now()
 
   return (
     <>
@@ -38,25 +40,31 @@ export function MessagesTab({ queueId, maxDeliveryCount }: { queueId: string; ma
                 <th className={ui.num}>Seq</th>
                 <th className={ui.num}>Pri</th>
                 <th className={ui.num}>Deliveries</th>
+                <th>Expires in</th>
                 <th>Payload preview</th>
                 <th className={ui.num}>Size</th>
               </tr>
             </thead>
             <tbody>
-              {items.map((m) => (
+              {items.map((m) => {
+                const expiresIn = m.expiryAt != null ? formatExpiresIn(m.expiryAt, now) : 'never'
+                return (
                 <tr
                   key={m.location + m.sequence}
-                  className={ui.clickable}
+                  className={`${ui.clickable} ${expiresIn === 'expired' ? ui.muted : ''}`}
+                  data-expired={expiresIn === 'expired'}
                   onClick={() => setOpen({ type: 'message', queueId, location: m.location, sequence: m.sequence })}
                 >
                   <td className={ui.num}>{formatCount(m.sequence)}</td>
                   <td className={ui.num}>{m.priority}</td>
                   <td className={ui.num}>{m.deliveryCount}{m.deliveryCount > 0 ? ` / ${maxDeliveryCount}` : ''}</td>
+                  <td>{expiresIn}</td>
                   <td className={ui.preview}>{m.isBlobReference ? '📦 blob reference' : m.text}</td>
                   <td className={ui.num}>{formatBytes(m.isBlobReference && m.blobSize != null ? m.blobSize : m.sizeBytes)}</td>
                 </tr>
-              ))}
-              {items.length === 0 && <tr><td colSpan={5} className={ui.muted}>No ready messages.</td></tr>}
+                )
+              })}
+              {items.length === 0 && <tr><td colSpan={6} className={ui.muted}>No ready messages.</td></tr>}
             </tbody>
           </table>
         </div>

@@ -290,6 +290,35 @@ public class AdminReadServiceTests
         _objectStore.VerifyNoOtherCalls();
     }
 
+    [Fact]
+    public async Task Messages_CarryTheirExpiry()
+    {
+        Queue("orders", Meta((1, 0, 0, 1)));
+        Segment("orders", 1, 0, Item(1) with { ExpiryAt = 1_800_003_600, ExpiryTtlSeconds = 3600, OriginalExpiryTtlSeconds = 60 });
+
+        var message = Assert.Single((await CreateService().ListMessagesAsync("orders", null, null, 10)).Value!.Items);
+
+        Assert.Equal(1_800_003_600, message.ExpiryAt);
+        Assert.Equal(3600, message.ExpiryTtlSeconds);
+        Assert.Equal(60, message.OriginalExpiryTtlSeconds);
+    }
+
+    [Fact]
+    public async Task Locks_CarryTheirMessagesExpiry()
+    {
+        Queue("orders", Meta() with { LockCount = 1, LockExpiryBuckets = [10] });
+        _reader.State[("QueueActor", "orders", "locks_exp_10")] = new List<string> { "lockA" };
+        Lock("orders", "lockA", 1);
+        var key = ("QueueActor", "orders", "lockA-lock");
+        _reader.State[key] = ((LockState)_reader.State[key]) with { ExpiryAt = 1_800_003_600, ExpiryTtlSeconds = 3600, OriginalExpiryTtlSeconds = 60 };
+
+        var lockItem = Assert.Single((await CreateService().ListLocksAsync("orders", 0, 10)).Value!.Items);
+
+        Assert.Equal(1_800_003_600, lockItem.ExpiryAt);
+        Assert.Equal(3600, lockItem.ExpiryTtlSeconds);
+        Assert.Equal(60, lockItem.OriginalExpiryTtlSeconds);
+    }
+
     // --- locks ---
 
     [Fact]
