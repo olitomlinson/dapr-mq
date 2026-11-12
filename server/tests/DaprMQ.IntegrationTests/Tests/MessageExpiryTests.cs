@@ -20,6 +20,8 @@ public class MessageExpiryTests(DaprTestFixture fixture)
     // Matches the server default (DAPRMQ_DEFAULT_EXPIRY_TTL_SECONDS unset).
     private const int DefaultExpiryTtlSeconds = 31_536_000;
     private const int MaxExpiryTtlSeconds = 315_360_000;
+    // Matches the server default (DAPRMQ_DEADLETTER_EXPIRY_TTL_SECONDS unset).
+    private const int DeadLetterExpiryTtlSeconds = 2_419_200;
 
     private async Task<HttpResponseMessage> EnqueueAsync(string queueId, int id, int? expiryTtlSeconds)
     {
@@ -167,5 +169,50 @@ public class MessageExpiryTests(DaprTestFixture fixture)
 
         var ex = await Assert.ThrowsAsync<RpcException>(async () => await client.EnqueueAsync(GrpcEnqueue(queueId, 1, expiryTtlSeconds: 0)));
         Assert.Equal(StatusCode.InvalidArgument, ex.StatusCode);
+    }
+
+    private async Task<ApiDequeueLockedItem> DequeueLockedAsync(string queueId)
+    {
+        var response = await DequeueAsync(queueId, requireAck: true);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return Assert.Single((await response.Content.ReadFromJsonAsync<ApiDequeueLockedResponse>())!.Items);
+    }
+
+    [Fact]
+    public async Task DeadLetteredItems_GetTheDeadLetterExpiry_AndCarryTheOriginalTimeToLive()
+    {
+        var queueId = $"{fixture.QueueId}-expiry-dlq-{Guid.NewGuid():N}";
+        double before = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        (await EnqueueAsync(queueId, 1, expiryTtlSeconds: 3600)).EnsureSuccessStatusCode();
+        var locked = await DequeueLockedAsync(queueId);
+
+        var deadLetter = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/deadletter", new ApiDeadLetterRequest(locked.LockId));
+        Assert.Equal(HttpStatusCode.OK, deadLetter.StatusCode);
+
+        var response = await DequeueAsync($"{queueId}-deadletter", requireAck: false);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var item = Assert.Single((await response.Content.ReadFromJsonAsync<ApiDequeueResponse>())!.Items);
+        Assert.Equal(DeadLetterExpiryTtlSeconds, item.ExpiryTtlSeconds);
+        Assert.InRange(item.ExpiryAt!.Value, before + DeadLetterExpiryTtlSeconds - 5, before + DeadLetterExpiryTtlSeconds + 30);
+        Assert.Equal(3600, item.OriginalExpiryTtlSeconds);
+    }
+
+    [Fact]
+    public async Task DeadLetter_FromADeadLetterQueue_Returns400DeadLetterNotAllowed()
+    {
+        var queueId = $"{fixture.QueueId}-expiry-dlq-dlq-{Guid.NewGuid():N}";
+        (await EnqueueAsync(queueId, 1, expiryTtlSeconds: null)).EnsureSuccessStatusCode();
+        var locked = await DequeueLockedAsync(queueId);
+        (await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}/deadletter", new ApiDeadLetterRequest(locked.LockId))).EnsureSuccessStatusCode();
+
+        var dlqLocked = await DequeueLockedAsync($"{queueId}-deadletter");
+        var response = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}-deadletter/deadletter", new ApiDeadLetterRequest(dlqLocked.LockId));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("DEADLETTER_NOT_ALLOWED", (await response.Content.ReadFromJsonAsync<ApiDeadLetterResponse>())!.ErrorCode);
+
+        // The lock was left as it was, so it can still be acknowledged.
+        var ack = await fixture.ApiClient.PostAsJsonAsync($"/queue/{queueId}-deadletter/acknowledge", new ApiAcknowledgeRequest(dlqLocked.LockId));
+        Assert.Equal(HttpStatusCode.OK, ack.StatusCode);
     }
 }

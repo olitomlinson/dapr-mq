@@ -327,6 +327,9 @@ public class QueueController : ControllerBase
                         });
                 } while (result.ExpiredMore);
 
+                // Expired items it reached couldn't be dead-lettered, so nothing was dequeued.
+                DeliveryFailures.ThrowIfUnavailable(result.ErrorCode, result.Message);
+
                 // Session-lease guard rejection (session-scoped queue actor, missing/invalid/expired lease-id).
                 if (result.ErrorCode == "SESSION_LEASE_EXPIRED")
                 {
@@ -381,6 +384,9 @@ public class QueueController : ControllerBase
                         ActorMethodNames.Dequeue,
                         new DequeueRequest { Count = count, LeaseId = lease_id });
                 } while (result.ExpiredMore);
+
+                // Expired items it reached couldn't be dead-lettered, so nothing was dequeued.
+                DeliveryFailures.ThrowIfUnavailable(result.ErrorCode, result.Message);
 
                 // Session-lease guard rejection (session-scoped queue actor, missing/invalid/expired lease-id).
                 if (result.ErrorCode == "SESSION_LEASE_EXPIRED")

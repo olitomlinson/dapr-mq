@@ -222,6 +222,31 @@ public class DaprMQGrpcServiceConsumeTests
     }
 
     [Fact]
+    public async Task Consume_Unavailable_KeepsTheStreamAndDequeuesAgain()
+    {
+        var call = 0;
+        _queue.Setup(i => i.InvokeMethodAsync<ActorModels.DequeueLockedRequest, ActorModels.DequeueLockedResponse>(
+                It.IsAny<ActorId>(), "DequeueLocked", It.IsAny<ActorModels.DequeueLockedRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => Interlocked.Increment(ref call) switch
+            {
+                1 => new ActorModels.DequeueLockedResponse { ErrorCode = "UNAVAILABLE" },
+                2 => new ActorModels.DequeueLockedResponse { Items = [Item("lock-1")] },
+                _ => new ActorModels.DequeueLockedResponse { IsEmpty = true }
+            });
+        SetupNack();
+        var reader = new FakeAsyncStreamReader<ConsumeRequest>();
+        var writer = new FakeServerStreamWriter<ConsumeResponse>();
+        reader.Add(Start());
+
+        var task = CreateService().Consume(reader, writer, _mockContext.Object);
+        await WaitUntilAsync(() => Delivered(writer).Any());
+        reader.Complete();
+        await task;
+
+        Assert.DoesNotContain(writer.Written, r => r.PayloadCase == ConsumeResponse.PayloadOneofCase.Error);
+    }
+
+    [Fact]
     public async Task Consume_FirstMessageNotStart_WritesErrorAndReturns()
     {
         var reader = new FakeAsyncStreamReader<ConsumeRequest>();

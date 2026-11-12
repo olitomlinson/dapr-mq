@@ -225,6 +225,20 @@ public class QueueActor : Actor, IQueueActor, IRemindable
     private bool IsSessionActor() => Id.GetId().IndexOf(SessionActorIdMarker, StringComparison.Ordinal) > 0;
 
     /// <summary>
+    /// True if this actor is a dead-letter queue, a session queue's included. A dead-letter queue never
+    /// dead-letters: explicit DeadLetter is refused, MaxDeliveryCount isn't applied, and expired items
+    /// are dropped whatever DAPRMQ_DEADLETTER_ON_EXPIRY says.
+    /// </summary>
+    private bool IsDeadLetterQueue() => Id.GetId().EndsWith(DeadLetterActorIdSuffix, StringComparison.Ordinal);
+
+    /// <summary>Whether an expired item is dead-lettered here rather than dropped.</summary>
+    private bool DeadLettersOnExpiry => _expiryConfig.DeadLetterOnExpiry && !IsDeadLetterQueue();
+
+    /// <summary>Whether an item past MaxDeliveryCount is dead-lettered here, rather than restored as usual.</summary>
+    private bool ExceedsMaxDeliveryCount(int deliveryCount) =>
+        deliveryCount > _lockConfig.MaxDeliveryCount && !IsDeadLetterQueue();
+
+    /// <summary>
     /// The index entry a lock expiring at <paramref name="expiresAt"/> belongs to. Floor, not ceiling:
     /// the sweep treats a bucket as due from its *earliest* possible expiry and then re-checks each
     /// lock's own ExpiresAt, so a lock is never resolved late. Ceiling would hold a bucket back until
@@ -730,6 +744,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
         // would rewrite it once per lock for no gain.
         var restored = new List<(QueueSegmentItem Item, int Priority)>();
         var dropped = new List<string>();
+        var expiredToDeadLetter = new List<(string LockId, LockState Lock)>();
         var deadLettered = new List<string>();
         var emptiedBuckets = new List<long>();
 
@@ -794,6 +809,14 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                 // is removed rather than restored, and the lapse isn't counted as a delivery.
                 if (IsExpired(lockState.Value.ExpiryAt, now))
                 {
+                    if (DeadLettersOnExpiry)
+                    {
+                        // Left indexed and counted until the dead-letter call below succeeds.
+                        survivors.Add(lockId);
+                        expiredToDeadLetter.Add((lockId, lockState.Value));
+                        continue;
+                    }
+
                     expired++;
                     dropped.Add(lockState.Value.ItemJson);
                     await StateManager.RemoveStateAsync($"{lockId}-lock");
@@ -801,7 +824,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                 }
 
                 int deliveryCount = lockState.Value.DeliveryCount + 1;
-                if (deliveryCount > _lockConfig.MaxDeliveryCount)
+                if (ExceedsMaxDeliveryCount(deliveryCount))
                 {
                     // Left in state, indexed and counted - dead-lettering reaches another actor, so it
                     // runs after this sweep's local commit, and only its success releases the lock. If
@@ -826,6 +849,19 @@ public class QueueActor : Actor, IQueueActor, IRemindable
             {
                 await StateManager.SetStateAsync(bucketKey, survivors);
             }
+        }
+
+        // Expired items go to the dead-letter queue in one call, before the commit. On failure their
+        // locks stay indexed and counted for a later sweep. Their bucket entries are left for the
+        // sweep to discard, as on Acknowledge.
+        if (expiredToDeadLetter.Count > 0 && await TryDeadLetterAsync(expiredToDeadLetter.Select(e => DeadLetterItem(e.Lock)).ToList()))
+        {
+            foreach (var (lockId, _) in expiredToDeadLetter)
+            {
+                await StateManager.RemoveStateAsync($"{lockId}-lock");
+            }
+            expired += expiredToDeadLetter.Count;
+            Logger.LogInformation("Dead-lettered {Count} expired locked item(s) from {ActorId}", expiredToDeadLetter.Count, Id.GetId());
         }
 
         // Skipped when nothing local changed - but dead-lettering below still runs.
@@ -904,6 +940,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
         // lapses more than once still hands its items back exactly as the consumer found them.
         var restored = new List<(QueueSegmentItem Item, int Priority)>();
         var dropped = new List<string>();
+        var expiredToDeadLetter = new List<(string LockId, LockState Lock)>();
         var deadLettered = new List<string>();
 
         foreach (var lockId in indexState.Value)
@@ -917,13 +954,19 @@ public class QueueActor : Actor, IQueueActor, IRemindable
             // Expired items are removed rather than restored; see SweepExpiredLocksAsync.
             if (IsExpired(lockState.Value.ExpiryAt, now))
             {
+                if (DeadLettersOnExpiry)
+                {
+                    expiredToDeadLetter.Add((lockId, lockState.Value));
+                    continue;
+                }
+
                 dropped.Add(lockState.Value.ItemJson);
                 await StateManager.RemoveStateAsync($"{lockId}-lock");
                 continue;
             }
 
             int deliveryCount = lockState.Value.DeliveryCount + 1;
-            if (deliveryCount > _lockConfig.MaxDeliveryCount)
+            if (ExceedsMaxDeliveryCount(deliveryCount))
             {
                 deadLettered.Add(lockId);
                 continue;
@@ -935,15 +978,34 @@ public class QueueActor : Actor, IQueueActor, IRemindable
 
         await RestoreInOrderInternal(restored);
 
+        // Expired items go to the dead-letter queue in one call, before the commit; see SweepExpiredLocksAsync.
+        int expiredDeadLettered = 0;
+        var awaitingDeadLetter = new List<string>(deadLettered);
+        if (expiredToDeadLetter.Count > 0)
+        {
+            if (await TryDeadLetterAsync(expiredToDeadLetter.Select(e => DeadLetterItem(e.Lock)).ToList()))
+            {
+                foreach (var (lockId, _) in expiredToDeadLetter)
+                {
+                    await StateManager.RemoveStateAsync($"{lockId}-lock");
+                }
+                expiredDeadLettered = expiredToDeadLetter.Count;
+            }
+            else
+            {
+                awaitingDeadLetter.AddRange(expiredToDeadLetter.Select(e => e.LockId));
+            }
+        }
+
         // Locks still awaiting dead-lettering stay indexed and counted, so a failed DLQ enqueue
         // leaves them for the next reclaim rather than orphaning them.
-        if (deadLettered.Count == 0)
+        if (awaitingDeadLetter.Count == 0)
         {
             await StateManager.RemoveStateAsync(SessionLockIndexKey);
         }
         else
         {
-            await StateManager.SetStateAsync(SessionLockIndexKey, new List<string>(deadLettered));
+            await StateManager.SetStateAsync(SessionLockIndexKey, awaitingDeadLetter);
         }
 
         // The lapsed lease is deliberately left in place: it is what makes the guard refuse callers
@@ -951,7 +1013,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
         metadata = await GetMetadataAsync();
         await SetMetadataAsync(metadata with
         {
-            LockCount = Math.Max(0, metadata.LockCount - restored.Count - dropped.Count)
+            LockCount = Math.Max(0, metadata.LockCount - restored.Count - dropped.Count - expiredDeadLettered)
         });
         await DropExpiredAsync(dropped);
         await StateManager.SaveStateAsync();
@@ -1048,12 +1110,9 @@ public class QueueActor : Actor, IQueueActor, IRemindable
         try
         {
             var result = await _actorInvoker.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
-                new ActorId($"{Id.GetId()}-deadletter"),
+                new ActorId($"{Id.GetId()}{DeadLetterActorIdSuffix}"),
                 "Enqueue",
-                new EnqueueRequest
-                {
-                    Items = [new EnqueueItem { ItemJson = lockData.ItemJson, Priority = lockData.Priority }]
-                });
+                new EnqueueRequest { Items = [DeadLetterItem(lockData)] });
 
             if (!result.Success)
             {
@@ -1412,6 +1471,30 @@ public class QueueActor : Actor, IQueueActor, IRemindable
 
         var items = new List<DequeueItem>();
         var expired = new ExpiredRemovals(_expiryConfig.ExpirySweepBatchSize);
+        var deliveredBlobItems = new List<string>();
+        var unavailable = new DequeueResponse { ErrorCode = "UNAVAILABLE", Message = ExpiredDeadLetterFailedMessage };
+
+        // Expired items first: if dead-lettering them fails, the turn is discarded, so nothing after
+        // it - the commit, or a delivered blob's reap - may have happened.
+        async Task<bool> CommitAsync()
+        {
+            if (!await RemoveExpiredAsync(expired))
+            {
+                return false;
+            }
+
+            // Plain Dequeue has no lock/ack step - this is the sole finalization point for the item,
+            // so schedule the backstop blob reap rather than leaking the offloaded object. The claim
+            // token issued with it lets the caller redeem it later, which postpones deletion further
+            // out from the download endpoint.
+            foreach (var itemJson in deliveredBlobItems)
+            {
+                await ScheduleBlobReapingIfNeeded(itemJson);
+            }
+
+            await StateManager.SaveStateAsync();
+            return true;
+        }
 
         // Dequeue up to Count items
         for (int i = 0; i < request.Count; i++)
@@ -1423,15 +1506,18 @@ public class QueueActor : Actor, IQueueActor, IRemindable
             // has items.
             if (response.ExpiredMore)
             {
-                await DropExpiredAsync(expired.ItemJsons);
-                await StateManager.SaveStateAsync();
-                return new DequeueResponse { Items = items, ExpiredMore = items.Count == 0 };
+                return await CommitAsync()
+                    ? new DequeueResponse { Items = items, ExpiredMore = items.Count == 0 }
+                    : unavailable;
             }
 
             // If locked, return what we have so far with lock info
             if (response.Locked)
             {
-                await StateManager.SaveStateAsync();
+                if (!await CommitAsync())
+                {
+                    return unavailable;
+                }
                 return new DequeueResponse
                 {
                     Items = items,
@@ -1445,8 +1531,10 @@ public class QueueActor : Actor, IQueueActor, IRemindable
             // If empty, return what we have so far
             if (response.IsEmpty)
             {
-                await DropExpiredAsync(expired.ItemJsons);
-                await StateManager.SaveStateAsync();
+                if (!await CommitAsync())
+                {
+                    return unavailable;
+                }
                 return new DequeueResponse
                 {
                     Items = items,
@@ -1468,19 +1556,17 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                 OriginalExpiryTtlSeconds = segmentItem.OriginalExpiryTtlSeconds
             });
 
-            // Plain Dequeue has no lock/ack step - this is the sole finalization point for the item,
-            // so schedule the backstop blob reap immediately rather than leaking the offloaded
-            // object. The claim token issued above lets the caller redeem it later, which
-            // postpones deletion further out from the download endpoint.
             if (isBlobRef)
             {
-                await ScheduleBlobReapingIfNeeded(itemJson);
+                deliveredBlobItems.Add(itemJson!);
             }
         }
 
         // Commit all changes atomically
-        await DropExpiredAsync(expired.ItemJsons);
-        await StateManager.SaveStateAsync();
+        if (!await CommitAsync())
+        {
+            return unavailable;
+        }
 
         return new DequeueResponse
         {
@@ -1566,7 +1652,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
 
                     if (IsExpired(segmentItem!.ExpiryAt, expired.Now))
                     {
-                        expired.ItemJsons.Add(segmentItem.ItemJson);
+                        expired.Items.Add((segmentItem, priority));
                         if (expired.BudgetSpent)
                         {
                             return (new DequeueResponse { ExpiredMore = true }, -1, null);
@@ -1601,8 +1687,8 @@ public class QueueActor : Actor, IQueueActor, IRemindable
     private sealed class ExpiredRemovals(int budget)
     {
         public double Now { get; } = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        public List<string> ItemJsons { get; } = new();
-        public bool BudgetSpent => ItemJsons.Count >= budget;
+        public List<(QueueSegmentItem Item, int Priority)> Items { get; } = new();
+        public bool BudgetSpent => Items.Count >= budget;
     }
 
     /// <summary>A null ExpiryAt never expires.</summary>
@@ -1625,6 +1711,78 @@ public class QueueActor : Actor, IQueueActor, IRemindable
         }
 
         Logger.LogInformation("Dropped {Count} expired item(s) from {ActorId}", itemJsons.Count, Id.GetId());
+    }
+
+    /// <summary>
+    /// Disposes of the expired items a dequeue removed from the head: dropped, or dead-lettered in one
+    /// call before the turn commits. If that call fails, everything the turn staged is discarded, so the
+    /// items stay where they were for a later turn, and false is returned: the dequeue wasn't performed.
+    /// </summary>
+    private async Task<bool> RemoveExpiredAsync(ExpiredRemovals expired)
+    {
+        if (expired.Items.Count == 0)
+        {
+            return true;
+        }
+
+        if (!DeadLettersOnExpiry)
+        {
+            await DropExpiredAsync(expired.Items.Select(e => e.Item.ItemJson).ToList());
+            return true;
+        }
+
+        var items = expired.Items
+            .Select(e => DeadLetterItem(e.Item.ItemJson, e.Priority, e.Item.ExpiryTtlSeconds))
+            .ToList();
+        if (!await TryDeadLetterAsync(items))
+        {
+            await StateManager.ClearCacheAsync();
+            return false;
+        }
+
+        Logger.LogInformation("Dead-lettered {Count} expired item(s) from {ActorId}", items.Count, Id.GetId());
+        return true;
+    }
+
+    private const string ExpiredDeadLetterFailedMessage = "Expired items could not be dead-lettered; nothing was dequeued";
+
+    /// <summary>
+    /// An item as it is enqueued to the dead-letter queue: its expiry replaced by the dead-letter period
+    /// from now, and the producer's time to live kept in OriginalExpiryTtlSeconds.
+    /// </summary>
+    private EnqueueItem DeadLetterItem(string itemJson, int priority, int? expiryTtlSeconds) =>
+        new()
+        {
+            ItemJson = itemJson,
+            Priority = priority,
+            ExpiryAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + _expiryConfig.DeadLetterExpiryTtlSeconds,
+            ExpiryTtlSeconds = _expiryConfig.DeadLetterExpiryTtlSeconds,
+            OriginalExpiryTtlSeconds = expiryTtlSeconds
+        };
+
+    private EnqueueItem DeadLetterItem(LockState lockData) =>
+        DeadLetterItem(lockData.ItemJson, lockData.Priority, lockData.ExpiryTtlSeconds);
+
+    /// <summary>Enqueues items to this queue's dead-letter queue in one call. False on any failure.</summary>
+    private async Task<bool> TryDeadLetterAsync(List<EnqueueItem> items)
+    {
+        try
+        {
+            var result = await _actorInvoker.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
+                new ActorId($"{Id.GetId()}{DeadLetterActorIdSuffix}"),
+                "Enqueue",
+                new EnqueueRequest { Items = items });
+            if (!result.Success)
+            {
+                Logger.LogError("DLQ enqueue of {Count} expired item(s) rejected: {Error}", items.Count, result.ErrorMessage);
+            }
+            return result.Success;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "DLQ enqueue of {Count} expired item(s) failed", items.Count);
+            return false;
+        }
     }
 
     // Helper methods follow in next section...
@@ -1785,12 +1943,15 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                 Logger.LogDebug("Created lock {LockId} ({Index}/{Count}) with TTL {TtlSeconds}s", lockId, i + 1, count, ttlSeconds);
             }
 
-            await DropExpiredAsync(expired.ItemJsons);
+            if (!await RemoveExpiredAsync(expired))
+            {
+                return new DequeueLockedResponse { ErrorCode = "UNAVAILABLE", Message = ExpiredDeadLetterFailedMessage };
+            }
 
             // Check if we got any items
             if (lockedItems.Count == 0)
             {
-                if (expired.ItemJsons.Count > 0)
+                if (expired.Items.Count > 0)
                 {
                     await StateManager.SaveStateAsync();
                 }
@@ -1801,7 +1962,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                     return new DequeueLockedResponse
                     {
                         ExpiredMore = true,
-                        Message = $"Removed {expired.ItemJsons.Count} expired item(s)"
+                        Message = $"Removed {expired.Items.Count} expired item(s)"
                     };
                 }
 
@@ -2261,6 +2422,17 @@ public class QueueActor : Actor, IQueueActor, IRemindable
                 };
             }
 
+            // Nothing leaves a dead-letter queue for another one; the lock is left as it was.
+            if (IsDeadLetterQueue())
+            {
+                return new DeadLetterResponse
+                {
+                    Status = "ERROR",
+                    ErrorCode = "DEADLETTER_NOT_ALLOWED",
+                    Message = "Items in a dead-letter queue cannot be dead-lettered"
+                };
+            }
+
             // Validate lock_id
             if (string.IsNullOrEmpty(request.LockId))
             {
@@ -2344,10 +2516,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
         var enqueueResult = await _actorInvoker.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
             new ActorId(dlqActorId),
             "Enqueue",
-            new EnqueueRequest
-            {
-                Items = [new EnqueueItem { ItemJson = lockData.ItemJson, Priority = lockData.Priority }]
-            });
+            new EnqueueRequest { Items = [DeadLetterItem(lockData)] });
 
         if (!enqueueResult.Success)
         {
@@ -2429,6 +2598,27 @@ public class QueueActor : Actor, IQueueActor, IRemindable
             // removed rather than restored, and the nack isn't counted as a delivery.
             if (IsExpired(lockData.ExpiryAt, DateTimeOffset.UtcNow.ToUnixTimeSeconds()))
             {
+                if (DeadLettersOnExpiry)
+                {
+                    string? expiredDlqActorId = await MoveLockToDeadLetterAsync(lockId, lockData, metadata);
+                    return expiredDlqActorId == null
+                        ? new NackResponse
+                        {
+                            Success = false,
+                            Message = "Failed to enqueue item to dead letter queue",
+                            ErrorCode = "DLQ_ENQUEUE_FAILED",
+                            DeliveryCount = lockData.DeliveryCount
+                        }
+                        : new NackResponse
+                        {
+                            Success = true,
+                            Message = "Item expired and was moved to dead letter queue",
+                            DeadLettered = true,
+                            DeliveryCount = lockData.DeliveryCount,
+                            DlqId = expiredDlqActorId
+                        };
+                }
+
                 await StateManager.RemoveStateAsync($"{lockId}-lock");
                 await DeindexSessionLockAsync(lockId);
                 await SetMetadataAsync(metadata with { LockCount = Math.Max(0, metadata.LockCount - 1) });
@@ -2445,7 +2635,7 @@ public class QueueActor : Actor, IQueueActor, IRemindable
 
             int deliveryCount = lockData.DeliveryCount + 1;
 
-            if (deliveryCount > _lockConfig.MaxDeliveryCount)
+            if (ExceedsMaxDeliveryCount(deliveryCount))
             {
                 string? dlqActorId = await MoveLockToDeadLetterAsync(lockId, lockData, metadata);
                 if (dlqActorId == null)

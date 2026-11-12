@@ -172,6 +172,9 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                     context.CancellationToken);
             } while (result.ExpiredMore);
 
+            // Expired items it reached couldn't be dead-lettered, so nothing was dequeued.
+            DeliveryFailures.ThrowIfUnavailable(result.ErrorCode, result.Message);
+
             if (result.ErrorCode != null)
             {
                 var leaseStatusCode = result.ErrorCode switch
@@ -277,6 +280,9 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                     },
                     context.CancellationToken);
             } while (result.ExpiredMore);
+
+            // Expired items it reached couldn't be dead-lettered, so nothing was dequeued.
+            DeliveryFailures.ThrowIfUnavailable(result.ErrorCode, result.Message);
 
             if (result.ErrorCode != null)
             {
@@ -595,7 +601,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
             {
                 var statusCode = result.ErrorCode switch
                 {
-                    "LOCK_EXPIRED" or "SESSION_LEASE_EXPIRED" => StatusCode.FailedPrecondition,
+                    "LOCK_EXPIRED" or "SESSION_LEASE_EXPIRED" or "DEADLETTER_NOT_ALLOWED" => StatusCode.FailedPrecondition,
                     "LOCK_NOT_FOUND" => StatusCode.NotFound,
                     "INVALID_LOCK_ID" or "INVALID_LEASE_ID" => StatusCode.InvalidArgument,
                     _ => StatusCode.Internal
@@ -1027,6 +1033,13 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                         },
                         cts.Token);
 
+                    // Expired items couldn't be dead-lettered; nothing was dequeued. Try again shortly.
+                    if (dequeueResult.ErrorCode == DeliveryFailures.UnavailableCode)
+                    {
+                        await Task.Delay(PollInterval, cts.Token);
+                        continue;
+                    }
+
                     if (dequeueResult.ErrorCode != null)
                     {
                         await WriteAsync(new ConsumeSessionResponse
@@ -1386,6 +1399,14 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                 {
                     // A worker gap: keep the stream and its locks, and try again shortly.
                     _logger.LogWarning(ex, "Dequeue failed on Consume stream for queue {QueueId}", start.QueueId);
+                    await Task.Delay(PollInterval, cts.Token);
+                    continue;
+                }
+
+                // Expired items couldn't be dead-lettered; nothing was dequeued. Like a worker gap, keep
+                // the stream and try again shortly.
+                if (dequeueResult.ErrorCode == DeliveryFailures.UnavailableCode)
+                {
                     await Task.Delay(PollInterval, cts.Token);
                     continue;
                 }

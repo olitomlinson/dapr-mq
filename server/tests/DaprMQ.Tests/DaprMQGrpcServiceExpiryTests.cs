@@ -160,4 +160,40 @@ public class DaprMQGrpcServiceExpiryTests
 
         Assert.Equal(ApiServer.Grpc.DequeueLockedResponse.ResultOneofCase.Locked, response.ResultCase);
     }
+
+    [Fact]
+    public async Task Dequeue_ExpiredItemsCouldNotBeDeadLettered_IsUnavailable()
+    {
+        _invoker.Setup(i => i.InvokeMethodAsync<ActorModels.DequeueRequest, ActorModels.DequeueResponse>(
+                It.IsAny<ActorId>(), "Dequeue", It.IsAny<ActorModels.DequeueRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.DequeueResponse { ErrorCode = "UNAVAILABLE" });
+
+        var ex = await Assert.ThrowsAsync<RpcException>(() => CreateService().Dequeue(new ApiServer.Grpc.DequeueRequest { QueueId = "q" }, _context.Object));
+
+        Assert.Equal(StatusCode.Unavailable, ex.StatusCode);
+    }
+
+    [Fact]
+    public async Task DequeueLocked_ExpiredItemsCouldNotBeDeadLettered_IsUnavailable()
+    {
+        _invoker.Setup(i => i.InvokeMethodAsync<ActorModels.DequeueLockedRequest, ActorModels.DequeueLockedResponse>(
+                It.IsAny<ActorId>(), "DequeueLocked", It.IsAny<ActorModels.DequeueLockedRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.DequeueLockedResponse { ErrorCode = "UNAVAILABLE" });
+
+        var ex = await Assert.ThrowsAsync<RpcException>(() => CreateService().DequeueLocked(new ApiServer.Grpc.DequeueLockedRequest { QueueId = "q" }, _context.Object));
+
+        Assert.Equal(StatusCode.Unavailable, ex.StatusCode);
+    }
+
+    [Fact]
+    public async Task DeadLetter_NotAllowed_IsFailedPrecondition()
+    {
+        _invoker.Setup(i => i.InvokeMethodAsync<ActorModels.DeadLetterRequest, ActorModels.DeadLetterResponse>(
+                It.IsAny<ActorId>(), "DeadLetter", It.IsAny<ActorModels.DeadLetterRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.DeadLetterResponse { Status = "ERROR", ErrorCode = "DEADLETTER_NOT_ALLOWED" });
+
+        var ex = await Assert.ThrowsAsync<RpcException>(() => CreateService().DeadLetter(new ApiServer.Grpc.DeadLetterRequest { QueueId = "q-deadletter", LockId = "lock" }, _context.Object));
+
+        Assert.Equal(StatusCode.FailedPrecondition, ex.StatusCode);
+    }
 }

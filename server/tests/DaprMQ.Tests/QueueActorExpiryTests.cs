@@ -465,4 +465,316 @@ public class QueueActorExpiryTests
         Assert.Equal(0, LockCount(h.State));
         Assert.Equal(1, QueuedCount(h.State));
     }
+
+    // ---- Dead-letter expiry ----
+
+    private const int DeadLetterExpiryTtlSeconds = 2_419_200;
+
+    private static List<EnqueueRequest> CaptureDeadLetters(
+        Harness h, List<string>? events = null, bool succeed = true, string deadLetterId = "test-queue-deadletter")
+    {
+        var captured = new List<EnqueueRequest>();
+        h.Invoker.Setup(i => i.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
+                It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<EnqueueRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<ActorId, string, EnqueueRequest, CancellationToken>((id, _, req, _) =>
+            {
+                Assert.Equal(deadLetterId, id.GetId());
+                captured.Add(req);
+                events?.Add("dead-letter");
+            })
+            .ReturnsAsync(new EnqueueResponse { Success = succeed });
+        if (events != null)
+        {
+            h.StateManager.Setup(m => m.SaveStateAsync(It.IsAny<CancellationToken>()))
+                .Callback(() => events.Add("save"))
+                .Returns(Task.CompletedTask);
+        }
+        return captured;
+    }
+
+    private static void AssertDeadLetterExpiry(EnqueueItem item, int? originalExpiryTtlSeconds)
+    {
+        Assert.Equal(DeadLetterExpiryTtlSeconds, item.ExpiryTtlSeconds);
+        Assert.InRange(item.ExpiryAt!.Value, Now() + DeadLetterExpiryTtlSeconds - 5, Now() + DeadLetterExpiryTtlSeconds + 5);
+        Assert.Equal(originalExpiryTtlSeconds, item.OriginalExpiryTtlSeconds);
+    }
+
+    private static async Task<DequeueLockedItem> LockOneAsync(Harness h, EnqueueItem item)
+    {
+        await EnqueueAsync(h.Actor, item);
+        return Assert.Single((await h.Actor.DequeueLocked(new DequeueLockedRequest { AllowCompetingConsumers = true })).Items);
+    }
+
+    [Fact]
+    public async Task DeadLetter_ReplacesTheExpiryWithTheDeadLetterPeriod_AndKeepsTheOriginalTimeToLive()
+    {
+        var h = await CreateActorAsync();
+        var captured = CaptureDeadLetters(h);
+        var locked = await LockOneAsync(h, Item(1, Now() + 3600, 3600));
+
+        await h.Actor.DeadLetter(new DeadLetterRequest { LockId = locked.LockId });
+
+        AssertDeadLetterExpiry(Assert.Single(Assert.Single(captured).Items), originalExpiryTtlSeconds: 3600);
+    }
+
+    [Fact]
+    public async Task DeadLetter_ItemWithNoExpiry_GetsTheDeadLetterPeriod_AndNoOriginal()
+    {
+        var h = await CreateActorAsync();
+        var captured = CaptureDeadLetters(h);
+        var locked = await LockOneAsync(h, Item(1, expiryAt: null, expiryTtlSeconds: null));
+
+        await h.Actor.DeadLetter(new DeadLetterRequest { LockId = locked.LockId });
+
+        AssertDeadLetterExpiry(Assert.Single(Assert.Single(captured).Items), originalExpiryTtlSeconds: null);
+    }
+
+    [Fact]
+    public async Task NackPastMaxDeliveryCount_DeadLettersWithTheDeadLetterExpiry()
+    {
+        var h = await CreateActorAsync(lockConfig: new LockConfig { MaxDeliveryCount = 0, SweepBatchSize = 200 });
+        var captured = CaptureDeadLetters(h);
+        var locked = await LockOneAsync(h, Item(1, Now() + 3600, 3600));
+
+        var result = await h.Actor.Nack(new NackRequest { LockId = locked.LockId });
+
+        Assert.True(result.DeadLettered);
+        AssertDeadLetterExpiry(Assert.Single(Assert.Single(captured).Items), originalExpiryTtlSeconds: 3600);
+    }
+
+    [Fact]
+    public async Task LockSweepPastMaxDeliveryCount_DeadLettersWithTheDeadLetterExpiry()
+    {
+        var h = await CreateActorAsync(lockConfig: new LockConfig { MaxDeliveryCount = 1, SweepBatchSize = 200 });
+        var captured = CaptureDeadLetters(h);
+        SeedLapsedLock(h.State, "lockaaaaaaa", itemExpiryAt: Now() + 3600, deliveryCount: 1);
+
+        await h.Actor.Dequeue(new DequeueRequest());
+
+        AssertDeadLetterExpiry(Assert.Single(Assert.Single(captured).Items), originalExpiryTtlSeconds: 3600);
+        Assert.False(h.State.ContainsKey("lockaaaaaaa-lock"));
+    }
+
+    // ---- Dead-letter queues never dead-letter ----
+
+    [Theory]
+    [InlineData("test-queue-deadletter")]
+    [InlineData("orders-session-s1-deadletter")]
+    public async Task InADeadLetterQueue_DeadLetter_IsNotAllowed_AndTheLockIsLeft(string actorId)
+    {
+        var h = await CreateActorAsync(actorId: actorId);
+        var locked = await LockOneAsync(h, Live(1));
+
+        var result = await h.Actor.DeadLetter(new DeadLetterRequest { LockId = locked.LockId });
+
+        Assert.Equal("ERROR", result.Status);
+        Assert.Equal("DEADLETTER_NOT_ALLOWED", result.ErrorCode);
+        Assert.True(h.State.ContainsKey($"{locked.LockId}-lock"));
+        Assert.Equal(1, LockCount(h.State));
+        h.Invoker.Verify(i => i.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
+            It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<EnqueueRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task InADeadLetterQueue_NackPastMaxDeliveryCount_RestoresTheItem()
+    {
+        var h = await CreateActorAsync(actorId: "test-queue-deadletter", lockConfig: new LockConfig { MaxDeliveryCount = 0, SweepBatchSize = 200 });
+        var locked = await LockOneAsync(h, Live(1));
+
+        var result = await h.Actor.Nack(new NackRequest { LockId = locked.LockId });
+
+        Assert.True(result.Success);
+        Assert.False(result.DeadLettered);
+        Assert.Equal(1, QueuedCount(h.State));
+        h.Invoker.Verify(i => i.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
+            It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<EnqueueRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task InADeadLetterQueue_LockSweepPastMaxDeliveryCount_RestoresTheItem()
+    {
+        var h = await CreateActorAsync(actorId: "test-queue-deadletter", lockConfig: new LockConfig { MaxDeliveryCount = 1, SweepBatchSize = 200 });
+        SeedLapsedLock(h.State, "lockaaaaaaa", itemExpiryAt: Now() + 3600, deliveryCount: 1);
+
+        var result = await h.Actor.Dequeue(new DequeueRequest());
+
+        Assert.Single(result.Items);
+        Assert.Equal(0, LockCount(h.State));
+        h.Invoker.Verify(i => i.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
+            It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<EnqueueRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task InASessionDeadLetterQueue_LeaseLapsePastMaxDeliveryCount_RestoresTheItem()
+    {
+        var h = await CreateActorAsync(actorId: "orders-session-s1-deadletter", lockConfig: new LockConfig { MaxDeliveryCount = 0, SweepBatchSize = 200 });
+        h.State["lockalivexx-lock"] = new LockState
+        {
+            LockId = "lockalivexx", CreatedAt = Now() - 60, ExpiresAt = Now() - 30, Priority = 1, HeadSegment = 0,
+            ItemJson = "{\"n\":1}", CompetingConsumerMode = false, ExpiryAt = Now() + 3600, ExpiryTtlSeconds = 3600
+        };
+        h.State["locks_session"] = new List<string> { "lockalivexx" };
+        var metadata = (ActorMetadata)h.State["metadata"];
+        h.State["metadata"] = metadata with { LockCount = 1, ActiveSessionLeaseId = "lease", ActiveSessionLeaseExpiresAt = Now() - 1 };
+
+        await h.Actor.SetSessionLease(new SetSessionLeaseRequest { LeaseId = "lease2", ExpiresAt = Now() + 60 });
+
+        Assert.Equal(1, QueuedCount(h.State));
+        Assert.Equal(0, LockCount(h.State));
+        h.Invoker.Verify(i => i.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
+            It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<EnqueueRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task InADeadLetterQueue_ExpiredItemsAreDropped_EvenWithDeadLetterOnExpiry()
+    {
+        var h = await CreateActorAsync(actorId: "test-queue-deadletter", expiryConfig: new ExpiryConfig { DeadLetterOnExpiry = true });
+        await EnqueueAsync(h.Actor, Expired(1));
+
+        var result = await h.Actor.Dequeue(new DequeueRequest());
+
+        Assert.True(result.IsEmpty);
+        Assert.Equal(0, QueuedCount(h.State));
+        h.Invoker.Verify(i => i.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
+            It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<EnqueueRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // ---- Dead-letter on expiry ----
+
+    private static ExpiryConfig DeadLetterOnExpiry => new() { DeadLetterOnExpiry = true };
+
+    [Fact]
+    public async Task DeadLetterOnExpiry_Dequeue_DeadLettersExpiredItemsInOneCall_BeforeTheCommit()
+    {
+        var h = await CreateActorAsync(expiryConfig: DeadLetterOnExpiry);
+        await EnqueueAsync(h.Actor, Expired(1), Expired(2), Live(3));
+        var events = new List<string>();
+        var captured = CaptureDeadLetters(h, events);
+
+        var result = await h.Actor.Dequeue(new DequeueRequest());
+
+        Assert.Equal("{\"n\":3}", Assert.Single(result.Items).ItemJson);
+        var request = Assert.Single(captured);
+        Assert.Equal(["{\"n\":1}", "{\"n\":2}"], request.Items.Select(i => i.ItemJson));
+        AssertDeadLetterExpiry(request.Items[0], originalExpiryTtlSeconds: 3600);
+        Assert.Equal(["dead-letter", "save"], events);
+    }
+
+    [Fact]
+    public async Task DeadLetterOnExpiry_DequeueLocked_DeadLettersExpiredItems()
+    {
+        var h = await CreateActorAsync(expiryConfig: DeadLetterOnExpiry);
+        await EnqueueAsync(h.Actor, Expired(1), Live(2));
+        var captured = CaptureDeadLetters(h);
+
+        var result = await h.Actor.DequeueLocked(new DequeueLockedRequest { AllowCompetingConsumers = true });
+
+        Assert.Equal("{\"n\":2}", Assert.Single(result.Items).ItemJson);
+        Assert.Equal("{\"n\":1}", Assert.Single(Assert.Single(captured).Items).ItemJson);
+    }
+
+    [Fact]
+    public async Task DeadLetterOnExpiry_FailedDeadLetter_DiscardsTheTurn_AndReturnsUnavailable()
+    {
+        var h = await CreateActorAsync(expiryConfig: DeadLetterOnExpiry);
+        await EnqueueAsync(h.Actor, Expired(1), Live(2));
+        CaptureDeadLetters(h, succeed: false);
+        h.StateManager.Invocations.Clear();
+
+        var result = await h.Actor.Dequeue(new DequeueRequest());
+
+        Assert.Equal("UNAVAILABLE", result.ErrorCode);
+        Assert.Empty(result.Items);
+        h.StateManager.Verify(m => m.ClearCacheAsync(It.IsAny<CancellationToken>()), Times.Once);
+        h.StateManager.Verify(m => m.SaveStateAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task DeadLetterOnExpiry_DequeueLocked_FailedDeadLetter_DiscardsTheTurn_AndReturnsUnavailable()
+    {
+        var h = await CreateActorAsync(expiryConfig: DeadLetterOnExpiry);
+        await EnqueueAsync(h.Actor, Expired(1), Live(2));
+        CaptureDeadLetters(h, succeed: false);
+        h.StateManager.Invocations.Clear();
+
+        var result = await h.Actor.DequeueLocked(new DequeueLockedRequest { AllowCompetingConsumers = true });
+
+        Assert.Equal("UNAVAILABLE", result.ErrorCode);
+        Assert.Empty(result.Items);
+        h.StateManager.Verify(m => m.ClearCacheAsync(It.IsAny<CancellationToken>()), Times.Once);
+        h.StateManager.Verify(m => m.SaveStateAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task DeadLetterOnExpiry_LockSweep_DeadLettersAnExpiredItem()
+    {
+        var h = await CreateActorAsync(expiryConfig: DeadLetterOnExpiry);
+        var captured = CaptureDeadLetters(h);
+        SeedLapsedLock(h.State, "lockaaaaaaa", itemExpiryAt: Now() - 10);
+
+        await h.Actor.Dequeue(new DequeueRequest());
+
+        AssertDeadLetterExpiry(Assert.Single(Assert.Single(captured).Items), originalExpiryTtlSeconds: 3600);
+        Assert.False(h.State.ContainsKey("lockaaaaaaa-lock"));
+        Assert.Equal(0, LockCount(h.State));
+    }
+
+    [Fact]
+    public async Task DeadLetterOnExpiry_LockSweep_FailedDeadLetter_LeavesTheLockForALaterSweep()
+    {
+        var h = await CreateActorAsync(expiryConfig: DeadLetterOnExpiry);
+        CaptureDeadLetters(h, succeed: false);
+        SeedLapsedLock(h.State, "lockaaaaaaa", itemExpiryAt: Now() - 10);
+
+        await h.Actor.Dequeue(new DequeueRequest());
+
+        Assert.True(h.State.ContainsKey("lockaaaaaaa-lock"));
+        Assert.Equal(1, LockCount(h.State));
+    }
+
+    [Fact]
+    public async Task DeadLetterOnExpiry_Nack_DeadLettersAnExpiredItem()
+    {
+        var h = await CreateActorAsync(expiryConfig: DeadLetterOnExpiry);
+        var captured = CaptureDeadLetters(h);
+        var locked = await LockOneAsync(h, Item(1, Now() + 3600, 3600));
+        var lockKey = $"{locked.LockId}-lock";
+        h.State[lockKey] = ((LockState)h.State[lockKey]) with { ExpiryAt = Now() - 1 };
+
+        var result = await h.Actor.Nack(new NackRequest { LockId = locked.LockId });
+
+        Assert.True(result.Success);
+        Assert.True(result.DeadLettered);
+        Assert.Equal(0, result.DeliveryCount);
+        AssertDeadLetterExpiry(Assert.Single(Assert.Single(captured).Items), originalExpiryTtlSeconds: 3600);
+        Assert.False(h.State.ContainsKey(lockKey));
+    }
+
+    [Fact]
+    public async Task DeadLetterOnExpiry_SessionLeaseLapse_DeadLettersExpiredItems_AndRestoresLiveOnes()
+    {
+        var h = await CreateActorAsync(actorId: "orders-session-s1", expiryConfig: DeadLetterOnExpiry);
+        var captured = CaptureDeadLetters(h, deadLetterId: "orders-session-s1-deadletter");
+        h.State["lockexpired-lock"] = new LockState
+        {
+            LockId = "lockexpired", CreatedAt = Now() - 60, ExpiresAt = Now() - 30, Priority = 1, HeadSegment = 0,
+            ItemJson = "{\"n\":1}", CompetingConsumerMode = false, Sequence = 0, ExpiryAt = Now() - 10, ExpiryTtlSeconds = 3600
+        };
+        h.State["lockalivexx-lock"] = new LockState
+        {
+            LockId = "lockalivexx", CreatedAt = Now() - 60, ExpiresAt = Now() - 30, Priority = 1, HeadSegment = 0,
+            ItemJson = "{\"n\":2}", CompetingConsumerMode = false, Sequence = 1, ExpiryAt = Now() + 3600, ExpiryTtlSeconds = 3600
+        };
+        h.State["locks_session"] = new List<string> { "lockexpired", "lockalivexx" };
+        var metadata = (ActorMetadata)h.State["metadata"];
+        h.State["metadata"] = metadata with { LockCount = 2, ActiveSessionLeaseId = "lease", ActiveSessionLeaseExpiresAt = Now() - 1 };
+
+        await h.Actor.SetSessionLease(new SetSessionLeaseRequest { LeaseId = "lease2", ExpiresAt = Now() + 60 });
+
+        Assert.Equal("{\"n\":1}", Assert.Single(Assert.Single(captured).Items).ItemJson);
+        Assert.False(h.State.ContainsKey("lockexpired-lock"));
+        Assert.False(h.State.ContainsKey("locks_session"));
+        Assert.Equal(0, LockCount(h.State));
+        Assert.Equal(1, QueuedCount(h.State));
+    }
 }

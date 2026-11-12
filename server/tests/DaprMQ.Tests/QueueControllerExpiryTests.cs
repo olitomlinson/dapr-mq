@@ -217,4 +217,34 @@ public class QueueControllerExpiryTests
 
         Assert.Equal(423, Assert.IsType<ObjectResult>(result).StatusCode);
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Dequeue_ExpiredItemsCouldNotBeDeadLettered_Returns503(bool requireAck)
+    {
+        _invoker.Setup(i => i.InvokeMethodAsync<DequeueRequest, DequeueResponse>(
+                It.IsAny<ActorId>(), ActorMethodNames.Dequeue, It.IsAny<DequeueRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DequeueResponse { ErrorCode = "UNAVAILABLE", Message = "not dequeued" });
+        _invoker.Setup(i => i.InvokeMethodAsync<DequeueLockedRequest, DequeueLockedResponse>(
+                It.IsAny<ActorId>(), ActorMethodNames.DequeueLocked, It.IsAny<DequeueLockedRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DequeueLockedResponse { ErrorCode = "UNAVAILABLE", Message = "not dequeued" });
+
+        var result = await CreateController().Dequeue("q", require_ack: requireAck);
+
+        Assert.Equal(503, Assert.IsType<DeliveryFailureResult>(result).StatusCode);
+    }
+
+    [Fact]
+    public async Task DeadLetter_NotAllowed_Returns400()
+    {
+        _invoker.Setup(i => i.InvokeMethodAsync<DeadLetterRequest, DeadLetterResponse>(
+                It.IsAny<ActorId>(), ActorMethodNames.DeadLetter, It.IsAny<DeadLetterRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DeadLetterResponse { Status = "ERROR", ErrorCode = "DEADLETTER_NOT_ALLOWED", Message = "no" });
+
+        var result = await CreateController().DeadLetter("q-deadletter", new ApiDeadLetterRequest("lock"));
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Equal("DEADLETTER_NOT_ALLOWED", Assert.IsType<ApiDeadLetterResponse>(badRequest.Value).ErrorCode);
+    }
 }
