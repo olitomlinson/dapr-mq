@@ -24,7 +24,7 @@ class DeliveryHandle:
     nacked: list[bool]
 
 
-def make_delivery(session_id: str, lock_id: str) -> DeliveryHandle:
+def make_delivery(session_id: str, lock_id: str, **expiry: object) -> DeliveryHandle:
     acked = [False]
     dead_lettered = [False]
     nacked = [False]
@@ -47,6 +47,7 @@ def make_delivery(session_id: str, lock_id: str) -> DeliveryHandle:
         ack=ack,
         dead_letter=dead_letter,
         nack=nack,
+        **expiry,
     )
     return DeliveryHandle(delivery=delivery, acked=acked, dead_lettered=dead_lettered, nacked=nacked)
 

@@ -50,6 +50,11 @@ class QueueMessageContext:
     priority: int
     delivery_count: int
     """1 on a first delivery, 2 on the first redelivery, and so on."""
+    expiry_at: float | None = None
+    """When the message expires, in Unix seconds; None if it never does."""
+    expiry_ttl_seconds: int | None = None
+    original_expiry_ttl_seconds: int | None = None
+    """On a message from a dead-letter queue, the producer's original time to live."""
 
 
 class QueueCapableClient(Protocol):
@@ -199,6 +204,9 @@ class QueueConsumer:
             item=delivery.item,
             priority=delivery.priority,
             delivery_count=delivery.delivery_count,
+            expiry_at=delivery.expiry_at,
+            expiry_ttl_seconds=delivery.expiry_ttl_seconds,
+            original_expiry_ttl_seconds=delivery.original_expiry_ttl_seconds,
         )
         try:
             try:

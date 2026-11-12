@@ -23,7 +23,7 @@ class FakeStream:
         self.settled: list[tuple[str, str]] = []
         self.closed = False
 
-    def deliver(self, lock_id: str, delivery_count: int = 1) -> None:
+    def deliver(self, lock_id: str, delivery_count: int = 1, **expiry: Any) -> None:
         async def settle(action: str) -> None:
             if self.closed:
                 raise StreamClosedError("closed")
@@ -39,6 +39,7 @@ class FakeStream:
                 ack=lambda: settle("ack"),
                 nack=lambda: settle("nack"),
                 dead_letter=lambda: settle("dead_letter"),
+                **expiry,
             )
         )
 
