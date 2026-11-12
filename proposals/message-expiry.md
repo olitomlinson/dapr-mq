@@ -76,7 +76,8 @@ as Azure Service Bus does) and diagnostics can say both how long and until when.
 
 ### Storage
 
-`QueueSegmentItem` and `LockState` gain `ExpiryAt` and `ExpiryTtlSeconds`. `LockState` already has
+`QueueSegmentItem` and `LockState` gain `ExpiryAt` and `ExpiryTtlSeconds`, and
+`OriginalExpiryTtlSeconds` for dead-lettered items (see [Dead-letter queue](#dead-letter-queue)). `LockState` already has
 `ExpiresAt` for the lock itself; the "expiry" names keep them apart. Every item enqueued through the API
 server has one. The field stays nullable, and null means "never expires", only so that items already
 queued, and state planted by tests, keep working. No migration (pre-v1).
@@ -128,6 +129,10 @@ Dead-lettered items expire after a broker-wide period, `DAPRMQ_DEADLETTER_EXPIRY
 - **Every dead-lettered item gets the same rule:** its `ExpiryAt` becomes *dead-letter time +
   28 days* and its `ExpiryTtlSeconds` the dead-letter period, replacing its original expiry, so the
   two fields always agree. That includes items dead-lettered because they expired.
+- **The producer's time to live is kept** in a third field, `OriginalExpiryTtlSeconds`, set only when
+  an item is dead-lettered (null on every other item, and null if the item had no expiry). Delivered
+  items from a dead-letter queue carry it as `originalExpiryTtlSeconds`, and the admin console shows
+  it, so the producer's intended lifetime isn't lost when the dead-letter period replaces it.
 - **ASB differs.** It applies no time to live in the dead-letter queue and never cleans it up on its
   own ([docs](https://learn.microsoft.com/azure/service-bus-messaging/service-bus-dead-letter-queues)).
   A bounded default is deliberate, so dead-letter queues don't grow forever.
@@ -244,7 +249,8 @@ expired items count towards depth until then.
      to 1), dequeued after it expires: 204 empty.
    - An item locked before expiry can be acknowledged after it.
    - A topic publish with a time to live reaches every subscriber with the same `expiryAt`.
-   - Dequeued items carry `expiryAt` and `expiryTtlSeconds`.
+   - Dequeued items carry `expiryAt` and `expiryTtlSeconds`; items dequeued from a dead-letter queue
+     also carry `originalExpiryTtlSeconds`.
 2. **Controller / gRPC service** (mocked actor):
    - `expiryTtlSeconds` below `DAPRMQ_MIN_EXPIRY_TTL_SECONDS` (default 600), negative, or over 10
      years: 400 / `InvalidArgument`. Exactly the minimum, and exactly 10 years, are accepted.
@@ -267,8 +273,9 @@ expired items count towards depth until then.
      session queue's dead-letter queue.
    - No path ever enqueues to an id ending `-deadletter-deadletter`.
    - Dead-lettering sets `ExpiryAt` to dead-letter time + `DAPRMQ_DEADLETTER_EXPIRY_TTL_SECONDS`, and
-     `ExpiryTtlSeconds` to that period,
-     with or without an original expiry.
+     `ExpiryTtlSeconds` to that period, with or without an original expiry.
+   - Dead-lettering copies the item's `ExpiryTtlSeconds` into `OriginalExpiryTtlSeconds` (null if it
+     had none); items that were never dead-lettered have it null.
    - Dead-lettering a shared-blob item schedules the copy's deletion, then copies, then enqueues to
      the dead-letter queue, in that order; the original blob's schedule is untouched.
    - Dead-lettering a shared-blob item whose blob is gone records `PAYLOAD_EXPIRED`.
@@ -305,6 +312,8 @@ expired items count towards depth until then.
 7. **Minimum time to live:** a broker-wide minimum, `DAPRMQ_MIN_EXPIRY_TTL_SECONDS`, 10 minutes by
    default, so clock skew between nodes can't expire a message early. Shorter values are rejected,
    not raised to the minimum. Per-queue overrides later.
+8. **Dead-lettered items keep the producer's time to live** in `OriginalExpiryTtlSeconds`, while
+   `ExpiryAt` and `ExpiryTtlSeconds` switch to the dead-letter period.
 
 ## Accepted risks
 
