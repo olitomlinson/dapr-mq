@@ -23,9 +23,10 @@ of one year when the producer doesn't set one.
 
 The producer gives a time to live in seconds. The API server turns it into an absolute expiry time
 once, when it receives the request: from now, or from `deliverAt` for a scheduled message (see
-[Absolute expiry, stamped once](#absolute-expiry-stamped-once)). The expiry travels with the item through every move: lock,
-restore, nack, dead-letter, topic fan-out and scheduled delivery. An item past its expiry is never
-delivered. It is removed lazily, when a dequeue or sweep reaches it, as lock expiry is today.
+[Absolute expiry, stamped once](#absolute-expiry-stamped-once)). The expiry travels with the item
+through every move: lock, restore, nack, dead-letter, topic fan-out and scheduled delivery. An item
+past its expiry is never delivered. It is removed lazily, when a dequeue or sweep reaches it, as lock
+expiry is today.
 
 ### API
 
@@ -82,7 +83,8 @@ TTL: the `ttl-seconds` dequeue header, `DequeueLockedRequest.TtlSeconds`, or `Lo
 
 `EnqueueItem` gains `ExpiryTtlSeconds` and `ExpiryAt` (Unix seconds). The API server sets
 `ExpiryTtlSeconds` to the producer's time to live, or the broker default when the producer gave
-none, and computes `ExpiryAt` as *now + `ExpiryTtlSeconds`*. Actors never compute either or apply the
+none, and computes `ExpiryAt` as *now + `ExpiryTtlSeconds`*, or *`deliverAt` + `ExpiryTtlSeconds`*
+for a scheduled message. Actors never compute either or apply the
 default. Both travel together: `ExpiryAt` is what is enforced, and `ExpiryTtlSeconds` keeps the
 intended lifetime, so diagnostics can say both how long and until when, and an expiry can be
 recomputed later (for example from the actual enqueue time, as Azure Service Bus does). **A
@@ -90,25 +92,26 @@ recomputed expiry may never move later than the item's `reapAt`,** if it has one
 blob's deletion is fixed at publish from the original `ExpiryAt` (see
 [Offloaded payloads](#offloaded-payloads)), so a later expiry would outlive its blob.
 
-- **Topic fan-out shares one expiry.** `TopicActor` passes the item's `ExpiryAt` and `ExpiryTtlSeconds`
-  to every subscriber's `Enqueue` unchanged. A subscriber reached late, after retries or a tripped circuit
-  breaker, still gets the publish-time expiry, so every copy expires at the same moment. This is what
-  the shared topic blob depends on.
+- **Topic fan-out shares one expiry.** `TopicActor` passes the item's `ExpiryAt` and
+  `ExpiryTtlSeconds` to every subscriber's `Enqueue` unchanged. A subscriber reached late, after
+  retries or a tripped circuit breaker, still gets the publish-time expiry, so every copy expires at
+  the same moment. This is what the shared topic blob depends on.
 - **Scheduled delivery** (proposed on `feature/scheduled-delivery`): `ExpiryAt` is *deliverAt +
   `ExpiryTtlSeconds`*, so a message can't expire before it is due. `ScheduleActor` stores the whole
   enqueue item and forwards both fields unchanged.
 - **Clock skew:** the API server's clock sets the expiry and an actor's clock checks it. Skew between
-  nodes is seconds at most, which is noise against the 10-minute minimum time to live. Anything that deletes data
-  at expiry (the blob reaper) adds a grace period; see [Offloaded payloads](#offloaded-payloads).
+  nodes is seconds at most, which is noise against the 10-minute minimum time to live. Anything that
+  deletes data at expiry (the blob reaper) adds a grace period; see
+  [Offloaded payloads](#offloaded-payloads).
 
 ### Storage
 
 `QueueSegmentItem` and `LockState` gain `ExpiryAt` and `ExpiryTtlSeconds`, and
-`OriginalExpiryTtlSeconds` for dead-lettered items (see [Dead-letter queue](#dead-letter-queue)). `LockState` already has
-`ExpiresAt` for the lock itself; the "expiry" names keep them apart. Every item enqueued through the API
-server has `ExpiryAt` and `ExpiryTtlSeconds`. The fields stay nullable, and a null `ExpiryAt` means
-"never expires", only so that items already
-queued, and state planted by tests, keep working. No migration (pre-v1).
+`OriginalExpiryTtlSeconds` for dead-lettered items (see [Dead-letter queue](#dead-letter-queue)).
+`LockState` already has `ExpiresAt` for the lock itself; the "expiry" names keep them apart. Every
+item enqueued through the API server has `ExpiryAt` and `ExpiryTtlSeconds`. The fields stay nullable,
+and a null `ExpiryAt` means "never expires", only so that items already queued, and state planted by
+tests, keep working. No migration (pre-v1).
 
 ### Where expiry is checked
 
@@ -128,13 +131,15 @@ Removal happens in the same actor turn as the dequeue, staged and saved with the
 `SaveStateAsync`. An expired item doesn't count towards `MaxDeliveryCount`.
 
 **Bounded work per turn.** A long run of expired items at the head could make one dequeue walk
-thousands of items. Each turn removes at most `SweepBatchSize` expired items. If it reaches that
+thousands of items. Each turn removes at most `ExpirySweepBatchSize` expired items, set by
+`DAPRMQ_EXPIRY_SWEEP_BATCH_SIZE` (default 200). It is its own setting rather than the lock sweep's
+`DAPRMQ_LOCK_SWEEP_BATCH_SIZE`, so message expiry isn't tuned by a lock setting. If it reaches that
 limit without finding a live item, it commits what it removed and returns a new `ExpiredMore` flag
 with no items. The controller, gRPC service and consume loop call again straight away, each call a
 new atomic turn, and the client sees an ordinary dequeue. `HttpSinkActor` calls `DequeueLocked`
 itself rather than through those, so its poll does the same: on `ExpiredMore` it calls again within
-the same reminder turn instead of treating the result as empty and waiting for its next poll. An empty or locked result never sets the
-flag.
+the same reminder turn instead of treating the result as empty and waiting for its next poll. An
+empty or locked result never sets the flag.
 
 **What happens to a removed item.** A broker-wide setting decides,
 `DAPRMQ_DEADLETTER_ON_EXPIRY` (default `false`, as ASB's `EnableDeadLetteringOnMessageExpiration`).
@@ -271,7 +276,7 @@ expired items count towards depth until then.
 - **Behaviour change:** messages that today never expire will expire after a year by default.
 - **Shared topic blob storage** lasts for the message's full time to live plus 24 hours, a year by
   default, regardless of how fast subscribers consume.
-- **A deep run of expired items** costs one extra actor call per `SweepBatchSize` items removed.
+- **A deep run of expired items** costs one extra actor call per `ExpirySweepBatchSize` items removed.
 
 ## Tests (TDD order, per CLAUDE.md)
 
@@ -285,8 +290,8 @@ expired items count towards depth until then.
 2. **Controller / gRPC service** (mocked actor):
    - `expiryTtlSeconds` below `DAPRMQ_MIN_EXPIRY_TTL_SECONDS` (default 600), negative, or over 10
      years: 400 / `InvalidArgument`. Exactly the minimum, and exactly 10 years, are accepted.
-   - `ExpiryAt` and `ExpiryTtlSeconds` are stamped from the controller's clock; an omitted time to live uses
-     `DAPRMQ_DEFAULT_EXPIRY_TTL_SECONDS`.
+   - `ExpiryAt` and `ExpiryTtlSeconds` are stamped from the controller's clock; an omitted time to
+     live uses `DAPRMQ_DEFAULT_EXPIRY_TTL_SECONDS`.
    - Startup fails if the minimum is below 1 or over 10 years, or if the default or dead-letter time
      to live is below the minimum or over 10 years.
    - An `ExpiredMore` result is retried until items, empty or locked come back.
@@ -296,7 +301,7 @@ expired items count towards depth until then.
    - `DEADLETTER_NOT_ALLOWED` maps to HTTP 400 and gRPC `FailedPrecondition`.
 3. **Actor** (mocked state):
    - Dequeue skips and removes expired items at the head, in one save.
-   - Removes at most `SweepBatchSize` expired items, then returns `ExpiredMore`.
+   - Removes at most `ExpirySweepBatchSize` expired items, then returns `ExpiredMore`.
    - Lock sweep, nack and session lease lapse drop expired items instead of restoring them.
    - An expired item doesn't increase `DeliveryCount`.
    - With `DAPRMQ_DEADLETTER_ON_EXPIRY` off, expired items are dropped; on, they are dead-lettered in
@@ -320,8 +325,8 @@ expired items count towards depth until then.
 ## Phases
 
 1. **Server:** models, actor checks, REST, gRPC, topic fan-out.
-2. **SDKs:** all five expose a time to live on enqueue and publish, and `expiryAt`/`expiryTtlSeconds` on delivered
-   items.
+2. **SDKs:** all five expose a time to live on enqueue and publish, and `expiryAt`,
+   `expiryTtlSeconds` and `originalExpiryTtlSeconds` on delivered items.
 3. **Pubsub component:** map `ttlInSeconds` to `expiryTtlSeconds`, and declare
    `pubsub.FeatureMessageTTL` in the component's `Features()`. Without that declaration the Dapr
    runtime handles the time to live itself: `ApplyMetadata` stamps an `expiration` on the CloudEvent
@@ -340,8 +345,8 @@ expired items count towards depth until then.
 2. **Default time to live:** a broker-wide default of one year,
    `DAPRMQ_DEFAULT_EXPIRY_TTL_SECONDS`, overridable per message up to 10 years. Per-queue and
    per-topic defaults later.
-3. **Dead-lettered items expire** after `DAPRMQ_DEADLETTER_EXPIRY_TTL_SECONDS`, 28 days by default. Per-queue
-   and per-topic overrides later.
+3. **Dead-lettered items expire** after `DAPRMQ_DEADLETTER_EXPIRY_TTL_SECONDS`, 28 days by default.
+   Per-queue and per-topic overrides later.
 4. **No background sweep;** see [Queue depth](#queue-depth).
 5. **Dead-letter queue state storage is deferred.** Blobs in a dead-letter queue are deleted on
    schedule, but its expired items are removed only when a dequeue reaches them, and a dead-letter
