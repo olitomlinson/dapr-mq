@@ -30,41 +30,48 @@ delivered. It is removed lazily, when a dequeue or sweep reaches it, as lock exp
 
 | Transport | Field |
 |---|---|
-| HTTP `enqueue` | `timeToLiveSeconds` per item (beside `priority`, `idempotencyKey`, `sessionId`) |
-| HTTP `enqueue-object` / `enqueue-stream` | `time-to-live-seconds` header |
-| HTTP topic `publish` | `timeToLiveSeconds` per item |
-| gRPC | `optional int32 time_to_live_seconds = 5` on `EnqueueItem` |
+| HTTP `enqueue` | `expiryTtlSeconds` per item (beside `priority`, `idempotencyKey`, `sessionId`) |
+| HTTP `enqueue-object` / `enqueue-stream` | `expiry-ttl-seconds` header |
+| HTTP topic `publish` | `expiryTtlSeconds` per item |
+| gRPC | `optional int32 expiry_ttl_seconds = 5` on `EnqueueItem` |
 | Dapr pubsub (`pubsub.daprmq`) | Dapr's standard `ttlInSeconds` publish metadata |
 
-- **Default:** omitted means the broker default, `DAPRMQ_DEFAULT_MESSAGE_TTL_SECONDS` (default
+- **Default:** omitted means the broker default, `DAPRMQ_DEFAULT_EXPIRY_TTL_SECONDS` (default
   31,536,000, which is 365 days). A per-queue or per-topic default can come later. Every message gets
   an expiry; there is no "never expires".
 - **Validation (controller):** a positive integer, at most 10 years (315,360,000 seconds). The
   broker default must be within the same limit, checked at startup.
-- **Delivered items** gain `expiresAt` (Unix seconds) on every dequeue response, consume delivery and
-  HTTP sink post, so a consumer can tell how stale an item is.
+- **Delivered items** gain `expiryAt` (Unix seconds) and `expiryTtlSeconds` on every dequeue
+  response, consume delivery and HTTP sink post, so a consumer can tell how stale an item is.
 
-The name avoids `ttl-seconds`, which is already the lock TTL header on dequeue.
+**Every message-expiry name contains "expiry"** (`expiryTtlSeconds`, `expiryAt`, `ExpiryTtlSeconds`,
+`ExpiryAt`, `expiry-ttl-seconds`, `DAPRMQ_*_EXPIRY_TTL_SECONDS`), so none can be mistaken for a lock's
+TTL: the `ttl-seconds` dequeue header, `DequeueLockedRequest.TtlSeconds`, or `LockState.ExpiresAt`.
 
 ### Absolute expiry, stamped once
 
-`EnqueueItem` gains `ExpiresAt` (Unix seconds), computed by the API server as *now + time to live*,
-using the broker default when the producer gave none. Actors never compute it or apply the default.
+`EnqueueItem` gains `ExpiryTtlSeconds` and `ExpiryAt` (Unix seconds). The API server sets
+`ExpiryTtlSeconds` to the producer's time to live, or the broker default when the producer gave
+none, and computes `ExpiryAt` as *now + `ExpiryTtlSeconds`*. Actors never compute either or apply the
+default. Both travel together: `ExpiryAt` is what is enforced, and `ExpiryTtlSeconds` keeps the
+intended lifetime, so an expiry can be recomputed later (for example from the actual enqueue time,
+as Azure Service Bus does) and diagnostics can say both how long and until when.
 
-- **Topic fan-out shares one expiry.** `TopicActor` passes the item's `ExpiresAt` to every
-  subscriber's `Enqueue` unchanged. A subscriber reached late, after retries or a tripped circuit
+- **Topic fan-out shares one expiry.** `TopicActor` passes the item's `ExpiryAt` and `ExpiryTtlSeconds`
+  to every subscriber's `Enqueue` unchanged. A subscriber reached late, after retries or a tripped circuit
   breaker, still gets the publish-time expiry, so every copy expires at the same moment. This is what
   the shared topic blob depends on.
-- **Scheduled delivery** (proposed on `feature/scheduled-delivery`): expiry is *deliverAt + time to
-  live*, so a message can't expire before it is due. `ScheduleActor` forwards `ExpiresAt` unchanged.
+- **Scheduled delivery** (proposed on `feature/scheduled-delivery`): `ExpiryAt` is *deliverAt +
+  `ExpiryTtlSeconds`*, so a message can't expire before it is due. `ScheduleActor` stores the whole
+  enqueue item and forwards both fields unchanged.
 - **Clock skew:** the API server's clock sets the expiry and an actor's clock checks it. Skew between
   nodes is seconds at most, which is noise against TTLs of minutes or more. Anything that deletes data
   at expiry (the blob reaper) adds a grace period; see [Offloaded payloads](#offloaded-payloads).
 
 ### Storage
 
-`QueueSegmentItem` and `LockState` gain `MessageExpiresAt`. `LockState` already has `ExpiresAt` for
-the lock itself, so the new field is named to keep them apart. Every item enqueued through the API
+`QueueSegmentItem` and `LockState` gain `ExpiryAt` and `ExpiryTtlSeconds`. `LockState` already has
+`ExpiresAt` for the lock itself; the "expiry" names keep them apart. Every item enqueued through the API
 server has one. The field stays nullable, and null means "never expires", only so that items already
 queued, and state planted by tests, keep working. No migration (pre-v1).
 
@@ -109,11 +116,12 @@ A per-queue override can come later.
 
 ### Dead-letter queue
 
-Dead-lettered items expire after a broker-wide period, `DAPRMQ_DEADLETTER_TTL_SECONDS` (default
+Dead-lettered items expire after a broker-wide period, `DAPRMQ_DEADLETTER_EXPIRY_TTL_SECONDS` (default
 2,419,200, which is 28 days). A per-queue or per-topic override can come later.
 
-- **Every dead-lettered item gets the same rule:** its `MessageExpiresAt` becomes *dead-letter time +
-  28 days*, replacing its original expiry. That includes items dead-lettered because they expired.
+- **Every dead-lettered item gets the same rule:** its `ExpiryAt` becomes *dead-letter time +
+  28 days* and its `ExpiryTtlSeconds` the dead-letter period, replacing its original expiry, so the
+  two fields always agree. That includes items dead-lettered because they expired.
 - **ASB differs.** It applies no time to live in the dead-letter queue and never cleans it up on its
   own ([docs](https://learn.microsoft.com/azure/service-bus-messaging/service-bus-dead-letter-queues)).
   A bounded default is deliberate, so dead-letter queues don't grow forever.
@@ -228,12 +236,12 @@ expired items count towards depth until then.
 1. **Integration** (HTTP and gRPC):
    - An item enqueued with a 1-second time to live, dequeued after 2 seconds: 204 empty.
    - An item locked before expiry can be acknowledged after it.
-   - A topic publish with a time to live reaches every subscriber with the same `expiresAt`.
-   - Dequeued items carry `expiresAt`.
+   - A topic publish with a time to live reaches every subscriber with the same `expiryAt`.
+   - Dequeued items carry `expiryAt` and `expiryTtlSeconds`.
 2. **Controller / gRPC service** (mocked actor):
-   - `timeToLiveSeconds` of 0, negative or over 10 years: 400 / `InvalidArgument`.
-   - `ExpiresAt` is stamped from the controller's clock; an omitted time to live uses
-     `DAPRMQ_DEFAULT_MESSAGE_TTL_SECONDS`.
+   - `expiryTtlSeconds` of 0, negative or over 10 years: 400 / `InvalidArgument`.
+   - `ExpiryAt` and `ExpiryTtlSeconds` are stamped from the controller's clock; an omitted time to live uses
+     `DAPRMQ_DEFAULT_EXPIRY_TTL_SECONDS`.
    - A broker default over 10 years fails startup.
    - An `ExpiredMore` result is retried until items, empty or locked come back.
    - `DEADLETTER_NOT_ALLOWED` maps to HTTP 400 and gRPC `FailedPrecondition`.
@@ -249,18 +257,20 @@ expired items count towards depth until then.
      sweep or nack past `MaxDeliveryCount` restores the item instead of dead-lettering it. Also for a
      session queue's dead-letter queue.
    - No path ever enqueues to an id ending `-deadletter-deadletter`.
-   - Dead-lettering sets `MessageExpiresAt` to dead-letter time + `DAPRMQ_DEADLETTER_TTL_SECONDS`,
+   - Dead-lettering sets `ExpiryAt` to dead-letter time + `DAPRMQ_DEADLETTER_EXPIRY_TTL_SECONDS`, and
+     `ExpiryTtlSeconds` to that period,
      with or without an original expiry.
    - Dead-lettering a shared-blob item schedules the copy's deletion, then copies, then enqueues to
      the dead-letter queue, in that order; the original blob's schedule is untouched.
    - Dead-lettering a shared-blob item whose blob is gone records `PAYLOAD_EXPIRED`.
-   - An item with a null `MessageExpiresAt` never expires.
-4. **TopicActor:** fan-out passes the publish's `ExpiresAt` to every subscriber unchanged.
+   - An item with a null `ExpiryAt` never expires.
+4. **TopicActor:** fan-out passes the publish's `ExpiryAt` and `ExpiryTtlSeconds` to every subscriber
+   unchanged.
 
 ## Phases
 
 1. **Server:** models, actor checks, REST, gRPC, topic fan-out.
-2. **SDKs:** all five expose a time to live on enqueue and publish, and `expiresAt` on delivered
+2. **SDKs:** all five expose a time to live on enqueue and publish, and `expiryAt`/`expiryTtlSeconds` on delivered
    items.
 3. **Pubsub component:** map `ttlInSeconds`.
 4. **Docs:** [API_REFERENCE.md](../docs/API_REFERENCE.md), [ARCHITECTURE.md](../docs/ARCHITECTURE.md),
@@ -271,9 +281,9 @@ expired items count towards depth until then.
 1. **Dead-letter on expiry:** a broker-wide setting, `DAPRMQ_DEADLETTER_ON_EXPIRY`, off by default as
    in ASB. Per-queue overrides later.
 2. **Default time to live:** a broker-wide default of one year,
-   `DAPRMQ_DEFAULT_MESSAGE_TTL_SECONDS`, overridable per message up to 10 years. Per-queue and
+   `DAPRMQ_DEFAULT_EXPIRY_TTL_SECONDS`, overridable per message up to 10 years. Per-queue and
    per-topic defaults later.
-3. **Dead-lettered items expire** after `DAPRMQ_DEADLETTER_TTL_SECONDS`, 28 days by default. Per-queue
+3. **Dead-lettered items expire** after `DAPRMQ_DEADLETTER_EXPIRY_TTL_SECONDS`, 28 days by default. Per-queue
    and per-topic overrides later.
 4. **No background sweep;** see [Queue depth](#queue-depth).
 5. **Dead-letter queue state storage is deferred.** Blobs in a dead-letter queue are deleted on
