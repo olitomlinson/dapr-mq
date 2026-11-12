@@ -11,7 +11,8 @@ public record ApiEnqueueItem(
     JsonElement Item,
     int Priority = 1,
     string? IdempotencyKey = null,
-    string? SessionId = null
+    string? SessionId = null,
+    int? ExpiryTtlSeconds = null
 );
 
 public record ApiAcknowledgeRequest(
@@ -45,7 +46,10 @@ public record ApiDequeueResponse(
 
 public record ApiDequeueItem(
     object Item,
-    int Priority
+    int Priority,
+    double? ExpiryAt = null,
+    int? ExpiryTtlSeconds = null,
+    int? OriginalExpiryTtlSeconds = null
 );
 
 public record ApiDequeueLockedResponse(
@@ -58,7 +62,10 @@ public record ApiDequeueLockedItem(
     object Item,
     int Priority,
     string LockId,
-    double LockExpiresAt
+    double LockExpiresAt,
+    double? ExpiryAt = null,
+    int? ExpiryTtlSeconds = null,
+    int? OriginalExpiryTtlSeconds = null
 );
 
 public record ApiAcknowledgeResponse(

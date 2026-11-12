@@ -24,6 +24,7 @@ public class QueueController : ControllerBase
     private readonly IBlobReaperActorInvoker _blobReaperActorInvoker;
     private readonly BlobReapConfig _blobReapConfig;
     private readonly ISessionCoordinatorActorInvoker _sessionCoordinatorActorInvoker;
+    private readonly MessageExpiryStamper _expiryStamper;
 
     private const int MaxSessionIdLength = 256;
     private const string MixedSessionsError = "All items in one enqueue must have the same sessionId";
@@ -38,7 +39,8 @@ public class QueueController : ControllerBase
         IObjectClaimTokenIssuer objectClaimTokenIssuer,
         IBlobReaperActorInvoker blobReaperActorInvoker,
         BlobReapConfig blobReapConfig,
-        ISessionCoordinatorActorInvoker sessionCoordinatorActorInvoker)
+        ISessionCoordinatorActorInvoker sessionCoordinatorActorInvoker,
+        MessageExpiryStamper expiryStamper)
     {
         _logger = logger;
         _actorInvoker = actorInvoker;
@@ -50,6 +52,7 @@ public class QueueController : ControllerBase
         _blobReaperActorInvoker = blobReaperActorInvoker;
         _blobReapConfig = blobReapConfig;
         _sessionCoordinatorActorInvoker = sessionCoordinatorActorInvoker;
+        _expiryStamper = expiryStamper;
     }
 
     /// <summary>
@@ -130,16 +133,21 @@ public class QueueController : ControllerBase
                 {
                     return BadRequest(new ApiErrorResponse(MixedSessionsError));
                 }
+
+                if (_expiryStamper.Validate(item.ExpiryTtlSeconds) is string expiryError)
+                {
+                    return BadRequest(new ApiErrorResponse(expiryError));
+                }
             }
 
             _logger.LogDebug($"Enqueue request for queue {queueId} with {request.Items.Count} items");
 
-            var actorItems = request.Items.Select(apiItem => new EnqueueItem
+            var actorItems = request.Items.Select(apiItem => _expiryStamper.Stamp(new EnqueueItem
             {
                 ItemJson = apiItem.Item.GetRawText(),
                 Priority = apiItem.Priority,
                 IdempotencyKey = apiItem.IdempotencyKey
-            }).ToList();
+            }, apiItem.ExpiryTtlSeconds)).ToList();
 
             return await EnqueueItemsAsync(queueId, ResolveTargetActorId(queueId, sessionId), actorItems);
         }
@@ -196,6 +204,7 @@ public class QueueController : ControllerBase
         [FromHeader(Name = "prefix")] string? prefix = null,
         [FromHeader(Name = "idempotency-key")] string? idempotencyKey = null,
         [FromHeader(Name = "session-id")] string? sessionId = null,
+        [FromHeader(Name = "expiry-ttl-seconds")] int? expiryTtlSeconds = null,
         CancellationToken cancellationToken = default)
     {
         try
@@ -203,6 +212,11 @@ public class QueueController : ControllerBase
             if (priority < 0)
             {
                 return BadRequest(new ApiErrorResponse("Priority must be non-negative"));
+            }
+
+            if (_expiryStamper.Validate(expiryTtlSeconds) is string expiryError)
+            {
+                return BadRequest(new ApiErrorResponse(expiryError));
             }
 
             if (!IsValidSessionId(sessionId, out var sessionError))
@@ -248,12 +262,12 @@ public class QueueController : ControllerBase
 
             var actorItems = new List<EnqueueItem>
             {
-                new EnqueueItem
+                _expiryStamper.Stamp(new EnqueueItem
                 {
                     ItemJson = itemJson,
                     Priority = priority,
                     IdempotencyKey = idempotencyKey
-                }
+                }, expiryTtlSeconds)
             };
 
             return await EnqueueItemsAsync(queueId, ResolveTargetActorId(queueId, sessionId), actorItems);
@@ -297,16 +311,21 @@ public class QueueController : ControllerBase
 
             if (require_ack)
             {
-                var result = await _actorInvoker.InvokeMethodAsync<DequeueLockedRequest, DequeueLockedResponse>(
-                    actorId,
-                    ActorMethodNames.DequeueLocked,
-                    new DequeueLockedRequest
-                    {
-                        TtlSeconds = ttl_seconds,
-                        Count = count,
-                        AllowCompetingConsumers = allow_competing_consumers,
-                        LeaseId = lease_id
-                    });
+                // ExpiredMore: the turn only removed expired items. Each call is its own atomic turn.
+                DequeueLockedResponse result;
+                do
+                {
+                    result = await _actorInvoker.InvokeMethodAsync<DequeueLockedRequest, DequeueLockedResponse>(
+                        actorId,
+                        ActorMethodNames.DequeueLocked,
+                        new DequeueLockedRequest
+                        {
+                            TtlSeconds = ttl_seconds,
+                            Count = count,
+                            AllowCompetingConsumers = allow_competing_consumers,
+                            LeaseId = lease_id
+                        });
+                } while (result.ExpiredMore);
 
                 // Session-lease guard rejection (session-scoped queue actor, missing/invalid/expired lease-id).
                 if (result.ErrorCode == "SESSION_LEASE_EXPIRED")
@@ -343,17 +362,25 @@ public class QueueController : ControllerBase
                         ResolveItemElement(item.ItemJson, item.ObjectClaimToken, item.BlobContentType),
                         item.Priority,
                         item.LockId,
-                        item.LockExpiresAt));
+                        item.LockExpiresAt,
+                        item.ExpiryAt,
+                        item.ExpiryTtlSeconds,
+                        item.OriginalExpiryTtlSeconds));
                 }
 
                 return Ok(new ApiDequeueLockedResponse(apiItems, result.Locked, result.Message));
             }
             else
             {
-                var result = await _actorInvoker.InvokeMethodAsync<DequeueRequest, DequeueResponse>(
-                    actorId,
-                    ActorMethodNames.Dequeue,
-                    new DequeueRequest { Count = count, LeaseId = lease_id });
+                // ExpiredMore: the turn only removed expired items. Each call is its own atomic turn.
+                DequeueResponse result;
+                do
+                {
+                    result = await _actorInvoker.InvokeMethodAsync<DequeueRequest, DequeueResponse>(
+                        actorId,
+                        ActorMethodNames.Dequeue,
+                        new DequeueRequest { Count = count, LeaseId = lease_id });
+                } while (result.ExpiredMore);
 
                 // Session-lease guard rejection (session-scoped queue actor, missing/invalid/expired lease-id).
                 if (result.ErrorCode == "SESSION_LEASE_EXPIRED")
@@ -388,7 +415,10 @@ public class QueueController : ControllerBase
                 {
                     apiItems.Add(new ApiDequeueItem(
                         ResolveItemElement(item.ItemJson, item.ObjectClaimToken, item.BlobContentType),
-                        item.Priority));
+                        item.Priority,
+                        item.ExpiryAt,
+                        item.ExpiryTtlSeconds,
+                        item.OriginalExpiryTtlSeconds));
                 }
 
                 return Ok(new ApiDequeueResponse(apiItems));

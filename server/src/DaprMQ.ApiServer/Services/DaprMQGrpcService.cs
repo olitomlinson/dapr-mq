@@ -18,6 +18,7 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
     private readonly ActorModels.IQueueActorInvoker _queueActorInvoker;
     private readonly ActorModels.ISessionCoordinatorActorInvoker _sessionCoordinatorActorInvoker;
     private readonly SessionReleaseHandoff? _releaseHandoff;
+    private readonly MessageExpiryStamper _expiryStamper;
 
     /// <summary>
     /// ConsumeSession's fallback wait between polls, when the window is full or the queue is empty.
@@ -43,12 +44,14 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
         ILogger<DaprMQGrpcService> logger,
         ActorModels.IQueueActorInvoker queueActorInvoker,
         ActorModels.ISessionCoordinatorActorInvoker sessionCoordinatorActorInvoker,
-        SessionReleaseHandoff? releaseHandoff = null)
+        SessionReleaseHandoff? releaseHandoff = null,
+        MessageExpiryStamper? expiryStamper = null)
     {
         _logger = logger;
         _queueActorInvoker = queueActorInvoker;
         _sessionCoordinatorActorInvoker = sessionCoordinatorActorInvoker;
         _releaseHandoff = releaseHandoff;
+        _expiryStamper = expiryStamper ?? new MessageExpiryStamper(new ActorModels.ExpiryConfig(), TimeProvider.System);
     }
 
     /// <summary>
@@ -89,16 +92,21 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                 {
                     throw new RpcException(new Status(StatusCode.InvalidArgument, "All items in one enqueue must have the same sessionId"));
                 }
+
+                if (_expiryStamper.Validate(item.HasExpiryTtlSeconds ? item.ExpiryTtlSeconds : null) is string expiryError)
+                {
+                    throw new RpcException(new Status(StatusCode.InvalidArgument, expiryError));
+                }
             }
 
             _logger.LogDebug($"gRPC Enqueue request for queue {request.QueueId} with {request.Items.Count} items");
 
-            var actorItems = request.Items.Select(grpcItem => new ActorModels.EnqueueItem
+            var actorItems = request.Items.Select(grpcItem => _expiryStamper.Stamp(new ActorModels.EnqueueItem
             {
                 ItemJson = grpcItem.ItemJson,
                 Priority = grpcItem.Priority,
                 IdempotencyKey = grpcItem.HasIdempotencyKey ? grpcItem.IdempotencyKey : null
-            }).ToList();
+            }, grpcItem.HasExpiryTtlSeconds ? grpcItem.ExpiryTtlSeconds : null)).ToList();
 
             var result = await _queueActorInvoker.InvokeMethodAsync<ActorModels.EnqueueRequest, ActorModels.EnqueueResponse>(
                 new ActorId(targetActorId),
@@ -153,11 +161,16 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
 
             var actorId = new ActorId(request.QueueId);
 
-            var result = await _queueActorInvoker.InvokeMethodAsync<ActorModels.DequeueRequest, ActorModels.DequeueResponse>(
-                actorId,
-                ActorMethodNames.Dequeue,
-                new ActorModels.DequeueRequest { Count = count, LeaseId = request.HasLeaseId ? request.LeaseId : null },
-                context.CancellationToken);
+            // ExpiredMore: the turn only removed expired items. Each call is its own atomic turn.
+            ActorModels.DequeueResponse result;
+            do
+            {
+                result = await _queueActorInvoker.InvokeMethodAsync<ActorModels.DequeueRequest, ActorModels.DequeueResponse>(
+                    actorId,
+                    ActorMethodNames.Dequeue,
+                    new ActorModels.DequeueRequest { Count = count, LeaseId = request.HasLeaseId ? request.LeaseId : null },
+                    context.CancellationToken);
+            } while (result.ExpiredMore);
 
             if (result.ErrorCode != null)
             {
@@ -198,6 +211,9 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                 {
                     dequeueSuccess.ItemJson.Add(item.ItemJson);
                     dequeueSuccess.Priority.Add(item.Priority);
+                    dequeueSuccess.ExpiryAt.Add(item.ExpiryAt ?? 0);
+                    dequeueSuccess.ExpiryTtlSeconds.Add(item.ExpiryTtlSeconds ?? 0);
+                    dequeueSuccess.OriginalExpiryTtlSeconds.Add(item.OriginalExpiryTtlSeconds ?? 0);
                 }
 
                 return new DequeueResponse
@@ -245,17 +261,22 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
 
             var actorId = new ActorId(request.QueueId);
 
-            var result = await _queueActorInvoker.InvokeMethodAsync<ActorModels.DequeueLockedRequest, ActorModels.DequeueLockedResponse>(
-                actorId,
-                ActorMethodNames.DequeueLocked,
-                new ActorModels.DequeueLockedRequest
-                {
-                    TtlSeconds = request.TtlSeconds > 0 ? request.TtlSeconds : 30,
-                    Count = count,
-                    AllowCompetingConsumers = request.AllowCompetingConsumers,
-                    LeaseId = request.HasLeaseId ? request.LeaseId : null
-                },
-                context.CancellationToken);
+            // ExpiredMore: the turn only removed expired items. Each call is its own atomic turn.
+            ActorModels.DequeueLockedResponse result;
+            do
+            {
+                result = await _queueActorInvoker.InvokeMethodAsync<ActorModels.DequeueLockedRequest, ActorModels.DequeueLockedResponse>(
+                    actorId,
+                    ActorMethodNames.DequeueLocked,
+                    new ActorModels.DequeueLockedRequest
+                    {
+                        TtlSeconds = request.TtlSeconds > 0 ? request.TtlSeconds : 30,
+                        Count = count,
+                        AllowCompetingConsumers = request.AllowCompetingConsumers,
+                        LeaseId = request.HasLeaseId ? request.LeaseId : null
+                    },
+                    context.CancellationToken);
+            } while (result.ExpiredMore);
 
             if (result.ErrorCode != null)
             {
@@ -299,6 +320,9 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                     dequeueSuccess.Priority.Add(item.Priority);
                     dequeueSuccess.LockId.Add(item.LockId);
                     dequeueSuccess.LockExpiresAt.Add(item.LockExpiresAt);
+                    dequeueSuccess.ExpiryAt.Add(item.ExpiryAt ?? 0);
+                    dequeueSuccess.ExpiryTtlSeconds.Add(item.ExpiryTtlSeconds ?? 0);
+                    dequeueSuccess.OriginalExpiryTtlSeconds.Add(item.OriginalExpiryTtlSeconds ?? 0);
                 }
 
                 return new DequeueLockedResponse
@@ -1012,22 +1036,29 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                         break;
                     }
 
+                    // The turn only removed expired items; the session isn't idle, so call again now.
+                    if (dequeueResult.ExpiredMore)
+                    {
+                        continue;
+                    }
+
                     if (dequeueResult.Items.Count > 0)
                     {
                         emptySince = null;
                         foreach (var item in dequeueResult.Items)
                         {
                             Interlocked.Increment(ref outstanding);
-                            await WriteAsync(new ConsumeSessionResponse
+                            var delivered = new SessionDelivered
                             {
-                                Delivered = new SessionDelivered
-                                {
-                                    LockId = item.LockId,
-                                    ItemJson = item.ItemJson,
-                                    Priority = item.Priority,
-                                    LockExpiresAt = item.LockExpiresAt
-                                }
-                            });
+                                LockId = item.LockId,
+                                ItemJson = item.ItemJson,
+                                Priority = item.Priority,
+                                LockExpiresAt = item.LockExpiresAt
+                            };
+                            if (item.ExpiryAt is double expiryAt) delivered.ExpiryAt = expiryAt;
+                            if (item.ExpiryTtlSeconds is int expiryTtlSeconds) delivered.ExpiryTtlSeconds = expiryTtlSeconds;
+                            if (item.OriginalExpiryTtlSeconds is int originalExpiryTtlSeconds) delivered.OriginalExpiryTtlSeconds = originalExpiryTtlSeconds;
+                            await WriteAsync(new ConsumeSessionResponse { Delivered = delivered });
                         }
 
                         continue;
@@ -1365,6 +1396,12 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                     break;
                 }
 
+                // The turn only removed expired items; call again now rather than backing off.
+                if (dequeueResult.ExpiredMore)
+                {
+                    continue;
+                }
+
                 if (dequeueResult.Items.Count == 0)
                 {
                     // Empty, or held by another consumer when competing consumers are off. Back off,
@@ -1379,17 +1416,18 @@ public class DaprMQGrpcService : Grpc.DaprMQ.DaprMQBase
                 foreach (var item in dequeueResult.Items)
                 {
                     outstanding[item.LockId] = new OutstandingLock(item.LockExpiresAt);
-                    await WriteAsync(new ConsumeResponse
+                    var delivered = new ConsumeDelivered
                     {
-                        Delivered = new ConsumeDelivered
-                        {
-                            LockId = item.LockId,
-                            ItemJson = item.ItemJson,
-                            Priority = item.Priority,
-                            LockExpiresAt = item.LockExpiresAt,
-                            DeliveryCount = item.DeliveryCount + 1
-                        }
-                    });
+                        LockId = item.LockId,
+                        ItemJson = item.ItemJson,
+                        Priority = item.Priority,
+                        LockExpiresAt = item.LockExpiresAt,
+                        DeliveryCount = item.DeliveryCount + 1
+                    };
+                    if (item.ExpiryAt is double expiryAt) delivered.ExpiryAt = expiryAt;
+                    if (item.ExpiryTtlSeconds is int expiryTtlSeconds) delivered.ExpiryTtlSeconds = expiryTtlSeconds;
+                    if (item.OriginalExpiryTtlSeconds is int originalExpiryTtlSeconds) delivered.OriginalExpiryTtlSeconds = originalExpiryTtlSeconds;
+                    await WriteAsync(new ConsumeResponse { Delivered = delivered });
                 }
             }
         }

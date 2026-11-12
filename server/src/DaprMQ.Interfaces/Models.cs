@@ -32,6 +32,21 @@ public record EnqueueItem
     /// window, the item is silently skipped instead of being enqueued again.
     /// </summary>
     public string? IdempotencyKey { get; init; } = null;
+
+    /// <summary>
+    /// When the item expires, in Unix seconds. Stamped by the API server; null means it never expires
+    /// (only items queued before message expiry existed, or planted by tests).
+    /// </summary>
+    public double? ExpiryAt { get; init; }
+
+    /// <summary>The time to live ExpiryAt was computed from, in seconds.</summary>
+    public int? ExpiryTtlSeconds { get; init; }
+
+    /// <summary>
+    /// The producer's time to live, kept when the item was dead-lettered and its expiry replaced by the
+    /// dead-letter period. Null on an item that was never dead-lettered.
+    /// </summary>
+    public int? OriginalExpiryTtlSeconds { get; init; }
 }
 
 /// <summary>
@@ -276,6 +291,21 @@ public record DequeueItem
     /// normal inline items or if no content type was supplied.
     /// </summary>
     public string? BlobContentType { get; init; }
+
+    /// <summary>
+    /// When the item expires, in Unix seconds. Stamped by the API server; null means it never expires
+    /// (only items queued before message expiry existed, or planted by tests).
+    /// </summary>
+    public double? ExpiryAt { get; init; }
+
+    /// <summary>The time to live ExpiryAt was computed from, in seconds.</summary>
+    public int? ExpiryTtlSeconds { get; init; }
+
+    /// <summary>
+    /// The producer's time to live, kept when the item was dead-lettered and its expiry replaced by the
+    /// dead-letter period. Null on an item that was never dead-lettered.
+    /// </summary>
+    public int? OriginalExpiryTtlSeconds { get; init; }
 }
 
 /// <summary>
@@ -297,6 +327,12 @@ public record DequeueResponse
     /// Whether the queue is empty.
     /// </summary>
     public bool IsEmpty { get; init; }
+
+    /// <summary>
+    /// The turn removed ExpirySweepBatchSize expired items without reaching a live one, committed that,
+    /// and returned nothing. The caller calls again straight away. Never set with Locked or IsEmpty.
+    /// </summary>
+    public bool ExpiredMore { get; init; }
 
     /// <summary>
     /// Status message.
@@ -359,6 +395,21 @@ public record DequeueLockedItem
     /// How many earlier deliveries of this item were nacked or lapsed (0 on a first delivery).
     /// </summary>
     public int DeliveryCount { get; init; }
+
+    /// <summary>
+    /// When the item expires, in Unix seconds. Stamped by the API server; null means it never expires
+    /// (only items queued before message expiry existed, or planted by tests).
+    /// </summary>
+    public double? ExpiryAt { get; init; }
+
+    /// <summary>The time to live ExpiryAt was computed from, in seconds.</summary>
+    public int? ExpiryTtlSeconds { get; init; }
+
+    /// <summary>
+    /// The producer's time to live, kept when the item was dead-lettered and its expiry replaced by the
+    /// dead-letter period. Null on an item that was never dead-lettered.
+    /// </summary>
+    public int? OriginalExpiryTtlSeconds { get; init; }
 }
 
 /// <summary>
@@ -380,6 +431,12 @@ public record DequeueLockedResponse
     /// Whether the queue is empty.
     /// </summary>
     public bool IsEmpty { get; init; }
+
+    /// <summary>
+    /// The turn removed ExpirySweepBatchSize expired items without reaching a live one, committed that,
+    /// and returned nothing. The caller calls again straight away. Never set with Locked or IsEmpty.
+    /// </summary>
+    public bool ExpiredMore { get; init; }
 
     /// <summary>
     /// Whether the MaxConcurrency limit has been reached. This is set to true when the queue has reached the maximum number of concurrent locks specified in the DequeueLocked request.

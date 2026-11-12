@@ -248,6 +248,21 @@ var lockConfig = new LockConfig
 };
 builder.Services.AddSingleton(lockConfig);
 
+// Message expiry (proposals/message-expiry.md). Validated here so a setting no request could satisfy
+// fails startup rather than every enqueue.
+var expiryConfig = new ExpiryConfig
+{
+    MinExpiryTtlSeconds = builder.Configuration.GetValue("DAPRMQ_MIN_EXPIRY_TTL_SECONDS", 600),
+    DefaultExpiryTtlSeconds = builder.Configuration.GetValue("DAPRMQ_DEFAULT_EXPIRY_TTL_SECONDS", 31_536_000),
+    DeadLetterExpiryTtlSeconds = builder.Configuration.GetValue("DAPRMQ_DEADLETTER_EXPIRY_TTL_SECONDS", 2_419_200),
+    ExpirySweepBatchSize = builder.Configuration.GetValue("DAPRMQ_EXPIRY_SWEEP_BATCH_SIZE", 200),
+    DeadLetterOnExpiry = builder.Configuration.GetValue("DAPRMQ_DEADLETTER_ON_EXPIRY", false)
+};
+expiryConfig.Validate();
+builder.Services.AddSingleton(expiryConfig);
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<MessageExpiryStamper>();
+
 // Session directory timings (proposals/session-directory.md). Overridable mainly so tests can run
 // the report/defer/evict cycle in seconds rather than minutes.
 var sessionDirectoryConfig = new SessionDirectoryConfig

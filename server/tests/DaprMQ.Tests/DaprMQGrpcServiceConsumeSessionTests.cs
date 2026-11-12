@@ -697,6 +697,46 @@ public class DaprMQGrpcServiceConsumeSessionTests
         Assert.Equal(1, writer.MaxConcurrent);
     }
 
+    [Fact]
+    public async Task ConsumeSession_ExpiredMore_DequeuesAgainWithoutWaiting_AndDeliveriesCarryTheirExpiry()
+    {
+        var mockQueueInvoker = new Mock<IQueueActorInvoker>();
+        var mockSessionInvoker = new Mock<ISessionCoordinatorActorInvoker>();
+        SetupAccepted(mockSessionInvoker);
+        mockSessionInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.ReleaseSessionRequest, ActorModels.ReleaseSessionResponse>(
+                It.IsAny<ActorId>(), "ReleaseSession", It.IsAny<ActorModels.ReleaseSessionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActorModels.ReleaseSessionResponse { Success = true });
+
+        var call = 0;
+        mockQueueInvoker.Setup(i => i.InvokeMethodAsync<ActorModels.DequeueLockedRequest, ActorModels.DequeueLockedResponse>(
+                It.IsAny<ActorId>(), "DequeueLocked", It.IsAny<ActorModels.DequeueLockedRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => Interlocked.Increment(ref call) switch
+            {
+                1 => new ActorModels.DequeueLockedResponse { ExpiredMore = true },
+                2 => new ActorModels.DequeueLockedResponse
+                {
+                    Items = [new() { ItemJson = "{}", Priority = 1, LockId = "lock-1", LockExpiresAt = 999, ExpiryAt = 1_800_003_600, ExpiryTtlSeconds = 3600, OriginalExpiryTtlSeconds = 60 }]
+                },
+                _ => new ActorModels.DequeueLockedResponse { IsEmpty = true }
+            });
+
+        var service = CreateService(mockQueueInvoker.Object, mockSessionInvoker.Object);
+        service.PollInterval = LongPollInterval;
+        var reader = new FakeAsyncStreamReader<ConsumeSessionRequest>();
+        var writer = new FakeServerStreamWriter<ConsumeSessionResponse>();
+        reader.Add(StartRequest("test-queue", "s1"));
+
+        var task = service.ConsumeSession(reader, writer, _mockContext.Object);
+        await WaitUntilAsync(() => writer.Written.Any(r => r.PayloadCase == ConsumeSessionResponse.PayloadOneofCase.Delivered));
+        reader.Complete();
+        await task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var delivered = writer.Written.Single(r => r.PayloadCase == ConsumeSessionResponse.PayloadOneofCase.Delivered).Delivered;
+        Assert.Equal(1_800_003_600, delivered.ExpiryAt);
+        Assert.Equal(3600, delivered.ExpiryTtlSeconds);
+        Assert.Equal(60, delivered.OriginalExpiryTtlSeconds);
+    }
+
     // --- Prefetch refill: acks that half-drain the window wake the poll loop early ---
 
     private sealed class RefillHarness

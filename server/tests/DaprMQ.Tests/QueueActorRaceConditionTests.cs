@@ -120,7 +120,7 @@ public class QueueActorRaceConditionTests
         var lockConfig = new LockConfig { MaxDeliveryCount = 10, SweepBatchSize = 200 };
 
         var actorHost = ActorHost.CreateForTest<QueueActor>(testOptions);
-        var actor = new QueueActor(actorHost, mockInvoker.Object, mockBlobReaperActorInvoker.Object, tokenIssuer, blobReapConfig, idempotencyConfig, lockConfig, Mock.Of<ICatalogRegistrar>(), Mock.Of<ISessionActivityReporter>(), new SessionDirectoryConfig());
+        var actor = new QueueActor(actorHost, mockInvoker.Object, mockBlobReaperActorInvoker.Object, tokenIssuer, blobReapConfig, idempotencyConfig, lockConfig, Mock.Of<ICatalogRegistrar>(), Mock.Of<ISessionActivityReporter>(), new SessionDirectoryConfig(), new ExpiryConfig());
 
         var stateManagerProperty = typeof(Actor).GetProperty("StateManager");
         stateManagerProperty?.SetValue(actor, mockStateManager.Object);

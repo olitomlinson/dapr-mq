@@ -129,7 +129,8 @@ public class QueueActorLockExpiryTests
             lockConfig ?? new LockConfig { MaxDeliveryCount = 10, SweepBatchSize = 200 },
             Mock.Of<ICatalogRegistrar>(),
             Mock.Of<ISessionActivityReporter>(),
-            new SessionDirectoryConfig());
+            new SessionDirectoryConfig(),
+            new ExpiryConfig());
 
         typeof(Actor).GetProperty("StateManager")!.SetValue(actor, mockStateManager.Object);
 

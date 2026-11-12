@@ -52,7 +52,8 @@ public class QueueControllerTests
             _objectClaimTokenIssuer,
             _mockBlobReaperActorInvoker.Object,
             _blobReapConfig,
-            _mockSessionCoordinatorActorInvoker.Object);
+            _mockSessionCoordinatorActorInvoker.Object,
+            new MessageExpiryStamper(new ExpiryConfig(), TimeProvider.System));
 
     private QueueController CreateController(IQueueActorInvoker actorInvoker, ISessionCoordinatorActorInvoker sessionCoordinatorActorInvoker) =>
         new QueueController(
@@ -65,7 +66,8 @@ public class QueueControllerTests
             _objectClaimTokenIssuer,
             _mockBlobReaperActorInvoker.Object,
             _blobReapConfig,
-            sessionCoordinatorActorInvoker);
+            sessionCoordinatorActorInvoker,
+            new MessageExpiryStamper(new ExpiryConfig(), TimeProvider.System));
 
     [Fact]
     public async Task Enqueue_ValidSingleItem_Returns200()

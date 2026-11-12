@@ -71,7 +71,7 @@ public class QueueActorBlobOffloadTests
             .Returns(Task.CompletedTask);
 
         var actorHost = ActorHost.CreateForTest<QueueActor>(testOptions);
-        var actor = new QueueActor(actorHost, mockInvoker.Object, mockReaperInvoker.Object, _tokenIssuer, _blobReapConfig, _idempotencyConfig, _lockConfig, Mock.Of<ICatalogRegistrar>(), Mock.Of<ISessionActivityReporter>(), new SessionDirectoryConfig());
+        var actor = new QueueActor(actorHost, mockInvoker.Object, mockReaperInvoker.Object, _tokenIssuer, _blobReapConfig, _idempotencyConfig, _lockConfig, Mock.Of<ICatalogRegistrar>(), Mock.Of<ISessionActivityReporter>(), new SessionDirectoryConfig(), new ExpiryConfig());
 
         typeof(Actor).GetProperty("StateManager")?.SetValue(actor, mockStateManager.Object);
 
