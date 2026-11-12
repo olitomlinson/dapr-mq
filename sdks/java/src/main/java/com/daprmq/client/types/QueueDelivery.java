@@ -12,6 +12,7 @@ import com.fasterxml.jackson.databind.JsonNode;
  * @param ack           Acknowledges and permanently removes this item.
  * @param nack          Returns this item to its original position for redelivery (+1 delivery count).
  * @param deadLetter    Moves this item to the dead letter queue.
+ * @param expiry        The message's expiry.
  */
 public record QueueDelivery(
         String lockId,
@@ -21,5 +22,6 @@ public record QueueDelivery(
         int deliveryCount,
         Runnable ack,
         Runnable nack,
-        Runnable deadLetter) {
+        Runnable deadLetter,
+        MessageExpiry expiry) {
 }

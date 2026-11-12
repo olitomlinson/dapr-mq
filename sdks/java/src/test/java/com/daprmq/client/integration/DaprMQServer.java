@@ -137,7 +137,9 @@ public final class DaprMQServer implements AutoCloseable {
                         .withEnv("DAPR_GRPC_ENDPOINT", "http://" + sidecarAlias + ":50001")
                         .withEnv("Logging__LogLevel__Default", "Warning")
                         .withEnv("QUEUE_ACTOR_TYPE_NAME", "QueueActor")
-                        .withEnv("HTTP_SINK_ACTOR_TYPE_NAME", "HttpSinkActor");
+                        .withEnv("HTTP_SINK_ACTOR_TYPE_NAME", "HttpSinkActor")
+                        // Lets the E- tests use a time to live short enough to expire within a test.
+                        .withEnv("DAPRMQ_MIN_EXPIRY_TTL_SECONDS", "1");
                 GenericContainer<?> sidecar = container("ghcr.io/dapr/daprd:" + DAPR_VERSION, network, sidecarAlias)
                         .withFileSystemBind(componentsDir, "/tmp/dapr-components", BindMode.READ_ONLY)
                         .withCommand(

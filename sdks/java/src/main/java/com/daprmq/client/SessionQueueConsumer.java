@@ -181,7 +181,7 @@ public final class SessionQueueConsumer implements AutoCloseable {
     }
 
     private void handleDelivery(SessionDelivery delivery) {
-        SessionMessageContext context = new SessionMessageContext(queueId, delivery.sessionId(), delivery.lockId(), delivery.item(), delivery.priority());
+        SessionMessageContext context = new SessionMessageContext(queueId, delivery.sessionId(), delivery.lockId(), delivery.item(), delivery.priority(), delivery.expiry());
         try {
             handler.handle(context);
             delivery.ack().run();

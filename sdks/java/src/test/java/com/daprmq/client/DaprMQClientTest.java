@@ -12,6 +12,7 @@ import com.daprmq.client.types.DequeueLockedResult;
 import com.daprmq.client.types.AcknowledgeBatchResult;
 import com.daprmq.client.types.AcknowledgeOutcome;
 import com.daprmq.client.types.EnqueueItem;
+import com.daprmq.client.types.MessageExpiry;
 import com.daprmq.client.types.EnqueueResult;
 import com.daprmq.client.types.LockAcknowledgeResult;
 import com.daprmq.client.types.NackResult;
@@ -57,6 +58,29 @@ class DaprMQClientTest {
         assertEquals("/queue/my-queue/enqueue", server.lastRequest().path());
         assertTrue(server.lastRequest().body().contains("\"sessionId\":\"order-42\""));
         assertTrue(server.lastRequest().body().contains("\"priority\":0"));
+    }
+
+    @Test
+    void enqueueSendsExpiryTtlSecondsOnlyWhenSet() {
+        server.respondWith(200, "{\"success\":true,\"message\":\"ok\",\"itemsEnqueued\":2,\"itemsDeduplicated\":0}");
+
+        client.enqueue("q", List.of(new EnqueueItem(1).withExpiryTtlSeconds(3600), new EnqueueItem(2)));
+
+        String body = server.lastRequest().body();
+        assertTrue(body.contains("\"expiryTtlSeconds\":3600"), body);
+        assertEquals(1, body.split("expiryTtlSeconds", -1).length - 1, body);
+    }
+
+    @Test
+    void dequeueLockedMapsEachItemsExpiry() {
+        server.respondWith(200, "{\"items\":["
+                + "{\"item\":1,\"priority\":1,\"lockId\":\"L1\",\"lockExpiresAt\":1.0,\"expiryAt\":1800003600.0,\"expiryTtlSeconds\":3600,\"originalExpiryTtlSeconds\":600},"
+                + "{\"item\":2,\"priority\":1,\"lockId\":\"L2\",\"lockExpiresAt\":1.0}],\"locked\":false}");
+
+        DequeueLockedResult result = client.dequeueLocked("q", 2, 30, null);
+
+        assertEquals(new MessageExpiry(1800003600.0, 3600, 600), result.items().get(0).expiry());
+        assertEquals(MessageExpiry.NONE, result.items().get(1).expiry());
     }
 
     @Test

@@ -1,5 +1,6 @@
 package com.daprmq.client;
 
+import com.daprmq.client.types.MessageExpiry;
 import com.fasterxml.jackson.databind.JsonNode;
 
 /**
@@ -7,5 +8,5 @@ import com.fasterxml.jackson.databind.JsonNode;
  * never exposes one to the client, since the server tracks the lease internally. See
  * {@link com.daprmq.client.types.SessionDelivery}.
  */
-public record SessionMessageContext(String queueId, String sessionId, String lockId, JsonNode item, int priority) {
+public record SessionMessageContext(String queueId, String sessionId, String lockId, JsonNode item, int priority, MessageExpiry expiry) {
 }

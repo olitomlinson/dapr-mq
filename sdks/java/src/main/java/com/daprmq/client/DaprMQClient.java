@@ -19,6 +19,7 @@ import com.daprmq.client.types.DequeueLockedResult;
 import com.daprmq.client.types.EnqueueItem;
 import com.daprmq.client.types.EnqueueResult;
 import com.daprmq.client.types.LockAcknowledgeResult;
+import com.daprmq.client.types.MessageExpiry;
 import com.daprmq.client.types.NackResult;
 import com.daprmq.client.types.SessionLease;
 import com.daprmq.grpc.DaprMQGrpc;
@@ -130,6 +131,9 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient, 
             m.put("priority", i.priority());
             m.put("idempotencyKey", key);
             m.put("sessionId", i.sessionId());
+            if (i.expiryTtlSeconds() != null) {
+                m.put("expiryTtlSeconds", i.expiryTtlSeconds());
+            }
             wireItems.add(m);
         }
         Map<String, Object> body = new LinkedHashMap<>();
@@ -200,7 +204,11 @@ public final class DaprMQClient implements AutoCloseable, SessionCapableClient, 
         JsonNode result = Json.requireParsed(response.body(), response.uri().toString());
         List<DequeueLockedItem> items = new ArrayList<>();
         for (JsonNode i : result.path("items")) {
-            items.add(new DequeueLockedItem(i.get("item"), i.path("priority").asInt(), i.path("lockId").asText(), i.path("lockExpiresAt").asDouble()));
+            MessageExpiry expiry = new MessageExpiry(
+                    i.hasNonNull("expiryAt") ? i.get("expiryAt").asDouble() : null,
+                    i.hasNonNull("expiryTtlSeconds") ? i.get("expiryTtlSeconds").asInt() : null,
+                    i.hasNonNull("originalExpiryTtlSeconds") ? i.get("originalExpiryTtlSeconds").asInt() : null);
+            items.add(new DequeueLockedItem(i.get("item"), i.path("priority").asInt(), i.path("lockId").asText(), i.path("lockExpiresAt").asDouble(), expiry));
         }
         return new DequeueLockedResult(items, result.path("locked").asBoolean(), Json.textOrNull(result, "message"));
     }
