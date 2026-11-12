@@ -64,6 +64,32 @@ public class DaprMQClientConsumeTests
     }
 
     [Fact]
+    public async Task ConsumeAsync_DeliveriesCarryTheirExpiry()
+    {
+        var (client, _, responses) = CreateClientWithFakeStream();
+        var withExpiry = Delivered("L1");
+        withExpiry.Delivered.ExpiryAt = 1_800_003_600;
+        withExpiry.Delivered.ExpiryTtlSeconds = 3600;
+        withExpiry.Delivered.OriginalExpiryTtlSeconds = 600;
+        responses.Add(withExpiry);
+        responses.Add(Delivered("L2"));
+        responses.Complete();
+
+        var deliveries = new List<QueueDelivery>();
+        await foreach (var delivery in client.ConsumeAsync("q"))
+        {
+            deliveries.Add(delivery);
+        }
+
+        Assert.Equal(1_800_003_600, deliveries[0].ExpiryAt);
+        Assert.Equal(3600, deliveries[0].ExpiryTtlSeconds);
+        Assert.Equal(600, deliveries[0].OriginalExpiryTtlSeconds);
+        Assert.Null(deliveries[1].ExpiryAt);
+        Assert.Null(deliveries[1].ExpiryTtlSeconds);
+        Assert.Null(deliveries[1].OriginalExpiryTtlSeconds);
+    }
+
+    [Fact]
     public async Task ConsumeAsync_StartFrame_UsesDefaults()
     {
         var (client, requests, responses) = CreateClientWithFakeStream();

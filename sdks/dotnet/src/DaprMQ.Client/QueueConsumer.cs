@@ -63,7 +63,13 @@ public enum QueueHandlerFailureAction
     DeadLetter
 }
 
-public record QueueMessageContext(string QueueId, string LockId, JsonElement Item, int Priority, int DeliveryCount);
+/// <summary>
+/// One message handed to a QueueConsumer handler. ExpiryAt (Unix seconds) and ExpiryTtlSeconds are the
+/// message's expiry; OriginalExpiryTtlSeconds is set only on messages from a dead-letter queue.
+/// </summary>
+public record QueueMessageContext(
+    string QueueId, string LockId, JsonElement Item, int Priority, int DeliveryCount,
+    double? ExpiryAt = null, int? ExpiryTtlSeconds = null, int? OriginalExpiryTtlSeconds = null);
 
 /// <summary>
 /// Runs a handler over a plain queue's <see cref="IDaprMQClient.ConsumeAsync"/> stream: the handler's
@@ -270,7 +276,8 @@ public sealed class QueueConsumer : IAsyncDisposable
             await delivery.StartedAsync(ct);
             try
             {
-                await _handler(new QueueMessageContext(_queueId, delivery.LockId, delivery.Item, delivery.Priority, delivery.DeliveryCount), ct);
+                await _handler(new QueueMessageContext(_queueId, delivery.LockId, delivery.Item, delivery.Priority, delivery.DeliveryCount,
+                    delivery.ExpiryAt, delivery.ExpiryTtlSeconds, delivery.OriginalExpiryTtlSeconds), ct);
             }
             catch (Exception)
             {

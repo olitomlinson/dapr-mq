@@ -24,13 +24,16 @@ public class QueueConsumerTests
         public readonly ConcurrentQueue<string> Started = new();
         public readonly TaskCompletionSource Closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public void Deliver(string lockId, int deliveryCount = 1) => _deliveries.Writer.TryWrite(new QueueDelivery
+        public void Deliver(string lockId, int deliveryCount = 1, double? expiryAt = null, int? expiryTtlSeconds = null, int? originalExpiryTtlSeconds = null) => _deliveries.Writer.TryWrite(new QueueDelivery
         {
             LockId = lockId,
             Item = JsonDocument.Parse("{\"n\":1}").RootElement,
             Priority = 1,
             LockExpiresAt = 0,
             DeliveryCount = deliveryCount,
+            ExpiryAt = expiryAt,
+            ExpiryTtlSeconds = expiryTtlSeconds,
+            OriginalExpiryTtlSeconds = originalExpiryTtlSeconds,
             StartedAsync = _ =>
             {
                 Started.Enqueue(lockId);
@@ -198,6 +201,25 @@ public class QueueConsumerTests
         Assert.Equal("L1", ctx.LockId);
         Assert.Equal(3, ctx.DeliveryCount);
         Assert.Equal(1, ctx.Item.GetProperty("n").GetInt32());
+    }
+
+    [Fact]
+    public async Task TheContextCarriesTheMessagesExpiry()
+    {
+        var stream = new FakeStream();
+        var (client, _) = ClientOver(stream);
+        var contexts = new ConcurrentBag<QueueMessageContext>();
+        var consumer = Consumer(client.Object, new QueueConsumerOptions(), (ctx, _) => { contexts.Add(ctx); return Task.CompletedTask; });
+
+        await consumer.StartAsync();
+        stream.Deliver("L1", expiryAt: 1_800_003_600, expiryTtlSeconds: 3600, originalExpiryTtlSeconds: 600);
+        await WaitUntilAsync(() => stream.Settled.Count == 1);
+        await consumer.StopAsync();
+
+        var ctx = Assert.Single(contexts);
+        Assert.Equal(1_800_003_600, ctx.ExpiryAt);
+        Assert.Equal(3600, ctx.ExpiryTtlSeconds);
+        Assert.Equal(600, ctx.OriginalExpiryTtlSeconds);
     }
 
     [Fact]
