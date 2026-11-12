@@ -465,6 +465,48 @@ public class TopicActorTests
     }
 
     [Fact]
+    public async Task RelayTick_PassesThePublishsExpiryUnchangedToEverySubscriber_EvenOneReachedLate()
+    {
+        var stateData = new Dictionary<string, object>();
+        var mockStateManager = CreateMockStateManager(stateData);
+        var mockInvoker = new Mock<IQueueActorInvoker>();
+
+        var enqueued = new List<(string Queue, EnqueueItem Item)>();
+        var lateAttempts = 0;
+        mockInvoker.Setup(i => i.InvokeMethodAsync<EnqueueRequest, EnqueueResponse>(
+                It.IsAny<ActorId>(), ActorMethodNames.Enqueue, It.IsAny<EnqueueRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ActorId id, string _, EnqueueRequest req, CancellationToken _) =>
+            {
+                // The "late" subscriber fails its first delivery and is reached on a later tick.
+                if (id.GetId() == "test-topic-sub-late" && lateAttempts++ == 0)
+                {
+                    return new EnqueueResponse { Success = false, ErrorMessage = "boom" };
+                }
+                enqueued.AddRange(req.Items.Select(item => (id.GetId(), item)));
+                return new EnqueueResponse { Success = true, ItemsEnqueued = req.Items.Count };
+            });
+
+        var actor = await CreateActorAsync(mockStateManager, mockInvoker);
+        await actor.Subscribe(new SubscribeRequest { SubscriberId = "early" });
+        await actor.Subscribe(new SubscribeRequest { SubscriberId = "late" });
+        await actor.Publish(new PublishRequest
+        {
+            Items = [new EnqueueItem { ItemJson = "{}", ExpiryAt = 1_800_003_600, ExpiryTtlSeconds = 3600 }]
+        });
+
+        await actor.ReceiveReminderAsync("relay", Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.FromSeconds(1));
+        stateData.Remove("circuit_late");
+        await actor.ReceiveReminderAsync("relay", Array.Empty<byte>(), TimeSpan.Zero, TimeSpan.FromSeconds(1));
+
+        Assert.Equal(["test-topic-sub-early", "test-topic-sub-late"], enqueued.Select(e => e.Queue));
+        Assert.All(enqueued, e =>
+        {
+            Assert.Equal(1_800_003_600, e.Item.ExpiryAt);
+            Assert.Equal(3600, e.Item.ExpiryTtlSeconds);
+        });
+    }
+
+    [Fact]
     public async Task RelayTick_ExcludesItemFromSubscriberWhoseGenerationPredatesIt()
     {
         var stateData = new Dictionary<string, object>();

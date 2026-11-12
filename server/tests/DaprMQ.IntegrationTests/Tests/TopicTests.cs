@@ -11,10 +11,10 @@ public class TopicTests(DaprTestFixture fixture)
 {
     private static string NewTopicId() => $"test-topic-{Guid.NewGuid():N}";
 
-    private async Task<ApiPublishResponse> PublishAsync(string topicId, object payload, int priority = 1)
+    private async Task<ApiPublishResponse> PublishAsync(string topicId, object payload, int priority = 1, int? expiryTtlSeconds = null)
     {
         var itemElement = JsonSerializer.SerializeToElement(payload);
-        var request = new ApiPublishRequest(new List<ApiEnqueueItem> { new ApiEnqueueItem(itemElement, priority) });
+        var request = new ApiPublishRequest(new List<ApiEnqueueItem> { new ApiEnqueueItem(itemElement, priority, ExpiryTtlSeconds: expiryTtlSeconds) });
         var response = await fixture.ApiClient.PostAsJsonAsync($"/topic/{topicId}/publish", request);
         var content = await response.Content.ReadAsStringAsync();
         Assert.True(response.StatusCode == HttpStatusCode.Accepted, $"Publish failed: {response.StatusCode} - {content}");
@@ -89,6 +89,24 @@ public class TopicTests(DaprTestFixture fixture)
         Assert.Single(itemsB!.Items);
         Assert.Equal(1, ((JsonElement)itemsA.Items[0].Item).GetProperty("id").GetInt32());
         Assert.Equal(1, ((JsonElement)itemsB.Items[0].Item).GetProperty("id").GetInt32());
+    }
+
+    [Fact]
+    public async Task Publish_WithATimeToLive_ReachesEverySubscriberWithTheSameExpiryAt()
+    {
+        var topicId = NewTopicId();
+        await SubscribeAsync(topicId, "sub-a");
+        await SubscribeAsync(topicId, "sub-b");
+
+        var publishResponse = await PublishAsync(topicId, new { id = 1 }, expiryTtlSeconds: 3600);
+        Assert.True(await WaitForPublishCompleteAsync(topicId, publishResponse.PublishId, TimeSpan.FromSeconds(20)));
+
+        var itemA = Assert.Single((await DequeueAsync($"{topicId}-sub-sub-a"))!.Items);
+        var itemB = Assert.Single((await DequeueAsync($"{topicId}-sub-sub-b"))!.Items);
+        Assert.Equal(3600, itemA.ExpiryTtlSeconds);
+        Assert.NotNull(itemA.ExpiryAt);
+        Assert.Equal(itemA.ExpiryAt, itemB.ExpiryAt);
+        Assert.Equal(itemA.ExpiryTtlSeconds, itemB.ExpiryTtlSeconds);
     }
 
     [Fact]
