@@ -39,8 +39,14 @@ delivered. It is removed lazily, when a dequeue or sweep reaches it, as lock exp
 - **Default:** omitted means the broker default, `DAPRMQ_DEFAULT_EXPIRY_TTL_SECONDS` (default
   31,536,000, which is 365 days). A per-queue or per-topic default can come later. Every message gets
   an expiry; there is no "never expires".
-- **Validation (controller):** a positive integer, at most 10 years (315,360,000 seconds). The
-  broker default must be within the same limit, checked at startup.
+- **Validation (controller):** an integer from a broker-wide minimum up to 10 years (315,360,000
+  seconds); anything outside that is rejected with 400 / `InvalidArgument`, not adjusted. The
+  minimum is `DAPRMQ_MIN_EXPIRY_TTL_SECONDS`, default 600 (10 minutes). Clock skew between the node
+  that stamps the expiry and the one that checks it is seconds at most, so a time to live shorter
+  than a few minutes could expire, or nearly, from skew alone; the minimum keeps every time to live
+  well clear of that. At startup, the minimum must be at least 1 and no more than 10 years, and
+  `DAPRMQ_DEFAULT_EXPIRY_TTL_SECONDS` and `DAPRMQ_DEADLETTER_EXPIRY_TTL_SECONDS` must both lie between
+  the minimum and 10 years, or startup fails.
 - **Delivered items** gain `expiryAt` (Unix seconds) and `expiryTtlSeconds` on every dequeue
   response, consume delivery and HTTP sink post, so a consumer can tell how stale an item is.
 
@@ -65,7 +71,7 @@ as Azure Service Bus does) and diagnostics can say both how long and until when.
   `ExpiryTtlSeconds`*, so a message can't expire before it is due. `ScheduleActor` stores the whole
   enqueue item and forwards both fields unchanged.
 - **Clock skew:** the API server's clock sets the expiry and an actor's clock checks it. Skew between
-  nodes is seconds at most, which is noise against TTLs of minutes or more. Anything that deletes data
+  nodes is seconds at most, which is noise against the 10-minute minimum time to live. Anything that deletes data
   at expiry (the blob reaper) adds a grace period; see [Offloaded payloads](#offloaded-payloads).
 
 ### Storage
@@ -234,15 +240,18 @@ expired items count towards depth until then.
 ## Tests (TDD order, per CLAUDE.md)
 
 1. **Integration** (HTTP and gRPC):
-   - An item enqueued with a 1-second time to live, dequeued after 2 seconds: 204 empty.
+   - An item enqueued with a short time to live (the test stack sets `DAPRMQ_MIN_EXPIRY_TTL_SECONDS`
+     to 1), dequeued after it expires: 204 empty.
    - An item locked before expiry can be acknowledged after it.
    - A topic publish with a time to live reaches every subscriber with the same `expiryAt`.
    - Dequeued items carry `expiryAt` and `expiryTtlSeconds`.
 2. **Controller / gRPC service** (mocked actor):
-   - `expiryTtlSeconds` of 0, negative or over 10 years: 400 / `InvalidArgument`.
+   - `expiryTtlSeconds` below `DAPRMQ_MIN_EXPIRY_TTL_SECONDS` (default 600), negative, or over 10
+     years: 400 / `InvalidArgument`. Exactly the minimum, and exactly 10 years, are accepted.
    - `ExpiryAt` and `ExpiryTtlSeconds` are stamped from the controller's clock; an omitted time to live uses
      `DAPRMQ_DEFAULT_EXPIRY_TTL_SECONDS`.
-   - A broker default over 10 years fails startup.
+   - Startup fails if the minimum is below 1 or over 10 years, or if the default or dead-letter time
+     to live is below the minimum or over 10 years.
    - An `ExpiredMore` result is retried until items, empty or locked come back.
    - `DEADLETTER_NOT_ALLOWED` maps to HTTP 400 and gRPC `FailedPrecondition`.
 3. **Actor** (mocked state):
@@ -293,6 +302,9 @@ expired items count towards depth until then.
    will be decided once dead-letter queues are seen to grow.
 6. **Dead-letter queues never dead-letter,** by any path; see
    [Dead-letter queues never dead-letter](#dead-letter-queues-never-dead-letter).
+7. **Minimum time to live:** a broker-wide minimum, `DAPRMQ_MIN_EXPIRY_TTL_SECONDS`, 10 minutes by
+   default, so clock skew between nodes can't expire a message early. Shorter values are rejected,
+   not raised to the minimum. Per-queue overrides later.
 
 ## Accepted risks
 
