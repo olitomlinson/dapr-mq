@@ -20,6 +20,7 @@ type QueueMessage struct {
 	Priority int
 	// DeliveryCount is 1 on a first delivery, 2 on the first redelivery, and so on.
 	DeliveryCount int
+	MessageExpiry
 }
 
 // QueueHandlerFailureAction is what a [QueueConsumer] does when its handler returns an error.
@@ -292,6 +293,7 @@ func (c *QueueConsumer) serveStream() (delivered bool) {
 func (c *QueueConsumer) handle(d *QueueDelivery) {
 	err := c.handler(c.handlerCtx, QueueMessage{
 		QueueID: c.queueID, LockID: d.LockID, Item: d.Item, Priority: d.Priority, DeliveryCount: d.DeliveryCount,
+		MessageExpiry: d.MessageExpiry,
 	})
 	if err == nil {
 		_ = d.Ack()

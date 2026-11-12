@@ -41,6 +41,7 @@ type SessionDelivery struct {
 	Item          json.RawMessage
 	Priority      int
 	LockExpiresAt time.Time
+	MessageExpiry
 
 	stream *SessionStream
 }
@@ -111,7 +112,8 @@ func (s *SessionStream) Receive() (*SessionDelivery, error) {
 			d := p.Delivered
 			return &SessionDelivery{
 				SessionID: s.SessionID(), LockID: d.LockId, Item: json.RawMessage(d.ItemJson),
-				Priority: int(d.Priority), LockExpiresAt: unixSeconds(d.LockExpiresAt), stream: s,
+				Priority: int(d.Priority), LockExpiresAt: unixSeconds(d.LockExpiresAt),
+				MessageExpiry: messageExpiry(d.ExpiryAt, d.ExpiryTtlSeconds, d.OriginalExpiryTtlSeconds), stream: s,
 			}, nil
 		case *pb.ConsumeSessionResponse_Error:
 			return nil, s.finish(&Error{Code: Code(p.Error.ErrorCode), Message: p.Error.Message})

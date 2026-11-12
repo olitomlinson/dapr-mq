@@ -85,10 +85,20 @@ func (c *Client) Close() error {
 }
 
 type enqueueWireItem struct {
-	Item           any    `json:"item"`
-	Priority       int    `json:"priority"`
-	IdempotencyKey string `json:"idempotencyKey,omitempty"`
-	SessionID      string `json:"sessionId,omitempty"`
+	Item             any    `json:"item"`
+	Priority         int    `json:"priority"`
+	IdempotencyKey   string `json:"idempotencyKey,omitempty"`
+	SessionID        string `json:"sessionId,omitempty"`
+	ExpiryTTLSeconds *int   `json:"expiryTtlSeconds,omitempty"`
+}
+
+// expiryTTLSeconds is an item's time to live as sent, or nil to use the server's default.
+func expiryTTLSeconds(d time.Duration) *int {
+	if d <= 0 {
+		return nil
+	}
+	s := wholeSeconds(d, 0)
+	return &s
 }
 
 // Enqueue adds items to the back of their priority lane, in order (1-10000 items per call).
@@ -107,7 +117,7 @@ func (c *Client) Enqueue(ctx context.Context, queueID string, items []EnqueueIte
 		if item.Priority != nil {
 			priority = *item.Priority
 		}
-		wire[i] = enqueueWireItem{Item: item.Item, Priority: priority, IdempotencyKey: keys[i], SessionID: item.SessionID}
+		wire[i] = enqueueWireItem{Item: item.Item, Priority: priority, IdempotencyKey: keys[i], SessionID: item.SessionID, ExpiryTTLSeconds: expiryTTLSeconds(item.ExpiryTTL)}
 	}
 
 	// An unknown outcome is only safe to repeat when the server can de-duplicate every item.
@@ -136,7 +146,7 @@ func (c *Client) Publish(ctx context.Context, topicID string, items []EnqueueIte
 		if item.Priority != nil {
 			priority = *item.Priority
 		}
-		wire[i] = enqueueWireItem{Item: item.Item, Priority: priority, IdempotencyKey: item.IdempotencyKey}
+		wire[i] = enqueueWireItem{Item: item.Item, Priority: priority, IdempotencyKey: item.IdempotencyKey, ExpiryTTLSeconds: expiryTTLSeconds(item.ExpiryTTL)}
 	}
 
 	resp, err := c.send(ctx, request{
@@ -228,10 +238,13 @@ func (c *Client) DequeueLocked(ctx context.Context, queueID string, options *Deq
 
 	var wire struct {
 		Items []struct {
-			Item          json.RawMessage `json:"item"`
-			Priority      int             `json:"priority"`
-			LockID        string          `json:"lockId"`
-			LockExpiresAt float64         `json:"lockExpiresAt"`
+			Item                     json.RawMessage `json:"item"`
+			Priority                 int             `json:"priority"`
+			LockID                   string          `json:"lockId"`
+			LockExpiresAt            float64         `json:"lockExpiresAt"`
+			ExpiryAt                 *float64        `json:"expiryAt"`
+			ExpiryTTLSeconds         *int32          `json:"expiryTtlSeconds"`
+			OriginalExpiryTTLSeconds *int32          `json:"originalExpiryTtlSeconds"`
 		} `json:"items"`
 		Locked  bool   `json:"locked"`
 		Message string `json:"message"`
@@ -241,7 +254,10 @@ func (c *Client) DequeueLocked(ctx context.Context, queueID string, options *Deq
 	}
 	result := DequeueLockedResult{Locked: wire.Locked, Message: wire.Message, Items: make([]DequeueLockedItem, len(wire.Items))}
 	for i, item := range wire.Items {
-		result.Items[i] = DequeueLockedItem{Item: item.Item, Priority: item.Priority, LockID: item.LockID, LockExpiresAt: unixSeconds(item.LockExpiresAt)}
+		result.Items[i] = DequeueLockedItem{
+			Item: item.Item, Priority: item.Priority, LockID: item.LockID, LockExpiresAt: unixSeconds(item.LockExpiresAt),
+			MessageExpiry: messageExpiry(item.ExpiryAt, item.ExpiryTTLSeconds, item.OriginalExpiryTTLSeconds),
+		}
 	}
 	return result, nil
 }

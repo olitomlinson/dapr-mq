@@ -22,6 +22,7 @@ type SessionMessage struct {
 	LockID    string
 	Item      json.RawMessage
 	Priority  int
+	MessageExpiry
 }
 
 // SessionHandlerFailureAction is what a [SessionQueueConsumer] does when its handler returns an error.
@@ -275,6 +276,7 @@ func claimedDespite(err error) bool {
 func (c *SessionQueueConsumer) handle(d *SessionDelivery) (abandon bool) {
 	err := c.handler(c.handlerCtx, SessionMessage{
 		QueueID: c.queueID, SessionID: d.SessionID, LockID: d.LockID, Item: d.Item, Priority: d.Priority,
+		MessageExpiry: d.MessageExpiry,
 	})
 	if err == nil {
 		_ = d.Ack()

@@ -136,6 +136,8 @@ func startStack(ctx context.Context, apiImage string) (stop func(), err error) {
 			"Logging__LogLevel__Default": "Warning",
 			"QUEUE_ACTOR_TYPE_NAME":      "QueueActor",
 			"HTTP_SINK_ACTOR_TYPE_NAME":  "HttpSinkActor",
+			// Lets the E- tests use a time to live short enough to expire within a test.
+			"DAPRMQ_MIN_EXPIRY_TTL_SECONDS": "1",
 		},
 	})
 	if err != nil {
