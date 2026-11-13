@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 2,
+  "runId": "20261113T131309Z_dotnet_ci-ubuntu-latest_queue-drain-large",
+  "timestampUtc": "2026-11-13T13:13:09.8055540\u002B00:00",
+  "sdk": {
+    "name": "dotnet",
+    "version": "0.0.0-alpha.0",
+    "runtime": ".NET 10.0.15"
+  },
+  "environment": {
+    "label": "ci-ubuntu-latest",
+    "gitSha": "02fc4b84e7c755d94137288211fe22ed1076ff28",
+    "gitBranch": "main",
+    "gitDirty": false,
+    "os": "Ubuntu 26.04.1 LTS",
+    "cpuCount": 4
+  },
+  "topology": {
+    "apiReplicas": 3,
+    "schedulerReplicas": 3,
+    "loadBalancer": true,
+    "server": "testcontainers daprmq-api:test"
+  },
+  "scale": "extreme",
+  "scenario": {
+    "id": "P-05",
+    "name": "queue-drain",
+    "profile": "queue-drain-large",
+    "key": "queue:50000@10ms/active500",
+    "params": {
+      "messages": 50000,
+      "settleMs": 10,
+      "maxActiveMessages": 500,
+      "maxConcurrentHandlers": 0,
+      "strictOrder": false,
+      "publishIntervalMs": 0,
+      "publishJitterMs": 0,
+      "tailEvery": 0,
+      "tailMs": 0
+    }
+  },
+  "metrics": {
+    "seedSeconds": 1.2193304,
+    "wallClockSeconds": 14.899364499999999,
+    "messagesPerSecond": 3355.8478282748238,
+    "idealSeconds": 1,
+    "efficiency": 0.06711695656549647,
+    "timeToFirstMessageSeconds": 0.0973667,
+    "peakConcurrentHandlers": 500,
+    "deliveryLatencyMs": {
+      "count": 50000,
+      "mean": 7988.93414,
+      "p50": 7867,
+      "p95": 14275,
+      "p99": 14790,
+      "max": 14923
+    },
+    "messagesHandled": 50000,
+    "duplicates": 0,
+    "missing": 0,
+    "orderViolations": 467
+  },
+  "checks": {
+    "passed": true,
+    "failures": []
+  },
+  "timeline": {
+    "bucketMs": 1000,
+    "series": {
+      "messagesPerSecond": [
+        3500,
+        3500,
+        3500,
+        3255,
+        3500,
+        3500,
+        3245,
+        3255,
+        3245,
+        3255,
+        3500,
+        3245,
+        3255,
+        3000,
+        3245
+      ],
+      "busyHandlers": [
+        36.124,
+        37.874,
+        39.084,
+        36.993,
+        39.156,
+        39.784,
+        36.629,
+        36.33,
+        37.214,
+        38.376,
+        40.215,
+        36.906,
+        36.366,
+        34.643,
+        38.062
+      ]
+    }
+  }
+}

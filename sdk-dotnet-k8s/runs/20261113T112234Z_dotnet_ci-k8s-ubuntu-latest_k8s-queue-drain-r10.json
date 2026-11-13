@@ -1,0 +1,182 @@
+{
+  "schemaVersion": 2,
+  "runId": "20261113T112234Z_dotnet_ci-k8s-ubuntu-latest_k8s-queue-drain-r10",
+  "timestampUtc": "2026-11-13T11:22:34.7267416+00:00",
+  "sdk": {
+    "name": "dotnet",
+    "version": "0.0.0-alpha.0",
+    "runtime": ".NET 10.0.15"
+  },
+  "environment": {
+    "label": "ci-k8s-ubuntu-latest",
+    "gitSha": "02fc4b84e7c755d94137288211fe22ed1076ff28",
+    "gitBranch": "main",
+    "gitDirty": false,
+    "os": "Ubuntu 24.04.5 LTS",
+    "cpuCount": 4
+  },
+  "topology": {
+    "apiReplicas": 3,
+    "loadBalancer": true,
+    "server": "kubernetes kind-daprmq"
+  },
+  "scale": "extreme",
+  "scenario": {
+    "id": "P-05",
+    "name": "queue-drain",
+    "profile": "k8s-queue-drain-r10",
+    "key": "k8s-queue:100000@200ms/active40/handlers10/replicas10+fastscale",
+    "params": {
+      "messages": 100000,
+      "settleMs": 200,
+      "maxActiveMessages": 40,
+      "maxConcurrentHandlers": 10,
+      "replicas": 10,
+      "scaling": "keda",
+      "fastScaleUp": true,
+      "lockTtlSeconds": 60,
+      "publishers": 10
+    }
+  },
+  "metrics": {
+    "seedSeconds": 3.0845923,
+    "wallClockSeconds": 224.6469508,
+    "messagesPerSecond": 445.14292156597566,
+    "idealSeconds": 200,
+    "efficiency": 0.8902858431319514,
+    "timeToFirstMessageSeconds": 1.373,
+    "peakConcurrentHandlers": 100,
+    "deliveryLatencyMs": {
+      "count": 100000,
+      "mean": 113370.60093,
+      "p50": 123395.77059653304,
+      "p95": 218603.13475376478,
+      "p99": 221114,
+      "max": 221114
+    },
+    "messagesHandled": 100000,
+    "duplicates": 0,
+    "missing": 0,
+    "orderViolations": 0,
+    "deadLettered": 0,
+    "peakDepth": 99900,
+    "peakReplicas": 10,
+    "diagnostics": {
+      "actorCalls": {
+        "coordinator": 0,
+        "queueActor": 36461
+      },
+      "actorCallLatencyMs": {
+        "coordinator": null,
+        "queueActor": 37.1
+      },
+      "cpuThrottledPercent": {
+        "gateway": 0.0,
+        "worker": 23.3
+      }
+    }
+  },
+  "timeline": {
+    "bucketMs": 5000,
+    "series": {
+      "messagesPerSecond": [
+        0,
+        46,
+        52,
+        434.6,
+        509.4,
+        500,
+        500,
+        496.6,
+        499.6,
+        499.8,
+        500,
+        499,
+        499.8,
+        500,
+        493.4,
+        472.2,
+        464,
+        474,
+        466.4,
+        462.4,
+        432,
+        468,
+        466,
+        460,
+        459.4,
+        474,
+        476,
+        452,
+        462,
+        456,
+        464,
+        458,
+        452,
+        458,
+        456,
+        466,
+        452,
+        452,
+        455,
+        456.8,
+        448.2,
+        432,
+        436,
+        436,
+        440
+      ],
+      "busyHandlers": [
+        0,
+        10,
+        10,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        62,
+        50,
+        90,
+        70,
+        100,
+        40,
+        60,
+        60,
+        60,
+        47,
+        70,
+        70,
+        70,
+        70,
+        60,
+        70,
+        70,
+        60,
+        50,
+        40,
+        80,
+        60,
+        70,
+        55,
+        90,
+        76,
+        40,
+        70,
+        70,
+        70,
+        70
+      ]
+    }
+  },
+  "checks": {
+    "passed": true,
+    "failures": []
+  }
+}

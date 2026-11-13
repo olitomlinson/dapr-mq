@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 2,
+  "runId": "20261113T130739Z_python_ci-ubuntu-latest_queue-drain-tail",
+  "timestampUtc": "2026-11-13T13:07:39.379203+00:00",
+  "sdk": {
+    "name": "python",
+    "version": "0.0.0a0",
+    "runtime": "CPython 3.12.16"
+  },
+  "environment": {
+    "label": "ci-ubuntu-latest",
+    "gitSha": "02fc4b84e7c755d94137288211fe22ed1076ff28",
+    "gitBranch": "main",
+    "gitDirty": false,
+    "os": "Linux-7.0.0-1019-azure-x86_64-with-glibc2.43",
+    "cpuCount": 4
+  },
+  "topology": {
+    "apiReplicas": 3,
+    "schedulerReplicas": 3,
+    "loadBalancer": true,
+    "server": "testcontainers daprmq-api:test"
+  },
+  "scale": "extreme",
+  "scenario": {
+    "id": "P-05",
+    "name": "queue-drain",
+    "profile": "queue-drain-tail",
+    "key": "queue:2000@100ms/active100+tail5000ms/20",
+    "params": {
+      "messages": 2000,
+      "settleMs": 100,
+      "maxActiveMessages": 100,
+      "maxConcurrentHandlers": 0,
+      "strictOrder": false,
+      "publishIntervalMs": 0,
+      "publishJitterMs": 0,
+      "tailEvery": 20,
+      "tailMs": 5000
+    }
+  },
+  "metrics": {
+    "seedSeconds": 0.08030640600009065,
+    "wallClockSeconds": 11.606778641000346,
+    "messagesPerSecond": 172.3130992552148,
+    "idealSeconds": 6.9,
+    "efficiency": 0.5944801924304911,
+    "timeToFirstMessageSeconds": 0.02806089299974701,
+    "peakConcurrentHandlers": 100,
+    "deliveryLatencyMs": {
+      "count": 2000,
+      "mean": 2645.066,
+      "p50": 1776,
+      "p95": 6403,
+      "p99": 6648,
+      "max": 6650
+    },
+    "messagesHandled": 2000,
+    "duplicates": 0,
+    "missing": 0,
+    "orderViolations": 6
+  },
+  "checks": {
+    "passed": true,
+    "failures": []
+  },
+  "timeline": {
+    "bucketMs": 1000,
+    "series": {
+      "messagesPerSecond": [
+        576,
+        402,
+        211,
+        163,
+        126,
+        173,
+        302,
+        11,
+        7,
+        6,
+        10,
+        13
+      ],
+      "busyHandlers": [
+        79.446,
+        85.135,
+        76.769,
+        82.688,
+        87.269,
+        77.838,
+        78.5,
+        41.611,
+        32.554,
+        25.386,
+        18.85,
+        4.652
+      ]
+    }
+  }
+}

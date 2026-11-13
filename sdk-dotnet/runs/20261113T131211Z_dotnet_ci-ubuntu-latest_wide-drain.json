@@ -1,0 +1,174 @@
+{
+  "schemaVersion": 2,
+  "runId": "20261113T131211Z_dotnet_ci-ubuntu-latest_wide-drain",
+  "timestampUtc": "2026-11-13T13:12:11.6105764\u002B00:00",
+  "sdk": {
+    "name": "dotnet",
+    "version": "0.0.0-alpha.0",
+    "runtime": ".NET 10.0.15"
+  },
+  "environment": {
+    "label": "ci-ubuntu-latest",
+    "gitSha": "02fc4b84e7c755d94137288211fe22ed1076ff28",
+    "gitBranch": "main",
+    "gitDirty": false,
+    "os": "Ubuntu 26.04.1 LTS",
+    "cpuCount": 4
+  },
+  "topology": {
+    "apiReplicas": 3,
+    "schedulerReplicas": 3,
+    "loadBalancer": true,
+    "server": "testcontainers daprmq-api:test"
+  },
+  "scale": "extreme",
+  "scenario": {
+    "id": "P-04",
+    "name": "session-drain",
+    "profile": "wide-drain",
+    "key": "2000x10@50ms/200slots\u002Bidle1s",
+    "params": {
+      "sessions": 2000,
+      "messagesPerSession": 10,
+      "settleMs": 50,
+      "maxConcurrentSessions": 200,
+      "prefetchCount": 10,
+      "leaseSeconds": 30,
+      "sessionIdleTimeoutSeconds": 1,
+      "publishMode": "before",
+      "publishIntervalMs": 0,
+      "publishJitterMs": 0
+    }
+  },
+  "metrics": {
+    "seedSeconds": 8.6387277,
+    "wallClockSeconds": 48.961885499999994,
+    "idealSeconds": 5,
+    "efficiency": 0.10212025025057503,
+    "timeToFirstMessageSeconds": 0.1013312,
+    "tailSeconds": 0.5023050999999977,
+    "peak": {
+      "startSeconds": 0.1013312,
+      "endSeconds": 48.4595804,
+      "capacitySlotSeconds": 9671.64984,
+      "handlingSeconds": 997.9544520999993,
+      "claimSeconds": 7280.883241499987,
+      "inSessionWaitSeconds": 3.952957100000338,
+      "drainWaitSeconds": 1388.8490471000034,
+      "betweenStreamsSeconds": 0.010142200008034705,
+      "idleSlotSeconds": 8673.695387900001,
+      "utilization": 0.10318347630542415
+    },
+    "overall": {
+      "startSeconds": 0,
+      "endSeconds": 48.961885499999994,
+      "capacitySlotSeconds": 9792.3771,
+      "handlingSeconds": 1004.8756081999995,
+      "claimSeconds": 7361.221209099985,
+      "inSessionWaitSeconds": 3.9784700000003843,
+      "drainWaitSeconds": 1403.8992994000025,
+      "betweenStreamsSeconds": 18.402513300007207,
+      "idleSlotSeconds": 8787.5014918,
+      "utilization": 0.10261814858008272
+    },
+    "claimLatencyMs": {
+      "count": 2000,
+      "mean": 3517.9549510499955,
+      "p50": 3441.426900000002,
+      "p95": 5034.860799999999,
+      "p99": 5449.7065,
+      "max": 5605.914700000001
+    },
+    "drainWaitMs": {
+      "count": 2000,
+      "mean": 706.1673211999998,
+      "p50": 713.1454999999987,
+      "p95": 1125.323599999996,
+      "p99": 1135.0992999999999,
+      "max": 1159.0802000000003
+    },
+    "interMessageGapMs": {
+      "count": 18000,
+      "mean": 0.22076766111113066,
+      "p50": 0.12840000000142027,
+      "p95": 0.5944000000017695,
+      "p99": 1.0692000000053667,
+      "max": 12.871200000001409
+    },
+    "deliveryLatencyMs": {
+      "count": 20000,
+      "mean": 28348.69725,
+      "p50": 27240,
+      "p95": 46603,
+      "p99": 48431,
+      "max": 48966
+    },
+    "streams": 2183,
+    "failedClaims": 183,
+    "sessionsClaimedMoreThanOnce": 0,
+    "messagesHandled": 20000,
+    "duplicates": 0,
+    "missing": 0,
+    "fifoViolations": 0
+  },
+  "checks": {
+    "passed": true,
+    "failures": []
+  },
+  "timeline": {
+    "bucketMs": 1000,
+    "series": {
+      "busySlots": [
+        17.341,
+        23.938,
+        31.731,
+        28.822,
+        22.24,
+        22.146,
+        13.111,
+        21.103,
+        18.127,
+        13.709,
+        17.407,
+        15.16,
+        16.583,
+        16.553,
+        24.112,
+        23.899,
+        24.678,
+        24.383,
+        20.826,
+        21.462,
+        23.465,
+        15.865,
+        19.479,
+        17.632,
+        21.811,
+        18.895,
+        20.047,
+        16.229,
+        14.849,
+        15.467,
+        13.932,
+        14.402,
+        19.001,
+        19.059,
+        21.092,
+        20.299,
+        25.076,
+        25.072,
+        25.21,
+        23.849,
+        23.529,
+        23.804,
+        23.115,
+        23.398,
+        21.784,
+        24.815,
+        21.759,
+        16.122,
+        18.489
+      ]
+    }
+  }
+}

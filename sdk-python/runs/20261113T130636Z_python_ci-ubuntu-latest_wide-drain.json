@@ -1,0 +1,163 @@
+{
+  "schemaVersion": 2,
+  "runId": "20261113T130636Z_python_ci-ubuntu-latest_wide-drain",
+  "timestampUtc": "2026-11-13T13:06:36.876330+00:00",
+  "sdk": {
+    "name": "python",
+    "version": "0.0.0a0",
+    "runtime": "CPython 3.12.16"
+  },
+  "environment": {
+    "label": "ci-ubuntu-latest",
+    "gitSha": "02fc4b84e7c755d94137288211fe22ed1076ff28",
+    "gitBranch": "main",
+    "gitDirty": false,
+    "os": "Linux-7.0.0-1019-azure-x86_64-with-glibc2.43",
+    "cpuCount": 4
+  },
+  "topology": {
+    "apiReplicas": 3,
+    "schedulerReplicas": 3,
+    "loadBalancer": true,
+    "server": "testcontainers daprmq-api:test"
+  },
+  "scale": "extreme",
+  "scenario": {
+    "id": "P-04",
+    "name": "session-drain",
+    "profile": "wide-drain",
+    "key": "2000x10@50ms/200slots+idle1s",
+    "params": {
+      "sessions": 2000,
+      "messagesPerSession": 10,
+      "settleMs": 50,
+      "maxConcurrentSessions": 200,
+      "prefetchCount": 10,
+      "leaseSeconds": 30,
+      "sessionIdleTimeoutSeconds": 1,
+      "publishMode": "before",
+      "publishIntervalMs": 0,
+      "publishJitterMs": 0
+    }
+  },
+  "metrics": {
+    "seedSeconds": 8.503561534000255,
+    "wallClockSeconds": 37.27109460400061,
+    "idealSeconds": 5.0,
+    "efficiency": 0.13415221777423486,
+    "timeToFirstMessageSeconds": 0.09949539500030369,
+    "tailSeconds": 0.5127305140003955,
+    "peak": {
+      "startSeconds": 0.09949539500030369,
+      "endSeconds": 36.758364090000214,
+      "capacitySlotSeconds": 7331.773738999982,
+      "handlingSeconds": 1008.3236752529269,
+      "claimSeconds": 4922.43185313299,
+      "inSessionWaitSeconds": 17.1276805700536,
+      "drainWaitSeconds": 1383.8305535459958,
+      "betweenStreamsSeconds": 0.05997649801243097,
+      "idleSlotSeconds": 6323.4500637470555,
+      "utilization": 0.13752793132299487
+    },
+    "overall": {
+      "startSeconds": 0.0,
+      "endSeconds": 37.27109460400061,
+      "capacitySlotSeconds": 7454.218920800122,
+      "handlingSeconds": 1015.1727478479268,
+      "claimSeconds": 5002.058571692028,
+      "inSessionWaitSeconds": 17.21450143905622,
+      "drainWaitSeconds": 1399.0457748340134,
+      "betweenStreamsSeconds": 20.72732498709578,
+      "idleSlotSeconds": 6439.046172952195,
+      "utilization": 0.1361876755477635
+    },
+    "claimLatencyMs": {
+      "count": 2000,
+      "mean": 2393.444296461504,
+      "p50": 2409.1810589998204,
+      "p95": 3313.529471000038,
+      "p99": 3529.197151000517,
+      "max": 3659.1806030000953
+    },
+    "drainWaitMs": {
+      "count": 2000,
+      "mean": 708.6608060480016,
+      "p50": 702.8035189996444,
+      "p95": 1114.5546809993903,
+      "p99": 1124.2124639993563,
+      "max": 1246.5516660004141
+    },
+    "interMessageGapMs": {
+      "count": 18000,
+      "mean": 0.9501103887808111,
+      "p50": 0.7734079999863752,
+      "p95": 2.199645000473538,
+      "p99": 3.5068219995082472,
+      "max": 38.25649999998859
+    },
+    "deliveryLatencyMs": {
+      "count": 20000,
+      "mean": 22244.74215,
+      "p50": 21716,
+      "p95": 35662,
+      "p99": 36741,
+      "max": 37385
+    },
+    "streams": 2158,
+    "failedClaims": 158,
+    "sessionsClaimedMoreThanOnce": 0,
+    "messagesHandled": 20000,
+    "duplicates": 0,
+    "missing": 0,
+    "fifoViolations": 0
+  },
+  "checks": {
+    "passed": true,
+    "failures": []
+  },
+  "timeline": {
+    "bucketMs": 1000,
+    "series": {
+      "busySlots": [
+        28.456,
+        34.736,
+        34.905,
+        27.334,
+        25.921,
+        29.908,
+        26.108,
+        28.289,
+        26.191,
+        28.625,
+        28.073,
+        28.623,
+        28.16,
+        29.187,
+        28.434,
+        28.419,
+        29.817,
+        28.869,
+        29.084,
+        28.906,
+        28.687,
+        27.379,
+        22.304,
+        22.512,
+        21.596,
+        23.259,
+        23.257,
+        23.417,
+        22.297,
+        23.27,
+        27.811,
+        28.404,
+        28.812,
+        27.938,
+        28.616,
+        28.447,
+        27.259,
+        1.862
+      ]
+    }
+  }
+}

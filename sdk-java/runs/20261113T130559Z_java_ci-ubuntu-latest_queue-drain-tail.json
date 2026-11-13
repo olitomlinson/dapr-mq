@@ -1,0 +1,74 @@
+{
+  "schemaVersion" : 2,
+  "runId" : "20261113T130559Z_java_ci-ubuntu-latest_queue-drain-tail",
+  "timestampUtc" : "2026-11-13T13:05:59.849604972Z",
+  "sdk" : {
+    "name" : "java",
+    "version" : null,
+    "runtime" : "OpenJDK 64-Bit Server VM 17.0.21"
+  },
+  "environment" : {
+    "label" : "ci-ubuntu-latest",
+    "gitSha" : "02fc4b84e7c755d94137288211fe22ed1076ff28",
+    "gitBranch" : "main",
+    "gitDirty" : false,
+    "os" : "Linux 7.0.0-1019-azure",
+    "cpuCount" : 4
+  },
+  "topology" : {
+    "apiReplicas" : 3,
+    "schedulerReplicas" : 3,
+    "loadBalancer" : true,
+    "server" : "testcontainers daprmq-api:test"
+  },
+  "scale" : "extreme",
+  "scenario" : {
+    "id" : "P-05",
+    "name" : "queue-drain",
+    "profile" : "queue-drain-tail",
+    "key" : "queue:2000@100ms/active100+tail5000ms/20",
+    "params" : {
+      "messages" : 2000,
+      "settleMs" : 100,
+      "maxActiveMessages" : 100,
+      "maxConcurrentHandlers" : 0,
+      "strictOrder" : false,
+      "publishIntervalMs" : 0,
+      "publishJitterMs" : 0,
+      "tailEvery" : 20,
+      "tailMs" : 5000
+    }
+  },
+  "metrics" : {
+    "seedSeconds" : 0.058693967,
+    "wallClockSeconds" : 11.629520665,
+    "messagesPerSecond" : 171.97613363542703,
+    "idealSeconds" : 6.9,
+    "efficiency" : 0.5933176610422233,
+    "timeToFirstMessageSeconds" : 0.026588173,
+    "peakConcurrentHandlers" : 100,
+    "deliveryLatencyMs" : {
+      "count" : 2000,
+      "mean" : 2586.7165,
+      "p50" : 1669.0,
+      "p95" : 6436.0,
+      "p99" : 6554.0,
+      "max" : 6663.0
+    },
+    "messagesHandled" : 2000,
+    "duplicates" : 0,
+    "missing" : 0,
+    "orderViolations" : 132
+  },
+  "checks" : {
+    "passed" : true,
+    "failures" : [ ]
+  },
+  "timeline" : {
+    "bucketMs" : 1000,
+    "series" : {
+      "messagesPerSecond" : [ 576, 449, 164, 163, 126, 209, 266, 11, 8, 5, 10, 13 ],
+      "busyHandlers" : [ 82.298, 84.817, 76.717, 82.367, 87.269, 80.892, 74.672, 41.261, 32.447, 25.279, 18.211, 3.999 ]
+    }
+  }
+}

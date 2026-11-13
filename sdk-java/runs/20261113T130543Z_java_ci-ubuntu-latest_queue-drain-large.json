@@ -1,0 +1,74 @@
+{
+  "schemaVersion" : 2,
+  "runId" : "20261113T130543Z_java_ci-ubuntu-latest_queue-drain-large",
+  "timestampUtc" : "2026-11-13T13:05:43.197984155Z",
+  "sdk" : {
+    "name" : "java",
+    "version" : null,
+    "runtime" : "OpenJDK 64-Bit Server VM 17.0.21"
+  },
+  "environment" : {
+    "label" : "ci-ubuntu-latest",
+    "gitSha" : "02fc4b84e7c755d94137288211fe22ed1076ff28",
+    "gitBranch" : "main",
+    "gitDirty" : false,
+    "os" : "Linux 7.0.0-1019-azure",
+    "cpuCount" : 4
+  },
+  "topology" : {
+    "apiReplicas" : 3,
+    "schedulerReplicas" : 3,
+    "loadBalancer" : true,
+    "server" : "testcontainers daprmq-api:test"
+  },
+  "scale" : "extreme",
+  "scenario" : {
+    "id" : "P-05",
+    "name" : "queue-drain",
+    "profile" : "queue-drain-large",
+    "key" : "queue:50000@10ms/active500",
+    "params" : {
+      "messages" : 50000,
+      "settleMs" : 10,
+      "maxActiveMessages" : 500,
+      "maxConcurrentHandlers" : 0,
+      "strictOrder" : false,
+      "publishIntervalMs" : 0,
+      "publishJitterMs" : 0,
+      "tailEvery" : 0,
+      "tailMs" : 0
+    }
+  },
+  "metrics" : {
+    "seedSeconds" : 1.01933941,
+    "wallClockSeconds" : 15.472150119,
+    "messagesPerSecond" : 3231.61290547455,
+    "idealSeconds" : 1.0,
+    "efficiency" : 0.06463225810949101,
+    "timeToFirstMessageSeconds" : 0.099032774,
+    "peakConcurrentHandlers" : 288,
+    "deliveryLatencyMs" : {
+      "count" : 50000,
+      "mean" : 8192.76166,
+      "p50" : 8074.0,
+      "p95" : 14759.0,
+      "p99" : 15345.0,
+      "max" : 15488.0
+    },
+    "messagesHandled" : 50000,
+    "duplicates" : 0,
+    "missing" : 0,
+    "orderViolations" : 7675
+  },
+  "checks" : {
+    "passed" : true,
+    "failures" : [ ]
+  },
+  "timeline" : {
+    "bucketMs" : 1000,
+    "series" : {
+      "messagesPerSecond" : [ 3000, 3288, 3500, 3212, 3288, 3212, 3500, 3288, 3500, 2712, 3000, 3500, 3000, 3500, 3000, 1500 ],
+      "busyHandlers" : [ 31.643, 35.058, 35.248, 32.519, 33.357, 32.548, 35.451, 33.315, 35.501, 27.362, 30.376, 35.333, 30.664, 35.061, 30.266, 15.178 ]
+    }
+  }
+}

@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 2,
+  "runId": "20261113T130723Z_python_ci-ubuntu-latest_queue-drain-large",
+  "timestampUtc": "2026-11-13T13:07:23.732388+00:00",
+  "sdk": {
+    "name": "python",
+    "version": "0.0.0a0",
+    "runtime": "CPython 3.12.16"
+  },
+  "environment": {
+    "label": "ci-ubuntu-latest",
+    "gitSha": "02fc4b84e7c755d94137288211fe22ed1076ff28",
+    "gitBranch": "main",
+    "gitDirty": false,
+    "os": "Linux-7.0.0-1019-azure-x86_64-with-glibc2.43",
+    "cpuCount": 4
+  },
+  "topology": {
+    "apiReplicas": 3,
+    "schedulerReplicas": 3,
+    "loadBalancer": true,
+    "server": "testcontainers daprmq-api:test"
+  },
+  "scale": "extreme",
+  "scenario": {
+    "id": "P-05",
+    "name": "queue-drain",
+    "profile": "queue-drain-large",
+    "key": "queue:50000@10ms/active500",
+    "params": {
+      "messages": 50000,
+      "settleMs": 10,
+      "maxActiveMessages": 500,
+      "maxConcurrentHandlers": 0,
+      "strictOrder": false,
+      "publishIntervalMs": 0,
+      "publishJitterMs": 0,
+      "tailEvery": 0,
+      "tailMs": 0
+    }
+  },
+  "metrics": {
+    "seedSeconds": 1.226518145999762,
+    "wallClockSeconds": 14.261652450999463,
+    "messagesPerSecond": 3505.9050956255755,
+    "idealSeconds": 1.0,
+    "efficiency": 0.07011810191251151,
+    "timeToFirstMessageSeconds": 0.07453975399948831,
+    "peakConcurrentHandlers": 187,
+    "deliveryLatencyMs": {
+      "count": 50000,
+      "mean": 7647.96522,
+      "p50": 7576,
+      "p95": 13663,
+      "p99": 14187,
+      "max": 14270
+    },
+    "messagesHandled": 50000,
+    "duplicates": 0,
+    "missing": 0,
+    "orderViolations": 9
+  },
+  "checks": {
+    "passed": true,
+    "failures": []
+  },
+  "timeline": {
+    "bucketMs": 1000,
+    "series": {
+      "messagesPerSecond": [
+        3874,
+        3722,
+        3597,
+        3574,
+        3195,
+        3500,
+        3731,
+        3269,
+        3231,
+        3500,
+        3500,
+        3500,
+        3686,
+        3110,
+        1011
+      ],
+      "busyHandlers": [
+        40.201,
+        39.418,
+        36.742,
+        37.191,
+        33.493,
+        35.775,
+        39.767,
+        34.015,
+        33.073,
+        35.787,
+        38.524,
+        35.771,
+        39.979,
+        32.249,
+        9.688
+      ]
+    }
+  }
+}
