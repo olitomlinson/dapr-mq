@@ -13,6 +13,10 @@ class EnqueueItem:
     # Routes the item to that session of the queue. Every item in one enqueue call must have the
     # same session_id (or none); the server rejects a call that mixes them.
     session_id: str | None = None
+    expiry_ttl_seconds: int | None = None
+    """The message's time to live. None uses the server's default (one year unless configured); the
+    server rejects values below its minimum (10 minutes by default) or over 10 years. An item still
+    queued past its expiry is never delivered."""
 
 
 @dataclass
@@ -29,6 +33,12 @@ class DequeueLockedItem:
     priority: int
     lock_id: str
     lock_expires_at: float
+    expiry_at: float | None = None
+    """When the message expires, in Unix seconds; None if it never does."""
+    expiry_ttl_seconds: int | None = None
+    """The time to live expiry_at was computed from."""
+    original_expiry_ttl_seconds: int | None = None
+    """On an item from a dead-letter queue, the producer's original time to live; None otherwise."""
 
 
 @dataclass
@@ -99,6 +109,12 @@ class SessionDelivery:
     dead_letter: Callable[[], Awaitable[None]]
     nack: Callable[[], Awaitable[None]]
     """Returns the item to the front of the session for redelivery."""
+    expiry_at: float | None = None
+    """When the message expires, in Unix seconds; None if it never does."""
+    expiry_ttl_seconds: int | None = None
+    """The time to live expiry_at was computed from."""
+    original_expiry_ttl_seconds: int | None = None
+    """On an item from a dead-letter queue, the producer's original time to live; None otherwise."""
 
 
 @dataclass
@@ -117,6 +133,12 @@ class QueueDelivery:
     nack: Callable[[], Awaitable[None]]
     """Returns the item to its original position for redelivery (+1 delivery count)."""
     dead_letter: Callable[[], Awaitable[None]]
+    expiry_at: float | None = None
+    """When the message expires, in Unix seconds; None if it never does."""
+    expiry_ttl_seconds: int | None = None
+    """The time to live expiry_at was computed from."""
+    original_expiry_ttl_seconds: int | None = None
+    """On an item from a dead-letter queue, the producer's original time to live; None otherwise."""
 
 
 @dataclass(frozen=True)

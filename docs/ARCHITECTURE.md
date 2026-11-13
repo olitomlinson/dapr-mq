@@ -284,7 +284,35 @@ activation, found through the `locks_exp_{bucket}` index (`ActorMetadata.LockExp
 restored to the **position it was taken from**, not the tail: every item carries a monotonic `Sequence` stamped at
 enqueue, and the sweep merges reclaimed items back into the head segment in `Sequence` order. Each expiry increments the
 item's `DeliveryCount`; past `MaxDeliveryCount` (`DAPRMQ_MAX_DELIVERY_COUNT`, default 10) it is dead-lettered instead.
-Lock TTL is clamped to 1–300 seconds.
+Lock TTL is clamped to 1–300 seconds. An item whose *message* has expired (see [Message expiry](#message-expiry)) is
+removed instead of restored, without counting a delivery.
+
+### Dead-letter queues
+
+`{queueId}-deadletter` is an ordinary `QueueActor`, recognised by its id suffix (`DeadLetterActorIdSuffix`), and it never
+dead-letters: `DeadLetter` returns `DEADLETTER_NOT_ALLOWED` and leaves the lock, `MaxDeliveryCount` isn't applied (a nack
+or lapse always restores the item), and its expired items are always dropped. Dead-lettering replaces an item's expiry
+with the dead-letter period from that moment and keeps the producer's time to live in `OriginalExpiryTtlSeconds`.
+
+## Message expiry
+
+Every message expires (proposals/message-expiry.md). The API server validates the producer's time to live and stamps
+`ExpiryAt` (Unix seconds) and `ExpiryTtlSeconds` on the `EnqueueItem` once, using `DAPRMQ_DEFAULT_EXPIRY_TTL_SECONDS` (one
+year) when none is given; actors never compute either. Both are stored on the segment item and the lock, so they survive
+lock, restore, nack and dead-letter, and `TopicActor` forwards them unchanged so every subscriber's copy expires together.
+A null `ExpiryAt` (items planted by tests) never expires.
+
+- **Checked while waiting, and on the way back.** Dequeue/DequeueLocked pop expired items off the head and drop them in
+  the same turn and the same save. Each turn removes at most `DAPRMQ_EXPIRY_SWEEP_BATCH_SIZE` (200); if it runs out of
+  budget before finding a live item it commits and returns `ExpiredMore`, and the controller, gRPC service, consume
+  streams and `HttpSinkActor` call again at once. A locked item is the consumer's until it would go back into the queue:
+  the lock sweep, `Nack` and a session lease lapse drop an expired item instead of restoring it.
+- **Dropped or dead-lettered.** Dropped and logged by default. With `DAPRMQ_DEADLETTER_ON_EXPIRY`, a turn's expired
+  items go to `{id}-deadletter` in one `Enqueue` call before the commit. If that fails, a dequeue clears the turn's
+  staged state and returns `UNAVAILABLE` (nothing dequeued, retryable); the sweep and session lapse leave the locks for
+  a later pass.
+- **Lazy, no sweep.** Expired items count towards depth (and so KEDA) until a dequeue reaches them; a queue nobody
+  dequeues from keeps them.
 
 ### Single-consumer vs. competing consumers
 
@@ -650,6 +678,7 @@ metadata:
 - **Segmented Storage**: Max 100 items per segment (hardcoded in MaxSegmentSize constant)
 - **Memory Optimization**: With offloading enabled (v4.1+), only head, buffer, and tail segments kept in memory
 - **Priority-Based Ordering**: Items are FIFO within each priority level (0 = highest priority)
+- **Lazy Expiry**: Expired messages are removed only when a dequeue reaches them, so they count towards queue depth until then
 - **No Transactions**: Enqueue/Dequeue are separate operations
 - **State Store Dependency**: Requires configured Dapr state store
 - **Language**: C# implementation only (.NET 10.0+)

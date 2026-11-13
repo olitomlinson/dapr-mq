@@ -7,7 +7,9 @@ namespace DaprMQ.Client;
 
 internal record EnqueueResponseWire(bool Success, string Message, int ItemsEnqueued, int ItemsDeduplicated = 0);
 
-internal record DequeueLockedItemWire(JsonElement Item, int Priority, string LockId, double LockExpiresAt);
+internal record DequeueLockedItemWire(
+    JsonElement Item, int Priority, string LockId, double LockExpiresAt,
+    double? ExpiryAt = null, int? ExpiryTtlSeconds = null, int? OriginalExpiryTtlSeconds = null);
 
 internal record DequeueLockedResponseWire(List<DequeueLockedItemWire> Items, bool Locked, string? Message = null);
 

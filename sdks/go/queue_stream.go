@@ -40,6 +40,7 @@ type QueueDelivery struct {
 	// DeliveryCount counts this delivery: 1 is the first, 2 the first redelivery after a Nack or
 	// a lapsed lock, and so on.
 	DeliveryCount int
+	MessageExpiry
 
 	stream *QueueStream
 }
@@ -93,7 +94,8 @@ func (s *QueueStream) Receive() (*QueueDelivery, error) {
 			d := p.Delivered
 			return &QueueDelivery{
 				LockID: d.LockId, Item: json.RawMessage(d.ItemJson), Priority: int(d.Priority),
-				LockExpiresAt: unixSeconds(d.LockExpiresAt), DeliveryCount: int(d.DeliveryCount), stream: s,
+				LockExpiresAt: unixSeconds(d.LockExpiresAt), DeliveryCount: int(d.DeliveryCount),
+				MessageExpiry: messageExpiry(d.ExpiryAt, d.ExpiryTtlSeconds, d.OriginalExpiryTtlSeconds), stream: s,
 			}, nil
 		case *pb.ConsumeResponse_SettleFailed:
 			if s.onSettleFailed != nil {

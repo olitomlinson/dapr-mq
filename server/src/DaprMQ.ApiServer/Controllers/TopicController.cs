@@ -13,11 +13,13 @@ public class TopicController : ControllerBase
 {
     private readonly ILogger<TopicController> _logger;
     private readonly ITopicActorInvoker _actorInvoker;
+    private readonly MessageExpiryStamper _expiryStamper;
 
-    public TopicController(ILogger<TopicController> logger, ITopicActorInvoker actorInvoker)
+    public TopicController(ILogger<TopicController> logger, ITopicActorInvoker actorInvoker, MessageExpiryStamper expiryStamper)
     {
         _logger = logger;
         _actorInvoker = actorInvoker;
+        _expiryStamper = expiryStamper;
     }
 
     /// <summary>
@@ -33,12 +35,22 @@ public class TopicController : ControllerBase
                 return BadRequest(new ApiErrorResponse("Items array cannot be empty"));
             }
 
-            var actorItems = request.Items.Select(apiItem => new EnqueueItem
+            foreach (var item in request.Items)
+            {
+                if (_expiryStamper.Validate(item.ExpiryTtlSeconds) is string expiryError)
+                {
+                    return BadRequest(new ApiErrorResponse(expiryError));
+                }
+            }
+
+            // Stamped once, here: TopicActor passes it to every subscriber unchanged, so every copy
+            // expires at the same moment however late a subscriber is reached.
+            var actorItems = request.Items.Select(apiItem => _expiryStamper.Stamp(new EnqueueItem
             {
                 ItemJson = apiItem.Item.GetRawText(),
                 Priority = apiItem.Priority,
                 IdempotencyKey = apiItem.IdempotencyKey
-            }).ToList();
+            }, apiItem.ExpiryTtlSeconds)).ToList();
 
             var result = await _actorInvoker.InvokeMethodAsync<PublishRequest, PublishResponse>(
                 new ActorId(topicId),

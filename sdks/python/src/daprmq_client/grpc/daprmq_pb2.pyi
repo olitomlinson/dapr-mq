@@ -1,4 +1,5 @@
 from google.protobuf.internal import containers as _containers
+from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
 from collections.abc import Iterable as _Iterable, Mapping as _Mapping
@@ -6,17 +7,26 @@ from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
+class ConsumeLockRenewal(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    RENEW_DELIVERED: _ClassVar[ConsumeLockRenewal]
+    RENEW_STARTED: _ClassVar[ConsumeLockRenewal]
+RENEW_DELIVERED: ConsumeLockRenewal
+RENEW_STARTED: ConsumeLockRenewal
+
 class EnqueueItem(_message.Message):
-    __slots__ = ("item_json", "priority", "idempotency_key", "session_id")
+    __slots__ = ("item_json", "priority", "idempotency_key", "session_id", "expiry_ttl_seconds")
     ITEM_JSON_FIELD_NUMBER: _ClassVar[int]
     PRIORITY_FIELD_NUMBER: _ClassVar[int]
     IDEMPOTENCY_KEY_FIELD_NUMBER: _ClassVar[int]
     SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    EXPIRY_TTL_SECONDS_FIELD_NUMBER: _ClassVar[int]
     item_json: str
     priority: int
     idempotency_key: str
     session_id: str
-    def __init__(self, item_json: _Optional[str] = ..., priority: _Optional[int] = ..., idempotency_key: _Optional[str] = ..., session_id: _Optional[str] = ...) -> None: ...
+    expiry_ttl_seconds: int
+    def __init__(self, item_json: _Optional[str] = ..., priority: _Optional[int] = ..., idempotency_key: _Optional[str] = ..., session_id: _Optional[str] = ..., expiry_ttl_seconds: _Optional[int] = ...) -> None: ...
 
 class EnqueueRequest(_message.Message):
     __slots__ = ("queue_id", "items")
@@ -59,12 +69,18 @@ class DequeueResponse(_message.Message):
     def __init__(self, success: _Optional[_Union[DequeueSuccess, _Mapping]] = ..., empty: _Optional[_Union[DequeueEmpty, _Mapping]] = ..., locked: _Optional[_Union[DequeueBlocked, _Mapping]] = ...) -> None: ...
 
 class DequeueSuccess(_message.Message):
-    __slots__ = ("item_json", "priority")
+    __slots__ = ("item_json", "priority", "expiry_at", "expiry_ttl_seconds", "original_expiry_ttl_seconds")
     ITEM_JSON_FIELD_NUMBER: _ClassVar[int]
     PRIORITY_FIELD_NUMBER: _ClassVar[int]
+    EXPIRY_AT_FIELD_NUMBER: _ClassVar[int]
+    EXPIRY_TTL_SECONDS_FIELD_NUMBER: _ClassVar[int]
+    ORIGINAL_EXPIRY_TTL_SECONDS_FIELD_NUMBER: _ClassVar[int]
     item_json: _containers.RepeatedScalarFieldContainer[str]
     priority: _containers.RepeatedScalarFieldContainer[int]
-    def __init__(self, item_json: _Optional[_Iterable[str]] = ..., priority: _Optional[_Iterable[int]] = ...) -> None: ...
+    expiry_at: _containers.RepeatedScalarFieldContainer[float]
+    expiry_ttl_seconds: _containers.RepeatedScalarFieldContainer[int]
+    original_expiry_ttl_seconds: _containers.RepeatedScalarFieldContainer[int]
+    def __init__(self, item_json: _Optional[_Iterable[str]] = ..., priority: _Optional[_Iterable[int]] = ..., expiry_at: _Optional[_Iterable[float]] = ..., expiry_ttl_seconds: _Optional[_Iterable[int]] = ..., original_expiry_ttl_seconds: _Optional[_Iterable[int]] = ...) -> None: ...
 
 class DequeueEmpty(_message.Message):
     __slots__ = ("message",)
@@ -105,16 +121,22 @@ class DequeueLockedResponse(_message.Message):
     def __init__(self, success: _Optional[_Union[DequeueLockedSuccess, _Mapping]] = ..., empty: _Optional[_Union[DequeueEmpty, _Mapping]] = ..., locked: _Optional[_Union[DequeueBlocked, _Mapping]] = ...) -> None: ...
 
 class DequeueLockedSuccess(_message.Message):
-    __slots__ = ("item_json", "priority", "lock_id", "lock_expires_at")
+    __slots__ = ("item_json", "priority", "lock_id", "lock_expires_at", "expiry_at", "expiry_ttl_seconds", "original_expiry_ttl_seconds")
     ITEM_JSON_FIELD_NUMBER: _ClassVar[int]
     PRIORITY_FIELD_NUMBER: _ClassVar[int]
     LOCK_ID_FIELD_NUMBER: _ClassVar[int]
     LOCK_EXPIRES_AT_FIELD_NUMBER: _ClassVar[int]
+    EXPIRY_AT_FIELD_NUMBER: _ClassVar[int]
+    EXPIRY_TTL_SECONDS_FIELD_NUMBER: _ClassVar[int]
+    ORIGINAL_EXPIRY_TTL_SECONDS_FIELD_NUMBER: _ClassVar[int]
     item_json: _containers.RepeatedScalarFieldContainer[str]
     priority: _containers.RepeatedScalarFieldContainer[int]
     lock_id: _containers.RepeatedScalarFieldContainer[str]
     lock_expires_at: _containers.RepeatedScalarFieldContainer[float]
-    def __init__(self, item_json: _Optional[_Iterable[str]] = ..., priority: _Optional[_Iterable[int]] = ..., lock_id: _Optional[_Iterable[str]] = ..., lock_expires_at: _Optional[_Iterable[float]] = ...) -> None: ...
+    expiry_at: _containers.RepeatedScalarFieldContainer[float]
+    expiry_ttl_seconds: _containers.RepeatedScalarFieldContainer[int]
+    original_expiry_ttl_seconds: _containers.RepeatedScalarFieldContainer[int]
+    def __init__(self, item_json: _Optional[_Iterable[str]] = ..., priority: _Optional[_Iterable[int]] = ..., lock_id: _Optional[_Iterable[str]] = ..., lock_expires_at: _Optional[_Iterable[float]] = ..., expiry_at: _Optional[_Iterable[float]] = ..., expiry_ttl_seconds: _Optional[_Iterable[int]] = ..., original_expiry_ttl_seconds: _Optional[_Iterable[int]] = ...) -> None: ...
 
 class AcknowledgeRequest(_message.Message):
     __slots__ = ("queue_id", "lock_id", "lease_id")
@@ -373,16 +395,22 @@ class SessionAssigned(_message.Message):
     def __init__(self, session_id: _Optional[str] = ..., lease_expires_at: _Optional[float] = ...) -> None: ...
 
 class SessionDelivered(_message.Message):
-    __slots__ = ("lock_id", "item_json", "priority", "lock_expires_at")
+    __slots__ = ("lock_id", "item_json", "priority", "lock_expires_at", "expiry_at", "expiry_ttl_seconds", "original_expiry_ttl_seconds")
     LOCK_ID_FIELD_NUMBER: _ClassVar[int]
     ITEM_JSON_FIELD_NUMBER: _ClassVar[int]
     PRIORITY_FIELD_NUMBER: _ClassVar[int]
     LOCK_EXPIRES_AT_FIELD_NUMBER: _ClassVar[int]
+    EXPIRY_AT_FIELD_NUMBER: _ClassVar[int]
+    EXPIRY_TTL_SECONDS_FIELD_NUMBER: _ClassVar[int]
+    ORIGINAL_EXPIRY_TTL_SECONDS_FIELD_NUMBER: _ClassVar[int]
     lock_id: str
     item_json: str
     priority: int
     lock_expires_at: float
-    def __init__(self, lock_id: _Optional[str] = ..., item_json: _Optional[str] = ..., priority: _Optional[int] = ..., lock_expires_at: _Optional[float] = ...) -> None: ...
+    expiry_at: float
+    expiry_ttl_seconds: int
+    original_expiry_ttl_seconds: int
+    def __init__(self, lock_id: _Optional[str] = ..., item_json: _Optional[str] = ..., priority: _Optional[int] = ..., lock_expires_at: _Optional[float] = ..., expiry_at: _Optional[float] = ..., expiry_ttl_seconds: _Optional[int] = ..., original_expiry_ttl_seconds: _Optional[int] = ...) -> None: ...
 
 class SessionError(_message.Message):
     __slots__ = ("error_code", "message")
@@ -405,28 +433,40 @@ class SessionDrained(_message.Message):
     def __init__(self, session_id: _Optional[str] = ...) -> None: ...
 
 class ConsumeRequest(_message.Message):
-    __slots__ = ("start", "ack", "nack", "dead_letter")
+    __slots__ = ("start", "ack", "nack", "dead_letter", "started")
     START_FIELD_NUMBER: _ClassVar[int]
     ACK_FIELD_NUMBER: _ClassVar[int]
     NACK_FIELD_NUMBER: _ClassVar[int]
     DEAD_LETTER_FIELD_NUMBER: _ClassVar[int]
+    STARTED_FIELD_NUMBER: _ClassVar[int]
     start: ConsumeStart
     ack: ConsumeAck
     nack: ConsumeNack
     dead_letter: ConsumeDeadLetter
-    def __init__(self, start: _Optional[_Union[ConsumeStart, _Mapping]] = ..., ack: _Optional[_Union[ConsumeAck, _Mapping]] = ..., nack: _Optional[_Union[ConsumeNack, _Mapping]] = ..., dead_letter: _Optional[_Union[ConsumeDeadLetter, _Mapping]] = ...) -> None: ...
+    started: ConsumeStarted
+    def __init__(self, start: _Optional[_Union[ConsumeStart, _Mapping]] = ..., ack: _Optional[_Union[ConsumeAck, _Mapping]] = ..., nack: _Optional[_Union[ConsumeNack, _Mapping]] = ..., dead_letter: _Optional[_Union[ConsumeDeadLetter, _Mapping]] = ..., started: _Optional[_Union[ConsumeStarted, _Mapping]] = ...) -> None: ...
 
 class ConsumeStart(_message.Message):
-    __slots__ = ("queue_id", "prefetch_count", "lock_ttl_seconds", "allow_competing_consumers")
+    __slots__ = ("queue_id", "prefetch_count", "lock_ttl_seconds", "allow_competing_consumers", "lock_renewal", "max_renewal_seconds")
     QUEUE_ID_FIELD_NUMBER: _ClassVar[int]
     PREFETCH_COUNT_FIELD_NUMBER: _ClassVar[int]
     LOCK_TTL_SECONDS_FIELD_NUMBER: _ClassVar[int]
     ALLOW_COMPETING_CONSUMERS_FIELD_NUMBER: _ClassVar[int]
+    LOCK_RENEWAL_FIELD_NUMBER: _ClassVar[int]
+    MAX_RENEWAL_SECONDS_FIELD_NUMBER: _ClassVar[int]
     queue_id: str
     prefetch_count: int
     lock_ttl_seconds: int
     allow_competing_consumers: bool
-    def __init__(self, queue_id: _Optional[str] = ..., prefetch_count: _Optional[int] = ..., lock_ttl_seconds: _Optional[int] = ..., allow_competing_consumers: _Optional[bool] = ...) -> None: ...
+    lock_renewal: ConsumeLockRenewal
+    max_renewal_seconds: int
+    def __init__(self, queue_id: _Optional[str] = ..., prefetch_count: _Optional[int] = ..., lock_ttl_seconds: _Optional[int] = ..., allow_competing_consumers: _Optional[bool] = ..., lock_renewal: _Optional[_Union[ConsumeLockRenewal, str]] = ..., max_renewal_seconds: _Optional[int] = ...) -> None: ...
+
+class ConsumeStarted(_message.Message):
+    __slots__ = ("lock_ids",)
+    LOCK_IDS_FIELD_NUMBER: _ClassVar[int]
+    lock_ids: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, lock_ids: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class ConsumeAck(_message.Message):
     __slots__ = ("lock_id",)
@@ -457,18 +497,24 @@ class ConsumeResponse(_message.Message):
     def __init__(self, delivered: _Optional[_Union[ConsumeDelivered, _Mapping]] = ..., settle_failed: _Optional[_Union[ConsumeSettleFailed, _Mapping]] = ..., error: _Optional[_Union[ConsumeError, _Mapping]] = ...) -> None: ...
 
 class ConsumeDelivered(_message.Message):
-    __slots__ = ("lock_id", "item_json", "priority", "lock_expires_at", "delivery_count")
+    __slots__ = ("lock_id", "item_json", "priority", "lock_expires_at", "delivery_count", "expiry_at", "expiry_ttl_seconds", "original_expiry_ttl_seconds")
     LOCK_ID_FIELD_NUMBER: _ClassVar[int]
     ITEM_JSON_FIELD_NUMBER: _ClassVar[int]
     PRIORITY_FIELD_NUMBER: _ClassVar[int]
     LOCK_EXPIRES_AT_FIELD_NUMBER: _ClassVar[int]
     DELIVERY_COUNT_FIELD_NUMBER: _ClassVar[int]
+    EXPIRY_AT_FIELD_NUMBER: _ClassVar[int]
+    EXPIRY_TTL_SECONDS_FIELD_NUMBER: _ClassVar[int]
+    ORIGINAL_EXPIRY_TTL_SECONDS_FIELD_NUMBER: _ClassVar[int]
     lock_id: str
     item_json: str
     priority: int
     lock_expires_at: float
     delivery_count: int
-    def __init__(self, lock_id: _Optional[str] = ..., item_json: _Optional[str] = ..., priority: _Optional[int] = ..., lock_expires_at: _Optional[float] = ..., delivery_count: _Optional[int] = ...) -> None: ...
+    expiry_at: float
+    expiry_ttl_seconds: int
+    original_expiry_ttl_seconds: int
+    def __init__(self, lock_id: _Optional[str] = ..., item_json: _Optional[str] = ..., priority: _Optional[int] = ..., lock_expires_at: _Optional[float] = ..., delivery_count: _Optional[int] = ..., expiry_at: _Optional[float] = ..., expiry_ttl_seconds: _Optional[int] = ..., original_expiry_ttl_seconds: _Optional[int] = ...) -> None: ...
 
 class ConsumeSettleFailed(_message.Message):
     __slots__ = ("lock_id", "error_code", "message")

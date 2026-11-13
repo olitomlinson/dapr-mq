@@ -44,7 +44,8 @@ public class QueueControllerLargeObjectTests
             _tokenIssuer,
             (mockBlobReaperActorInvoker ?? new Mock<IBlobReaperActorInvoker>()).Object,
             new BlobReapConfig { BackstopSeconds = 86400, PostDownloadSeconds = 86400 },
-            _mockSessionCoordinatorActorInvoker.Object);
+            _mockSessionCoordinatorActorInvoker.Object,
+            new MessageExpiryStamper(new ExpiryConfig(), TimeProvider.System));
         var httpContext = new DefaultHttpContext();
         httpContext.Request.Body = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(body));
         controller.ControllerContext = new ControllerContext { HttpContext = httpContext };

@@ -164,7 +164,8 @@ public class SessionQueueActorTests
             lockConfig,
             catalogRegistrar ?? Mock.Of<ICatalogRegistrar>(),
             reporter ?? Mock.Of<ISessionActivityReporter>(),
-            sessionDirectoryConfig ?? new SessionDirectoryConfig());
+            sessionDirectoryConfig ?? new SessionDirectoryConfig(),
+            new ExpiryConfig());
 
         var stateManagerProperty = typeof(Actor).GetProperty("StateManager");
         stateManagerProperty?.SetValue(actor, mockStateManager.Object);

@@ -191,6 +191,62 @@ public class DaprMQGrpcServiceConsumeTests
         writer.Written.Where(r => r.PayloadCase == ConsumeResponse.PayloadOneofCase.Delivered).Select(r => r.Delivered);
 
     [Fact]
+    public async Task Consume_ExpiredMore_DequeuesAgainWithoutWaiting_AndDeliveriesCarryTheirExpiry()
+    {
+        var call = 0;
+        _queue.Setup(i => i.InvokeMethodAsync<ActorModels.DequeueLockedRequest, ActorModels.DequeueLockedResponse>(
+                It.IsAny<ActorId>(), "DequeueLocked", It.IsAny<ActorModels.DequeueLockedRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => Interlocked.Increment(ref call) switch
+            {
+                1 => new ActorModels.DequeueLockedResponse { ExpiredMore = true },
+                2 => new ActorModels.DequeueLockedResponse { Items = [Item("lock-1") with { ExpiryAt = 1_800_003_600, ExpiryTtlSeconds = 3600 }] },
+                _ => new ActorModels.DequeueLockedResponse { IsEmpty = true }
+            });
+        SetupNack();
+        var reader = new FakeAsyncStreamReader<ConsumeRequest>();
+        var writer = new FakeServerStreamWriter<ConsumeResponse>();
+        reader.Add(Start());
+
+        // Long enough that only an immediate retry delivers within WaitUntilAsync's timeout.
+        var service = CreateService();
+        service.PollInterval = TimeSpan.FromSeconds(5);
+        var task = service.Consume(reader, writer, _mockContext.Object);
+        await WaitUntilAsync(() => Delivered(writer).Any());
+        reader.Complete();
+        await task;
+
+        var delivered = Assert.Single(Delivered(writer));
+        Assert.Equal(1_800_003_600, delivered.ExpiryAt);
+        Assert.Equal(3600, delivered.ExpiryTtlSeconds);
+        Assert.False(delivered.HasOriginalExpiryTtlSeconds);
+    }
+
+    [Fact]
+    public async Task Consume_Unavailable_KeepsTheStreamAndDequeuesAgain()
+    {
+        var call = 0;
+        _queue.Setup(i => i.InvokeMethodAsync<ActorModels.DequeueLockedRequest, ActorModels.DequeueLockedResponse>(
+                It.IsAny<ActorId>(), "DequeueLocked", It.IsAny<ActorModels.DequeueLockedRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => Interlocked.Increment(ref call) switch
+            {
+                1 => new ActorModels.DequeueLockedResponse { ErrorCode = "UNAVAILABLE" },
+                2 => new ActorModels.DequeueLockedResponse { Items = [Item("lock-1")] },
+                _ => new ActorModels.DequeueLockedResponse { IsEmpty = true }
+            });
+        SetupNack();
+        var reader = new FakeAsyncStreamReader<ConsumeRequest>();
+        var writer = new FakeServerStreamWriter<ConsumeResponse>();
+        reader.Add(Start());
+
+        var task = CreateService().Consume(reader, writer, _mockContext.Object);
+        await WaitUntilAsync(() => Delivered(writer).Any());
+        reader.Complete();
+        await task;
+
+        Assert.DoesNotContain(writer.Written, r => r.PayloadCase == ConsumeResponse.PayloadOneofCase.Error);
+    }
+
+    [Fact]
     public async Task Consume_FirstMessageNotStart_WritesErrorAndReturns()
     {
         var reader = new FakeAsyncStreamReader<ConsumeRequest>();

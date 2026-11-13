@@ -4,6 +4,7 @@ import com.daprmq.client.errors.DaprMQException;
 import com.daprmq.client.errors.LockNotFoundException;
 import com.daprmq.client.errors.StreamClosedException;
 import com.daprmq.client.errors.ValidationException;
+import com.daprmq.client.types.MessageExpiry;
 import com.daprmq.client.types.QueueDelivery;
 import com.daprmq.grpc.ConsumeDelivered;
 import com.daprmq.grpc.ConsumeError;
@@ -97,6 +98,20 @@ class QueueStreamTest {
         assertEquals("L1", requestObserver.sent.get(1).getAck().getLockId());
         assertEquals("L2", requestObserver.sent.get(2).getNack().getLockId());
         assertEquals("L3", requestObserver.sent.get(3).getDeadLetter().getLockId());
+    }
+
+    @Test
+    void deliveriesCarryTheirExpiry() {
+        QueueStream stream = newStream(ConsumeOptions.defaults());
+        responseObserver.onNext(ConsumeResponse.newBuilder().setDelivered(ConsumeDelivered.newBuilder()
+                .setLockId("L1").setItemJson("{}").setPriority(1).setLockExpiresAt(1).setDeliveryCount(1)
+                .setExpiryAt(1800003600.0).setExpiryTtlSeconds(3600).setOriginalExpiryTtlSeconds(600)).build());
+        responseObserver.onNext(delivered("L2", 1));
+
+        Iterator<QueueDelivery> it = stream.iterator();
+
+        assertEquals(new MessageExpiry(1800003600.0, 3600, 600), it.next().expiry());
+        assertEquals(MessageExpiry.NONE, it.next().expiry());
     }
 
     @Test

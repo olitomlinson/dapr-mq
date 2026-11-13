@@ -90,6 +90,11 @@ message EnqueueItem {
   // QueueActor instance ("{queue_id}-session-{session_id}") instead of the plain queue actor -
   // never forwarded into the actor-level request itself, purely a routing hint consumed here.
   optional string session_id = 4;
+
+  // Optional message time to live in seconds, from DAPRMQ_MIN_EXPIRY_TTL_SECONDS up to 10 years.
+  // Omitted means the broker default (DAPRMQ_DEFAULT_EXPIRY_TTL_SECONDS). An item waiting in the
+  // queue past its expiry is never delivered.
+  optional int32 expiry_ttl_seconds = 5;
 }
 
 // Request to enqueue items to a queue
@@ -152,6 +157,11 @@ message DequeueSuccess {
 
   // Priority levels of the dequeued items (parallel array)
   repeated int32 priority = 2;
+
+  // Message expiry (parallel arrays). 0 means none: an item with no expiry, or one never dead-lettered.
+  repeated double expiry_at = 3;
+  repeated int32 expiry_ttl_seconds = 4;
+  repeated int32 original_expiry_ttl_seconds = 5;
 }
 
 // Queue is empty
@@ -216,6 +226,11 @@ message DequeueLockedSuccess {
 
   // Unix timestamps (seconds since epoch) when locks expire (parallel array)
   repeated double lock_expires_at = 4;
+
+  // Message expiry (parallel arrays). 0 means none: an item with no expiry, or one never dead-lettered.
+  repeated double expiry_at = 5;
+  repeated int32 expiry_ttl_seconds = 6;
+  repeated int32 original_expiry_ttl_seconds = 7;
 }
 
 // Request to acknowledge and remove a locked item
@@ -556,6 +571,12 @@ message SessionDelivered {
   string item_json = 2;
   int32 priority = 3;
   double lock_expires_at = 4;
+
+  // Message expiry: when the item expires (Unix seconds), the time to live it was computed from, and,
+  // from a dead-letter queue, the producer's original time to live.
+  optional double expiry_at = 5;
+  optional int32 expiry_ttl_seconds = 6;
+  optional int32 original_expiry_ttl_seconds = 7;
 }
 
 // Terminal failure - the claim itself never succeeded.
@@ -673,6 +694,12 @@ message ConsumeDelivered {
 
   // How many times this item has been delivered, counting this delivery (1 = first delivery).
   int32 delivery_count = 5;
+
+  // Message expiry: when the item expires (Unix seconds), the time to live it was computed from, and,
+  // from a dead-letter queue, the producer's original time to live.
+  optional double expiry_at = 6;
+  optional int32 expiry_ttl_seconds = 7;
+  optional int32 original_expiry_ttl_seconds = 8;
 }
 
 message ConsumeSettleFailed {

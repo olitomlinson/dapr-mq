@@ -33,6 +33,35 @@ public class DaprMQClientTests
     }
 
     [Fact]
+    public async Task EnqueueAsync_ExpiryTtlSeconds_IsSent()
+    {
+        var handler = new FakeHttpMessageHandler(HttpStatusCode.OK,
+            """{"success":true,"message":"ok","itemsEnqueued":1,"itemsDeduplicated":0}""");
+        var client = CreateClient(handler);
+
+        await client.EnqueueAsync("q", [new EnqueueItemDto(new { }, ExpiryTtlSeconds: 3600)]);
+
+        Assert.Contains("\"expiryTtlSeconds\":3600", handler.LastRequestBody);
+    }
+
+    [Fact]
+    public async Task DequeueLockedAsync_MapsEachItemsExpiry()
+    {
+        var handler = new FakeHttpMessageHandler(HttpStatusCode.OK,
+            """{"items":[{"item":{},"priority":0,"lockId":"L1","lockExpiresAt":123.0,"expiryAt":1800003600.0,"expiryTtlSeconds":3600,"originalExpiryTtlSeconds":600},{"item":{},"priority":0,"lockId":"L2","lockExpiresAt":123.0}],"locked":false}""");
+        var client = CreateClient(handler);
+
+        var result = await client.DequeueLockedAsync("q", count: 2);
+
+        Assert.Equal(1_800_003_600, result!.Items[0].ExpiryAt);
+        Assert.Equal(3600, result.Items[0].ExpiryTtlSeconds);
+        Assert.Equal(600, result.Items[0].OriginalExpiryTtlSeconds);
+        Assert.Null(result.Items[1].ExpiryAt);
+        Assert.Null(result.Items[1].ExpiryTtlSeconds);
+        Assert.Null(result.Items[1].OriginalExpiryTtlSeconds);
+    }
+
+    [Fact]
     public async Task EnqueueAsync_400_ThrowsValidationException()
     {
         var handler = new FakeHttpMessageHandler(HttpStatusCode.BadRequest, """{"message":"bad item","success":false}""");

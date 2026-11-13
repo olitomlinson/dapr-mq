@@ -60,13 +60,15 @@
 An expired lock's item returns to the position it was taken from, not the tail: every item carries a monotonic
 `Sequence` stamped at enqueue, and the expiry sweep merges reclaimed items back into the head segment by it.
 
-**Error codes:** strings on the result models ([Models.cs](server/src/DaprMQ.Interfaces/Models.cs)), e.g. `LOCK_NOT_FOUND`, `LOCK_EXPIRED`, `INVALID_LOCK_ID`, `VALIDATION_ERROR`, `SESSION_LEASE_EXPIRED`, `SESSION_LOCKED`, `SESSION_NOT_FOUND`. An empty or locked queue is a result flag (`IsEmpty`, `Locked`), not a code. Delivery failures add `UNAVAILABLE` (not performed) and `DELIVERY_UNKNOWN` (may have been) - see [readiness-and-retries.md](proposals/readiness-and-retries.md).
+**Error codes:** strings on the result models ([Models.cs](server/src/DaprMQ.Interfaces/Models.cs)), e.g. `LOCK_NOT_FOUND`, `LOCK_EXPIRED`, `INVALID_LOCK_ID`, `VALIDATION_ERROR`, `SESSION_LEASE_EXPIRED`, `SESSION_LOCKED`, `SESSION_NOT_FOUND`, `DEADLETTER_NOT_ALLOWED`. An empty or locked queue is a result flag (`IsEmpty`, `Locked`, `ExpiredMore`), not a code. Delivery failures add `UNAVAILABLE` (not performed) and `DELIVERY_UNKNOWN` (may have been) - see [readiness-and-retries.md](proposals/readiness-and-retries.md).
 
 **HTTP mappings:** Empty→204, Locked→423, LOCK_EXPIRED/SESSION_LEASE_EXPIRED→410, LOCK_NOT_FOUND→404, validation→400, UNAVAILABLE→503 (+Retry-After), DELIVERY_UNKNOWN→504, other failures→500
 
 **State keys:** `metadata` (one blob per actor), `queue_{priority}_seg_{segmentNum}`, `{lockId}-lock`, `idem_{key}`, plus the lock index: `locks_exp_{bucket}` on a plain queue, `locks_session` on a session actor
 
 **Lock expiry:** no reminder or timer. Locks are swept lazily at the top of Dequeue/DequeueLocked/SetSessionLease and on activation, using the index to find them. Plain queues expire per-item TTL and restore the item to its original position (by `Sequence`); session actors hold locks for the life of the lease and bulk-restore to the *front* when it lapses. `DeliveryCount` increments per expiry, and past `MaxDeliveryCount` the item is dead-lettered.
+
+**Message expiry:** every message expires ([message-expiry.md](proposals/message-expiry.md)). The API server stamps `ExpiryAt`/`ExpiryTtlSeconds` once (default 1 year, min `DAPRMQ_MIN_EXPIRY_TTL_SECONDS`, max 10 years); actors never compute them. Expired items are removed lazily when a dequeue reaches them (at most `ExpirySweepBatchSize` per turn, then `ExpiredMore`, which callers retry), or dropped instead of restored on nack/lapse; a locked item can still be settled. Dead-lettering resets the expiry to the dead-letter period and keeps `OriginalExpiryTtlSeconds`. A `-deadletter` queue never dead-letters. Every expiry field name contains "expiry", never `TtlSeconds`/`ExpiresAt` (those are lock fields).
 
 **Sessions:** AcceptSession/RenewSessionLease/ReleaseSession, actor id `{queueId}-session-{sessionId}`. Lease via `LeaseId` header on Dequeue/Ack/Nack/ExtendLock/DeadLetter.
 

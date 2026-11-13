@@ -7,6 +7,7 @@ import com.daprmq.client.errors.SessionLockedException;
 import com.daprmq.client.errors.SessionLostException;
 import com.daprmq.client.errors.SessionNotFoundException;
 import com.daprmq.client.internal.Json;
+import com.daprmq.client.types.MessageExpiry;
 import com.daprmq.client.types.SessionDelivery;
 import com.daprmq.grpc.ConsumeSessionAck;
 import com.daprmq.grpc.ConsumeSessionDeadLetter;
@@ -236,7 +237,11 @@ public final class SessionStream implements Iterable<SessionDelivery>, AutoClose
                                         .build()),
                                 () -> send(ConsumeSessionRequest.newBuilder()
                                         .setNack(ConsumeSessionNack.newBuilder().setLockId(lockId))
-                                        .build()));
+                                        .build()),
+                                new MessageExpiry(
+                                        delivered.hasExpiryAt() ? delivered.getExpiryAt() : null,
+                                        delivered.hasExpiryTtlSeconds() ? delivered.getExpiryTtlSeconds() : null,
+                                        delivered.hasOriginalExpiryTtlSeconds() ? delivered.getOriginalExpiryTtlSeconds() : null));
                         fetched = true;
                         return;
                     }

@@ -1,5 +1,6 @@
 package com.daprmq.client;
 
+import com.daprmq.client.types.MessageExpiry;
 import com.daprmq.client.errors.DaprMQException;
 import com.daprmq.client.errors.SessionLockedException;
 import com.daprmq.client.errors.SessionLostException;
@@ -97,6 +98,22 @@ class SessionStreamTest {
         assertEquals("L1", requestObserver.sent.get(1).getAck().getLockId());
 
         assertFalse(it.hasNext());
+    }
+
+    @Test
+    void deliveriesCarryTheirExpiry() {
+        SessionStream stream = newStream(ConsumeSessionOptions.defaults());
+        responseObserver.onNext(ConsumeSessionResponse.newBuilder()
+                .setDelivered(SessionDelivered.newBuilder().setLockId("L1").setItemJson("{}").setPriority(0).setLockExpiresAt(1)
+                        .setExpiryAt(1800003600.0).setExpiryTtlSeconds(3600).setOriginalExpiryTtlSeconds(600).build())
+                .build());
+        responseObserver.onNext(delivered("L2"));
+        responseObserver.onCompleted();
+
+        var it = stream.iterator();
+
+        assertEquals(new MessageExpiry(1800003600.0, 3600, 600), it.next().expiry());
+        assertEquals(MessageExpiry.NONE, it.next().expiry());
     }
 
     @Test

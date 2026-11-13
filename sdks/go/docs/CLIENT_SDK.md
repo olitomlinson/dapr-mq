@@ -100,6 +100,8 @@ for _, item := range result.Items {
 
 `EnqueueItem.Item` is marshalled with `encoding/json`. `Priority` is a `*int` because 0 is a real lane (the fast lane): leave it nil for the normal lane (1).
 
+**Message expiry.** Every message expires. Set `ExpiryTTL` on an `EnqueueItem` (also used by `Publish`) to give it a time to live; zero uses the server's default (one year unless configured). The server rejects values below its minimum (10 minutes by default) or over 10 years with `CodeValidation`. An item still waiting in the queue past its expiry is never delivered. One already locked can still be acknowledged, nacked or dead-lettered. Every delivered type (`DequeueLockedItem`, `QueueDelivery`, `SessionDelivery`, `QueueMessage`, `SessionMessage`) embeds `MessageExpiry{ExpiryAt, ExpiryTTL, OriginalExpiryTTL}`, zero when absent. Items from a dead-letter queue get the dead-letter period (28 days by default) as their expiry, with the producer's time to live in `OriginalExpiryTTL`.
+
 **Competing consumers.** By default a queue serves one lock at a time: while any item is locked, further locked dequeues come back `Locked`. When several consumers share a queue (for example replicas scaled out by KEDA), set `AllowCompetingConsumers: true` so each can hold its own locks.
 
 **Settling.** Each lock call takes `*daprmq.LockOptions` (`LeaseID` on a session queue, else nil):
@@ -110,7 +112,7 @@ for _, item := range result.Items {
 - `ExtendLock(ctx, queueID, lockID, additional, opts)` adds time to the lock.
 - `DeadLetter(ctx, queueID, lockID, opts)` moves the item to `{queueID}-deadletter`.
 
-Durations sent to the server (`TTL`, `LeaseDuration`, `ExtendLock`'s `additional`) are whole seconds, rounded up.
+Durations sent to the server (`TTL`, `LeaseDuration`, `ExtendLock`'s `additional`, `ExpiryTTL`) are whole seconds, rounded up.
 
 ## Consuming a queue over a stream (`Consume`)
 

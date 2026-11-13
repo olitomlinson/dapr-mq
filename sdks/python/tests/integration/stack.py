@@ -240,6 +240,8 @@ def start_stack(topology: DaprTopology = DaprTopology(), image: str = API_IMAGE)
                         .with_env("Logging__LogLevel__Default", "Warning")
                         .with_env("QUEUE_ACTOR_TYPE_NAME", "QueueActor")
                         .with_env("HTTP_SINK_ACTOR_TYPE_NAME", "HttpSinkActor")
+                        # Lets the E- tests use a time to live short enough to expire within a test.
+                        .with_env("DAPRMQ_MIN_EXPIRY_TTL_SECONDS", "1")
                     )
                 )
                 start(

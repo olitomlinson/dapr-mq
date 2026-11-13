@@ -9,6 +9,23 @@ function createClient(stream: FakeDuplexStream): DaprMQClient {
 }
 
 describe("DaprMQClient.consumeSession", () => {
+  it("deliveries carry their expiry", async () => {
+    const stream = new FakeDuplexStream();
+    stream.emitData({ payload: "sessionAssigned", sessionAssigned: { sessionId: "s1", leaseExpiresAt: 1 } });
+    stream.emitData({ payload: "delivered", delivered: { lockId: "L1", itemJson: "{}", priority: 0, lockExpiresAt: 1, ...{ expiryAt: 1800003600, expiryTtlSeconds: 3600, originalExpiryTtlSeconds: 600 } } });
+    stream.emitData({ payload: "delivered", delivered: { lockId: "L2", itemJson: "{}", priority: 0, lockExpiresAt: 1 } });
+    stream.emitEnd();
+
+    const deliveries: SessionDelivery[] = [];
+    for await (const delivery of createClient(stream).consumeSession("q")) {
+      deliveries.push(delivery);
+    }
+
+    const expiryOf = (d: { expiryAt?: number; expiryTtlSeconds?: number; originalExpiryTtlSeconds?: number }) => ({ expiryAt: d.expiryAt, expiryTtlSeconds: d.expiryTtlSeconds, originalExpiryTtlSeconds: d.originalExpiryTtlSeconds });
+    expect(expiryOf(deliveries[0])).toEqual({ expiryAt: 1800003600, expiryTtlSeconds: 3600, originalExpiryTtlSeconds: 600 });
+    expect(expiryOf(deliveries[1])).toEqual({ expiryAt: undefined, expiryTtlSeconds: undefined, originalExpiryTtlSeconds: undefined });
+  });
+
   it("yields a delivered item and ack() writes an ack frame", async () => {
     const stream = new FakeDuplexStream();
     const client = createClient(stream);

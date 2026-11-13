@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { ApiError } from '../api/client'
 import { useItem, usePayload, type ItemRef } from '../api/hooks'
 import type { Lock, Message } from '../api/types'
-import { base64ToBytes, formatBytes, formatCount, formatTimeLeft, hexDump, prettyJson, utf8 } from '../util/format'
+import { base64ToBytes, formatBytes, formatCount, formatDuration, formatExpiresIn, formatTimeLeft, hexDump, prettyJson, utf8 } from '../util/format'
 import s from './MessageDrawer.module.css'
 import { ui } from './ui'
 
@@ -46,6 +46,7 @@ export function MessageDrawer({ item, maxDeliveryCount, onClose }: { item: ItemR
               <dt>Deliveries</dt><dd>{data.deliveryCount} / {maxDeliveryCount}</dd>
               {'location' in data && (<><dt>Location</dt><dd>{(data as Message).location}</dd></>)}
               {'lockId' in data && <LockInfo lock={data as Lock} />}
+              <ExpiryInfo item={data} />
               <dt>Size</dt><dd>{formatBytes(data.sizeBytes)}{data.textTruncated ? ' (showing the first 1 MB)' : ''}</dd>
             </dl>
             {data.isBlobReference && !payload.data && (
@@ -70,6 +71,20 @@ export function MessageDrawer({ item, maxDeliveryCount, onClose }: { item: ItemR
           </>
         )}
       </aside>
+    </>
+  )
+}
+
+function ExpiryInfo({ item }: { item: Message | Lock }) {
+  const left = item.expiryAt != null ? formatExpiresIn(item.expiryAt, Date.now()) : null
+  const ttl = item.expiryTtlSeconds != null ? ` (time to live ${formatDuration(item.expiryTtlSeconds)})` : ''
+  return (
+    <>
+      <dt>Message expires</dt>
+      <dd>{left == null ? 'never' : `${left === 'expired' ? 'expired' : `in ${left}`}${ttl}`}</dd>
+      {item.originalExpiryTtlSeconds != null && (
+        <><dt>Original time to live</dt><dd>{formatDuration(item.originalExpiryTtlSeconds)}</dd></>
+      )}
     </>
   )
 }

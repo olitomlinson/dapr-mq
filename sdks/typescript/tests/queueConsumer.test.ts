@@ -13,7 +13,7 @@ class FakeStream {
   private readonly items: (QueueDelivery | Error)[] = [];
   private wake: (() => void) | undefined;
 
-  deliver(lockId: string, deliveryCount = 1): void {
+  deliver(lockId: string, deliveryCount = 1, expiry: Partial<Pick<QueueDelivery, "expiryAt" | "expiryTtlSeconds" | "originalExpiryTtlSeconds">> = {}): void {
     const settle = async (action: string) => {
       if (this.closed) {
         throw new StreamClosedError("closed");
@@ -29,6 +29,7 @@ class FakeStream {
       ack: () => settle("ack"),
       nack: () => settle("nack"),
       deadLetter: () => settle("deadLetter"),
+      ...expiry,
     });
   }
 
@@ -111,6 +112,22 @@ const boom = async () => {
 };
 
 describe("QueueConsumer", () => {
+  it("passes the message's expiry to the handler", async () => {
+    const stream = new FakeStream();
+    const contexts: QueueMessageContext[] = [];
+    const { consumer } = makeConsumer(new FakeClient([stream]), {}, async (ctx) => {
+      contexts.push(ctx);
+    });
+
+    consumer.start();
+    stream.deliver("L1", 1, { expiryAt: 1800003600, expiryTtlSeconds: 3600, originalExpiryTtlSeconds: 600 });
+    await waitUntil(() => stream.settled.length === 1);
+    await consumer.stop();
+
+    const ctx = contexts[0];
+    expect([ctx.expiryAt, ctx.expiryTtlSeconds, ctx.originalExpiryTtlSeconds]).toEqual([1800003600, 3600, 600]);
+  });
+
   it("opens the stream with the defaults", async () => {
     const client = new FakeClient([new FakeStream()]);
     const { consumer } = makeConsumer(client, {}, noop);

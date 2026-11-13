@@ -2,12 +2,23 @@ using System.Text.Json;
 
 namespace DaprMQ.Client;
 
-/// <summary>An item to enqueue. Every item in one EnqueueAsync call must have the same SessionId (or none); the server rejects a call that mixes them.</summary>
-public record EnqueueItemDto(object Item, int Priority = 1, string? IdempotencyKey = null, string? SessionId = null);
+/// <summary>
+/// An item to enqueue. Every item in one EnqueueAsync call must have the same SessionId (or none); the
+/// server rejects a call that mixes them. ExpiryTtlSeconds is the message's time to live: omitted means
+/// the server's default (one year unless configured); the server rejects values below its minimum (10
+/// minutes by default) or over 10 years.
+/// </summary>
+public record EnqueueItemDto(object Item, int Priority = 1, string? IdempotencyKey = null, string? SessionId = null, int? ExpiryTtlSeconds = null);
 
 public record EnqueueResult(bool Success, string Message, int ItemsEnqueued, int ItemsDeduplicated);
 
-public record DequeueLockedItemDto(JsonElement Item, int Priority, string LockId, double LockExpiresAt);
+/// <summary>
+/// A locked item. ExpiryAt (Unix seconds) and ExpiryTtlSeconds are the message's expiry, not the lock's;
+/// OriginalExpiryTtlSeconds is set only on items from a dead-letter queue.
+/// </summary>
+public record DequeueLockedItemDto(
+    JsonElement Item, int Priority, string LockId, double LockExpiresAt,
+    double? ExpiryAt = null, int? ExpiryTtlSeconds = null, int? OriginalExpiryTtlSeconds = null);
 
 public record DequeueLockedResult(IReadOnlyList<DequeueLockedItemDto> Items, bool Locked, string? Message);
 
@@ -56,6 +67,16 @@ public sealed class SessionDelivery
     public required JsonElement Item { get; init; }
     public required int Priority { get; init; }
     public required double LockExpiresAt { get; init; }
+
+    /// <summary>When the message expires, in Unix seconds; null if it never does. An item still in the queue past this is never delivered.</summary>
+    public double? ExpiryAt { get; init; }
+
+    /// <summary>The time to live <see cref="ExpiryAt"/> was computed from, in seconds.</summary>
+    public int? ExpiryTtlSeconds { get; init; }
+
+    /// <summary>On an item from a dead-letter queue, the producer's original time to live in seconds; null otherwise.</summary>
+    public int? OriginalExpiryTtlSeconds { get; init; }
+
     public required Func<CancellationToken, Task> AckAsync { get; init; }
     public required Func<CancellationToken, Task> DeadLetterAsync { get; init; }
 
@@ -121,6 +142,15 @@ public sealed class QueueDelivery
 
     /// <summary>1 on a first delivery, 2 on the first redelivery after a Nack or a lapsed lock, and so on.</summary>
     public required int DeliveryCount { get; init; }
+
+    /// <summary>When the message expires, in Unix seconds; null if it never does. An item still in the queue past this is never delivered.</summary>
+    public double? ExpiryAt { get; init; }
+
+    /// <summary>The time to live <see cref="ExpiryAt"/> was computed from, in seconds.</summary>
+    public int? ExpiryTtlSeconds { get; init; }
+
+    /// <summary>On an item from a dead-letter queue, the producer's original time to live in seconds; null otherwise.</summary>
+    public int? OriginalExpiryTtlSeconds { get; init; }
 
     /// <summary>
     /// Reports that a handler has started the item, so the server renews its lock - needed only with

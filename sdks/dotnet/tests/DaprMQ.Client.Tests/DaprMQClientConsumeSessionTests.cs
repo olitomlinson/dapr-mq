@@ -36,6 +36,36 @@ public class DaprMQClientConsumeSessionTests
     }
 
     [Fact]
+    public async Task ConsumeSessionAsync_DeliveriesCarryTheirExpiry()
+    {
+        var (client, _, responses) = CreateClientWithFakeStream();
+        responses.Add(new ConsumeSessionResponse { SessionAssigned = new SessionAssigned { SessionId = "s1", LeaseExpiresAt = 1.0 } });
+        responses.Add(new ConsumeSessionResponse
+        {
+            Delivered = new SessionDelivered
+            {
+                LockId = "L1", ItemJson = "{}", Priority = 0, LockExpiresAt = 123.0,
+                ExpiryAt = 1_800_003_600, ExpiryTtlSeconds = 3600, OriginalExpiryTtlSeconds = 600
+            }
+        });
+        responses.Add(new ConsumeSessionResponse { Delivered = new SessionDelivered { LockId = "L2", ItemJson = "{}" } });
+        responses.Complete();
+
+        var deliveries = new List<SessionDelivery>();
+        await foreach (var delivery in client.ConsumeSessionAsync("q", null, 30, 10))
+        {
+            deliveries.Add(delivery);
+        }
+
+        Assert.Equal(1_800_003_600, deliveries[0].ExpiryAt);
+        Assert.Equal(3600, deliveries[0].ExpiryTtlSeconds);
+        Assert.Equal(600, deliveries[0].OriginalExpiryTtlSeconds);
+        Assert.Null(deliveries[1].ExpiryAt);
+        Assert.Null(deliveries[1].ExpiryTtlSeconds);
+        Assert.Null(deliveries[1].OriginalExpiryTtlSeconds);
+    }
+
+    [Fact]
     public async Task ConsumeSessionAsync_YieldsDeliveredItem_AndAckWritesAckFrame()
     {
         var (client, requests, responses) = CreateClientWithFakeStream();

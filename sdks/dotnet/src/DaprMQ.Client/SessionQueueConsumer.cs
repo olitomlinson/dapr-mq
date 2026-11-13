@@ -46,7 +46,13 @@ public enum SessionHandlerFailureAction
 /// never exposes one to the client, since the server tracks the lease internally. See
 /// <see cref="SessionDelivery"/>.
 /// </summary>
-public record SessionMessageContext(string QueueId, string SessionId, string LockId, JsonElement Item, int Priority);
+/// <summary>
+/// One message handed to a SessionQueueConsumer handler. ExpiryAt (Unix seconds) and ExpiryTtlSeconds are
+/// the message's expiry; OriginalExpiryTtlSeconds is set only on messages from a dead-letter queue.
+/// </summary>
+public record SessionMessageContext(
+    string QueueId, string SessionId, string LockId, JsonElement Item, int Priority,
+    double? ExpiryAt = null, int? ExpiryTtlSeconds = null, int? OriginalExpiryTtlSeconds = null);
 
 /// <summary>
 /// Manages a pool of `MaxConcurrentSessions` independent slots, each looping over a
@@ -251,7 +257,8 @@ public sealed class SessionQueueConsumer : IAsyncDisposable
     private async Task<bool> HandleDeliveryAsync(SessionDelivery delivery)
     {
         var ct = _handlerCts.Token;
-        var context = new SessionMessageContext(_queueId, delivery.SessionId, delivery.LockId, delivery.Item, delivery.Priority);
+        var context = new SessionMessageContext(_queueId, delivery.SessionId, delivery.LockId, delivery.Item, delivery.Priority,
+            delivery.ExpiryAt, delivery.ExpiryTtlSeconds, delivery.OriginalExpiryTtlSeconds);
         try
         {
             await _handler(context, ct);

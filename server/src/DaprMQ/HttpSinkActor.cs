@@ -133,10 +133,16 @@ public class HttpSinkActor : Actor, IHttpSinkActor, IRemindable
                 AllowCompetingConsumers = true
             };
 
-            var dequeueResult = await _queueActorInvoker.InvokeMethodAsync<DequeueLockedRequest, DequeueLockedResponse>(
-                new ActorId(state.QueueActorId),
-                "DequeueLocked",
-                dequeueRequest);
+            // ExpiredMore: that turn only removed expired items, so call again now rather than wait
+            // for the next poll. Each call is its own atomic turn on the queue.
+            DequeueLockedResponse dequeueResult;
+            do
+            {
+                dequeueResult = await _queueActorInvoker.InvokeMethodAsync<DequeueLockedRequest, DequeueLockedResponse>(
+                    new ActorId(state.QueueActorId),
+                    "DequeueLocked",
+                    dequeueRequest);
+            } while (dequeueResult.ExpiredMore);
 
             int nextInterval;
 
@@ -186,7 +192,10 @@ public class HttpSinkActor : Actor, IHttpSinkActor, IRemindable
                                 : JsonDocument.Parse(item.ItemJson).RootElement,
                             item.Priority,
                             item.LockId,
-                            item.LockExpiresAt
+                            item.LockExpiresAt,
+                            item.ExpiryAt,
+                            item.ExpiryTtlSeconds,
+                            item.OriginalExpiryTtlSeconds
                         }
                     ).ToList();
 

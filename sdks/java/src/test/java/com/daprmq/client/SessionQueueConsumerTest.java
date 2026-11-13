@@ -31,6 +31,10 @@ class SessionQueueConsumerTest {
     }
 
     private SessionStream streamDeliveringOneItem(FakeRequestObserver<ConsumeSessionRequest> requestObserver, String lockId) {
+        return streamDeliveringOneItem(requestObserver, SessionDelivered.newBuilder().setLockId(lockId).setItemJson("{}").setPriority(0).setLockExpiresAt(1).build());
+    }
+
+    private SessionStream streamDeliveringOneItem(FakeRequestObserver<ConsumeSessionRequest> requestObserver, SessionDelivered delivered) {
         AtomicReference<StreamObserver<ConsumeSessionResponse>> captured = new AtomicReference<>();
         SessionStream.StreamFactory factory = observer -> {
             captured.set(observer);
@@ -38,14 +42,7 @@ class SessionQueueConsumerTest {
         };
         SessionStream stream = new SessionStream(factory, "q", ConsumeSessionOptions.defaults());
 
-        captured.get().onNext(ConsumeSessionResponse.newBuilder()
-                .setDelivered(SessionDelivered.newBuilder()
-                        .setLockId(lockId)
-                        .setItemJson("{}")
-                        .setPriority(0)
-                        .setLockExpiresAt(1)
-                        .build())
-                .build());
+        captured.get().onNext(ConsumeSessionResponse.newBuilder().setDelivered(delivered).build());
         captured.get().onCompleted();
 
         return stream;
@@ -76,6 +73,31 @@ class SessionQueueConsumerTest {
         assertEquals(List.of("L1"), handledLockIds);
         // sent[0] is the Start frame; sent[1] is the Ack the consumer issues after the handler returns.
         assertEquals("L1", requestObserver.sent.get(1).getAck().getLockId());
+    }
+
+    @Test
+    void passesTheMessagesExpiryToTheHandler() throws InterruptedException {
+        FakeRequestObserver<ConsumeSessionRequest> requestObserver = new FakeRequestObserver<>();
+        SessionStream stream = streamDeliveringOneItem(requestObserver, SessionDelivered.newBuilder()
+                .setLockId("L1").setItemJson("{}").setPriority(0).setLockExpiresAt(1)
+                .setExpiryAt(1800003600.0).setExpiryTtlSeconds(3600).setOriginalExpiryTtlSeconds(600).build());
+        List<SessionMessageContext> contexts = new CopyOnWriteArrayList<>();
+        CountDownLatch handled = new CountDownLatch(1);
+
+        SessionQueueConsumerOptions options = new SessionQueueConsumerOptions().maxConcurrentSessions(1).drainTimeoutMillis(2000);
+        SessionQueueConsumer consumer = new SessionQueueConsumer((queueId, o) -> stream, "q", options, ctx -> {
+            contexts.add(ctx);
+            handled.countDown();
+        });
+
+        consumer.start();
+        try {
+            assertTrue(handled.await(2, TimeUnit.SECONDS));
+        } finally {
+            consumer.stop();
+        }
+
+        assertEquals(new com.daprmq.client.types.MessageExpiry(1800003600.0, 3600, 600), contexts.get(0).expiry());
     }
 
     @Test

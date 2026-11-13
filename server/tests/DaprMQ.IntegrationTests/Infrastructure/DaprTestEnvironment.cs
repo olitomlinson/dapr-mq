@@ -321,7 +321,9 @@ public class DaprTestEnvironment : IAsyncLifetime
             .WithEnvironment("DAPRMQ_BLOB_REAP_POST_DOWNLOAD_SECONDS", "30")
             // Small enough that LargeObjectTests can exceed it quickly, large enough to prove bodies
             // past daprd's 16Mi max body size stream through
-            .WithEnvironment("DAPRMQ_OBJECT_MAX_BYTES", (32 * 1024 * 1024).ToString());
+            .WithEnvironment("DAPRMQ_OBJECT_MAX_BYTES", (32 * 1024 * 1024).ToString())
+            // Lets MessageExpiryTests use a time to live short enough to expire within a test
+            .WithEnvironment("DAPRMQ_MIN_EXPIRY_TTL_SECONDS", "1");
 
         if (extraApiServerEnvironment != null)
         {

@@ -14,6 +14,7 @@ Most endpoints are scoped to a queue via `{queueId}` in the path — each distin
 - [Extend Lock](#extend-lock)
 - [Nack](#nack)
 - [Dead Letter](#dead-letter)
+- [Message Expiry](#message-expiry)
 - [Consume (gRPC stream)](#consume-grpc-stream)
 - [HTTP Sink](#http-sink)
 - [Topics](#topics)
@@ -44,6 +45,7 @@ Content-Type: application/json
 - `item` — arbitrary JSON, stored and returned as-is.
 - `priority` — `0` is the fast lane, `1+` is normal (lower value = higher priority). Default `1`.
 - `idempotencyKey` — optional. If set and this queue has dedup enabled (the default), an item is silently skipped instead of being enqueued again if the same key was already used within the configured TTL window (`IDEMPOTENCY_KEY_TTL_SECONDS`, default 24h). Max 128 characters, no control characters (including NUL).
+- `expiryTtlSeconds` — optional, per-item. The message's time to live in seconds; omitted, the server's default applies (one year). An item still waiting in the queue past its expiry is never delivered. See [Message Expiry](#message-expiry).
 - `sessionId` — optional, per-item. Routes this item to the session-scoped queue `{queueId}-session-{sessionId}` instead of `{queueId}` — see [Sessions](#sessions). All items in one request must have the same `sessionId` (or all have none), so one enqueue targets one queue and commits as a whole; a request that mixes them gets `400`. To enqueue to several sessions, make one call per session.
 - Up to 1000 items per request.
 
@@ -84,6 +86,7 @@ Unlike `enqueue`, the request **body is the raw object content** (not JSON) — 
 | `prefix` | no | `{queueId}` | User-controlled path segment the object is stored under, e.g. `store-a`, `store-b`. The key is `{prefix}/{objectId}`; an operator-wide prefix, if any, is the component's own `prefix` metadata (never client-controlled). Restricted to `[A-Za-z0-9_-]` segments — no `..` or leading `/`. |
 | `idempotency-key` | no | _(none)_ | Same semantics as `enqueue`'s `idempotencyKey` — there's no JSON body here to carry it, so it's a header instead. |
 | `session-id` | no | _(none)_ | Same semantics as `enqueue`'s `sessionId` — routes to `{queueId}-session-{sessionId}` instead of `{queueId}`. See [Sessions](#sessions). |
+| `expiry-ttl-seconds` | no | server default | Same semantics as `enqueue`'s `expiryTtlSeconds`. See [Message Expiry](#message-expiry). |
 
 **Response — `200 OK`** — same shape as `enqueue`.
 
@@ -199,10 +202,14 @@ POST /queue/{queueId}/dequeue
 **Response — `200 OK`**
 
 ```json
-{ "items": [{ "item": { "task": "send_email" }, "priority": 0 }] }
+{ "items": [{ "item": { "task": "send_email" }, "priority": 0, "expiryAt": 1811536000, "expiryTtlSeconds": 31536000 }] }
 ```
 
-**Response — `204 No Content`** — queue is empty.
+With `require-ack: true` each item also has `lockId` and `lockExpiresAt`. `expiryAt` and `expiryTtlSeconds` are the message's expiry, not the lock's; items from a dead-letter queue also carry `originalExpiryTtlSeconds`. See [Message Expiry](#message-expiry).
+
+**Response — `204 No Content`** — queue is empty, or every item reached had expired.
+
+**Response — `503 Service Unavailable`** — only with `DAPRMQ_DEADLETTER_ON_EXPIRY` on: expired items at the head couldn't be moved to the dead-letter queue, so nothing was dequeued. Retry.
 
 **Response — `423 Locked`** — another lock is currently active and competing consumers aren't enabled.
 
@@ -427,7 +434,33 @@ Content-Type: application/json
 { "success": true, "message": "Item moved to dead letter queue", "dlqId": "my-queue-deadletter" }
 ```
 
-The dead letter queue is itself a normal queue — dequeue from `{queueId}-deadletter` the same way you would any other queue.
+The dead letter queue is itself a normal queue — dequeue from `{queueId}-deadletter` the same way you would any other queue, with three differences:
+
+- Its items expire after the dead-letter period (`DAPRMQ_DEADLETTER_EXPIRY_TTL_SECONDS`, 28 days by default), counted from when they were dead-lettered; each keeps the producer's time to live as `originalExpiryTtlSeconds`. See [Message Expiry](#message-expiry).
+- Nothing in it can be dead-lettered again: `deadletter` on a dead-letter queue returns `400` with `errorCode: "DEADLETTER_NOT_ALLOWED"` and leaves the lock as it was.
+- The max delivery count doesn't apply: a nack or a lapsed lock always returns the item to the queue.
+
+---
+
+## Message Expiry
+
+Every message expires. The producer gives a time to live (`expiryTtlSeconds` on [Enqueue](#enqueue) and [Publish](#publish), the `expiry-ttl-seconds` header on [Enqueue Large Object](#enqueue-large-object), `expiry_ttl_seconds` on gRPC `EnqueueItem`); omitted, the server's default applies. The API server turns it into an absolute `expiryAt` once, when it receives the request, and the item carries both through every move: lock, nack, dead-letter and topic fan-out. Every subscriber's copy of a topic publish expires at the same moment.
+
+- **Validation.** A time to live below the minimum or over 10 years (315,360,000 seconds) is rejected with `400` (gRPC `InvalidArgument`), not adjusted.
+- **Waiting items only.** An item still in the queue past its expiry is never delivered: dequeues, consume streams and HTTP sinks skip it and remove it. An item already locked belongs to its consumer, which can acknowledge, nack, extend or dead-letter it as usual, even after it expires. Expiry is checked again whenever the item would go back into the queue (a nack, a lapsed lock or session lease): an expired item is removed instead, and that doesn't count as a delivery.
+- **Removal is lazy.** There is no background sweep. Expired items take space and count towards queue depth until a dequeue reaches them.
+- **What happens to a removed item.** Dropped, and logged, by default. With `DAPRMQ_DEADLETTER_ON_EXPIRY` on, it's moved to `{queueId}-deadletter` instead; if that fails, the dequeue returns `503` and the items stay for a later attempt. Items in a dead-letter queue are always dropped.
+- **Delivered items** carry `expiryAt` (Unix seconds) and `expiryTtlSeconds`, and, from a dead-letter queue, `originalExpiryTtlSeconds`. On gRPC the dequeue results carry them as parallel arrays with `0` for none, and stream deliveries as optional fields.
+
+**Configuration** (broker-wide; startup fails on an out-of-range value)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DAPRMQ_MIN_EXPIRY_TTL_SECONDS` | `600` (10 minutes) | Shortest time to live accepted. Keeps every expiry well clear of clock skew between nodes. |
+| `DAPRMQ_DEFAULT_EXPIRY_TTL_SECONDS` | `31536000` (365 days) | Applied when the producer gives none. |
+| `DAPRMQ_DEADLETTER_EXPIRY_TTL_SECONDS` | `2419200` (28 days) | Time to live of a dead-lettered item, from when it was dead-lettered. |
+| `DAPRMQ_DEADLETTER_ON_EXPIRY` | `false` | Dead-letter expired items instead of dropping them. |
+| `DAPRMQ_EXPIRY_SWEEP_BATCH_SIZE` | `200` | Most expired items one dequeue removes before it commits and the server calls again. |
 
 ---
 
@@ -436,7 +469,7 @@ The dead letter queue is itself a normal queue — dequeue from `{queueId}-deadl
 A managed consume loop for a plain queue, gRPC only: `rpc Consume(stream ConsumeRequest) returns (stream ConsumeResponse)`. Instead of polling `DequeueLocked`, the client opens one stream and the server pushes locked items to it.
 
 1. The client sends `Start { queue_id, prefetch_count, lock_ttl_seconds, allow_competing_consumers, lock_renewal, max_renewal_seconds }` first. `prefetch_count` (1-1000, default 1) is how many delivered-but-unsettled items the stream holds; `lock_ttl_seconds` is 1-300, default 30. `lock_renewal` and `max_renewal_seconds` choose which locks are renewed (see **Locks**).
-2. The server sends a `Delivered { lock_id, item_json, priority, lock_expires_at, delivery_count }` frame per item. `delivery_count` counts this delivery: 1 is the first, 2 the first redelivery after a nack or a lapsed lock.
+2. The server sends a `Delivered { lock_id, item_json, priority, lock_expires_at, delivery_count, expiry_at, expiry_ttl_seconds, original_expiry_ttl_seconds }` frame per item. `delivery_count` counts this delivery: 1 is the first, 2 the first redelivery after a nack or a lapsed lock. The last three are optional; see [Message Expiry](#message-expiry).
 3. The client settles each item with an `Ack`, `Nack` or `DeadLetter` frame carrying its `lock_id`. When settles bring the window down to half, the server dequeues more.
 
 **Locks.** The server renews locks shortly before they expire, `min(half the remaining time, 10s)` before, as Azure Service Bus's processor does, for as long as the stream is open, so the client never calls Extend Lock. Which locks it renews depends on `lock_renewal`:
@@ -509,7 +542,7 @@ Practical implications:
 - **Idempotency matters.** Any non-`200`/non-`202` response (including a slow response that outlives the lock TTL) results in redelivery — design your endpoint to handle receiving the same item more than once. This is about *redelivery* of an item already on the queue; if you want the *queue itself* to stop a duplicate submission from landing in the first place, see `idempotencyKey` under [Enqueue](#enqueue) instead — the two are complementary, not alternatives.
 - **`202` puts you in control of the ack, but also the risk.** If your endpoint accepts the delivery (`202`) but then crashes before acknowledging, the item redelivers once the lock expires — same as a hard failure. Use `202` when your processing is genuinely async and outlives the lock TTL; use `200` when processing completes synchronously within the request.
 - **No sink-side retries or backoff on failure.** A failing endpoint doesn't get hammered with retries — the next attempt only happens on the item's normal lock-expiry/redelivery cycle, which naturally throttles retry pressure.
-- **Delivered payload shape** — the POST body is a JSON array, one entry per dequeued item: `{"item": ..., "priority": 0, "lockId": "...", "lockExpiresAt": 1780000123.45}`. That's everything your endpoint needs to call `acknowledge`/`extend-lock`/`deadletter` on a `202` response.
+- **Delivered payload shape** — the POST body is a JSON array, one entry per dequeued item: `{"item": ..., "priority": 0, "lockId": "...", "lockExpiresAt": 1780000123.45, "expiryAt": 1811536000, "expiryTtlSeconds": 31536000, "originalExpiryTtlSeconds": null}` (see [Message Expiry](#message-expiry)). That's everything your endpoint needs to call `acknowledge`/`extend-lock`/`deadletter` on a `202` response.
 
 ### Delivering large objects
 
@@ -570,8 +603,10 @@ Content-Type: application/json
 ```
 
 ```json
-{ "items": [{ "item": { "task": "send_email" }, "priority": 0, "idempotencyKey": "order-42-confirmation" }] }
+{ "items": [{ "item": { "task": "send_email" }, "priority": 0, "idempotencyKey": "order-42-confirmation", "expiryTtlSeconds": 3600 }] }
 ```
+
+`expiryTtlSeconds` is optional, as on [Enqueue](#enqueue). The expiry is stamped once at publish, so every subscriber's copy expires at the same moment however late it's relayed.
 
 Async accept — relay to subscribers happens out of band. Not a delivery receipt.
 
@@ -771,11 +806,12 @@ For a managed multi-item consume loop, `ConsumeSession` is a bidirectional strea
 | HTTP Status | Meaning |
 |---|---|
 | `204 No Content` | Queue is empty, or (Sessions) no session currently available |
-| `400 Bad Request` | Validation error (bad priority, count, lock id, session/lease id, etc.) |
+| `400 Bad Request` | Validation error (bad priority, count, lock id, session/lease id, time to live, etc.), or `DEADLETTER_NOT_ALLOWED` on a dead-letter queue |
 | `404 Not Found` | Lock not found / actor not found / (Sessions) unknown session id |
 | `410 Gone` | Lock has expired, or (Sessions) session lease has expired |
 | `423 Locked` | Queue is locked by another in-flight operation, or (Sessions) session already leased |
 | `502 Bad Gateway` | (Sessions) claim succeeded but syncing the lease onto the session's queue actor failed |
+| `503 Service Unavailable` | The operation wasn't performed and can be retried (`Retry-After` set), for example no worker reachable, or expired items couldn't be dead-lettered |
 | `500 Internal Server Error` | Unexpected server-side error |
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full list of internal `ErrorCode` values (`QueueEmpty`, `Locked`, `LockNotFound`, `LockExpired`, `ValidationError`, `ActorNotFound`, `SessionNotFound`, `SessionLocked`, `SessionLeaseExpired`, `InvalidLeaseId`, `NoSessionsAvailable`, `SessionActorUnavailable`).

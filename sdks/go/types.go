@@ -66,6 +66,36 @@ type EnqueueItem struct {
 	// SessionID routes the item to that session of the queue. Every item in one Enqueue call must
 	// have the same SessionID (or none); the server rejects a call that mixes them.
 	SessionID string
+	// ExpiryTTL is the message's time to live, sent in whole seconds (rounded up). Zero uses the
+	// server's default (one year unless configured). The server rejects values below its minimum
+	// (10 minutes by default) or over 10 years. An item still queued past its expiry is never delivered.
+	ExpiryTTL time.Duration
+}
+
+// MessageExpiry is a delivered message's expiry, embedded in every delivered type. Zero values mean
+// none: an item with no expiry, or one that was never dead-lettered.
+type MessageExpiry struct {
+	// ExpiryAt is when the message expires.
+	ExpiryAt time.Time
+	// ExpiryTTL is the time to live ExpiryAt was computed from.
+	ExpiryTTL time.Duration
+	// OriginalExpiryTTL is set on items from a dead-letter queue: the producer's time to live,
+	// before dead-lettering replaced it with the dead-letter period.
+	OriginalExpiryTTL time.Duration
+}
+
+func messageExpiry(expiryAt *float64, expiryTTLSeconds, originalExpiryTTLSeconds *int32) MessageExpiry {
+	var e MessageExpiry
+	if expiryAt != nil {
+		e.ExpiryAt = unixSeconds(*expiryAt)
+	}
+	if expiryTTLSeconds != nil {
+		e.ExpiryTTL = time.Duration(*expiryTTLSeconds) * time.Second
+	}
+	if originalExpiryTTLSeconds != nil {
+		e.OriginalExpiryTTL = time.Duration(*originalExpiryTTLSeconds) * time.Second
+	}
+	return e
 }
 
 // EnqueueOptions is reserved for future options; pass nil.
@@ -116,6 +146,7 @@ type DequeueLockedItem struct {
 	Priority      int
 	LockID        string
 	LockExpiresAt time.Time
+	MessageExpiry
 }
 
 // DequeueLockedResult holds the dequeued items. An empty queue has no items and Locked false;

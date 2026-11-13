@@ -50,6 +50,17 @@ _NOT_DELIVERED = "not-delivered"
 _UNKNOWN = "unknown"
 
 
+
+def _expiry(delivered) -> dict:
+    """A delivered frame's message expiry, unset optional fields as None."""
+    return {
+        "expiry_at": delivered.expiry_at if delivered.HasField("expiry_at") else None,
+        "expiry_ttl_seconds": delivered.expiry_ttl_seconds if delivered.HasField("expiry_ttl_seconds") else None,
+        "original_expiry_ttl_seconds": (
+            delivered.original_expiry_ttl_seconds if delivered.HasField("original_expiry_ttl_seconds") else None
+        ),
+    }
+
 class DaprMQClient:
     """REST-backed for every operation except :meth:`consume_session`, which is the one method
     built on the ``ConsumeSession`` gRPC streaming RPC - everything else (enqueue, dequeue_locked,
@@ -106,6 +117,7 @@ class DaprMQClient:
                     "priority": i.priority,
                     "idempotencyKey": key,
                     "sessionId": i.session_id,
+                    **({"expiryTtlSeconds": i.expiry_ttl_seconds} if i.expiry_ttl_seconds is not None else {}),
                 }
                 for i, key in zip(items, keys)
             ]
@@ -160,7 +172,15 @@ class DaprMQClient:
 
         result = self._require_parsed(response)
         items = [
-            DequeueLockedItem(item=i["item"], priority=i["priority"], lock_id=i["lockId"], lock_expires_at=i["lockExpiresAt"])
+            DequeueLockedItem(
+                item=i["item"],
+                priority=i["priority"],
+                lock_id=i["lockId"],
+                lock_expires_at=i["lockExpiresAt"],
+                expiry_at=i.get("expiryAt"),
+                expiry_ttl_seconds=i.get("expiryTtlSeconds"),
+                original_expiry_ttl_seconds=i.get("originalExpiryTtlSeconds"),
+            )
             for i in result["items"]
         ]
         return DequeueLockedResult(items=items, locked=result["locked"], message=result.get("message"))
@@ -409,6 +429,7 @@ class DaprMQClient:
                         ack=ack,
                         dead_letter=dead_letter,
                         nack=nack,
+                        **_expiry(delivered),
                     )
 
                 elif payload == "error":
@@ -539,6 +560,7 @@ class DaprMQClient:
                         ack=ack,
                         nack=nack,
                         dead_letter=dead_letter,
+                        **_expiry(delivered),
                     )
 
                 elif payload == "settle_failed":

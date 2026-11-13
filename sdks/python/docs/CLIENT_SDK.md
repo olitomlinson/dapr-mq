@@ -99,6 +99,12 @@ if result is not None:
         await client.acknowledge("my-queue", item.lock_id)
 ```
 
+**Message expiry.** Every message expires. Set `expiry_ttl_seconds` on an `EnqueueItem` to give it a time to live; left as `None`, the server's default applies (one year unless configured). The server rejects values below its minimum (10 minutes by default) or over 10 years with a `ValidationError`. An item still waiting in the queue past its expiry is never delivered. One already locked can still be acked, nacked or dead-lettered. Delivered items (`DequeueLockedItem`, `QueueDelivery`, `SessionDelivery` and the consumer contexts) carry `expiry_at` (Unix seconds) and `expiry_ttl_seconds`. Items from a dead-letter queue get the dead-letter period (28 days by default) as their expiry and also carry `original_expiry_ttl_seconds`, the producer's time to live.
+
+```python
+await client.enqueue("quotes", [EnqueueItem({"price": 42}, expiry_ttl_seconds=3600)])
+```
+
 **Competing consumers.** By default a queue serves one lock at a time - while any item is locked, further locked dequeues come back `locked` (HTTP 423). When several consumers share a queue (e.g. replicas scaled out by KEDA), pass `allow_competing_consumers=True` so each can hold its own locks concurrently.
 
 ## Consuming a queue over a stream (`consume`, `QueueConsumer`)

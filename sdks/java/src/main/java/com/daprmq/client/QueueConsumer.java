@@ -211,7 +211,7 @@ public final class QueueConsumer implements AutoCloseable {
 
     /** Runs the handler and settles the message. A settle that fails because the stream closed needs nothing more. */
     private void handle(QueueDelivery delivery) {
-        QueueMessageContext context = new QueueMessageContext(queueId, delivery.lockId(), delivery.item(), delivery.priority(), delivery.deliveryCount());
+        QueueMessageContext context = new QueueMessageContext(queueId, delivery.lockId(), delivery.item(), delivery.priority(), delivery.deliveryCount(), delivery.expiry());
         try {
             try {
                 handler.handle(context);

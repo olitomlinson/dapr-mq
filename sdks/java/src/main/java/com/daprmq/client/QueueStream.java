@@ -3,6 +3,7 @@ package com.daprmq.client;
 import com.daprmq.client.errors.DaprMQException;
 import com.daprmq.client.errors.StreamClosedException;
 import com.daprmq.client.internal.Json;
+import com.daprmq.client.types.MessageExpiry;
 import com.daprmq.client.types.QueueDelivery;
 import com.daprmq.grpc.ConsumeAck;
 import com.daprmq.grpc.ConsumeDeadLetter;
@@ -207,7 +208,11 @@ public final class QueueStream implements Iterable<QueueDelivery>, AutoCloseable
                                 delivered.getDeliveryCount(),
                                 () -> send(ConsumeRequest.newBuilder().setAck(ConsumeAck.newBuilder().setLockId(lockId)).build()),
                                 () -> send(ConsumeRequest.newBuilder().setNack(ConsumeNack.newBuilder().setLockId(lockId)).build()),
-                                () -> send(ConsumeRequest.newBuilder().setDeadLetter(ConsumeDeadLetter.newBuilder().setLockId(lockId)).build()));
+                                () -> send(ConsumeRequest.newBuilder().setDeadLetter(ConsumeDeadLetter.newBuilder().setLockId(lockId)).build()),
+                                new MessageExpiry(
+                                        delivered.hasExpiryAt() ? delivered.getExpiryAt() : null,
+                                        delivered.hasExpiryTtlSeconds() ? delivered.getExpiryTtlSeconds() : null,
+                                        delivered.hasOriginalExpiryTtlSeconds() ? delivered.getOriginalExpiryTtlSeconds() : null));
                         fetched = true;
                         return;
                     }

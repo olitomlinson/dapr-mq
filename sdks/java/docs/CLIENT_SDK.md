@@ -87,6 +87,12 @@ if (result != null) {
 }
 ```
 
+**Message expiry.** Every message expires. Give an item a time to live with `withExpiryTtlSeconds` (or the `expiryTtlSeconds` record component); left null, the server's default applies (one year unless configured). The server rejects values below its minimum (10 minutes by default) or over 10 years with a `ValidationException`. An item still waiting in the queue past its expiry is never delivered. One already locked can still be acked, nacked or dead-lettered. Delivered items (`DequeueLockedItem`, `QueueDelivery`, `SessionDelivery` and the consumer contexts) have an `expiry()` component, a `MessageExpiry(expiryAt, expiryTtlSeconds, originalExpiryTtlSeconds)` whose fields are null when absent. Items from a dead-letter queue get the dead-letter period (28 days by default) as their expiry and also carry `originalExpiryTtlSeconds`, the producer's time to live.
+
+```java
+client.enqueue("quotes", List.of(new EnqueueItem(Map.of("price", 42)).withExpiryTtlSeconds(3600)));
+```
+
 **Competing consumers.** By default a queue serves one lock at a time - while any item is locked, further locked dequeues come back `locked` (HTTP 423). When several consumers share a queue (e.g. replicas scaled out by KEDA), pass the `dequeueLocked(queueId, count, ttlSeconds, leaseId, true)` overload so each can hold its own locks concurrently.
 
 ## Consuming a queue over a stream (`consume`, `QueueConsumer`)

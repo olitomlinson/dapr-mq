@@ -84,6 +84,12 @@ if (result is not null)
 }
 ```
 
+**Message expiry.** Every message expires. Set `ExpiryTtlSeconds` on an `EnqueueItemDto` to give it a time to live; omitted, the server's default applies (one year unless configured). The server rejects values below its minimum (10 minutes by default) or over 10 years with a `ValidationException`. An item still waiting in the queue past its expiry is never delivered. One already locked can still be acked, nacked or dead-lettered. Delivered items (`DequeueLockedItemDto`, `QueueDelivery`, `SessionDelivery` and the consumer contexts) carry `ExpiryAt` (Unix seconds) and `ExpiryTtlSeconds`. Items from a dead-letter queue get the dead-letter period (28 days by default) as their expiry and also carry `OriginalExpiryTtlSeconds`, the producer's time to live.
+
+```csharp
+await client.EnqueueAsync("quotes", [new EnqueueItemDto(new { price = 42 }, ExpiryTtlSeconds: 3600)]);
+```
+
 **Competing consumers.** By default a queue serves one lock at a time - while any item is locked, further locked dequeues come back `locked` (HTTP 423). When several consumers share a queue (e.g. replicas scaled out by KEDA), pass `allowCompetingConsumers: true` so each can hold its own locks concurrently.
 
 ## Consuming a queue over a stream (`ConsumeAsync`, `QueueConsumer`)

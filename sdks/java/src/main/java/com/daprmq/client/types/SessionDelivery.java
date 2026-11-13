@@ -13,6 +13,7 @@ import com.fasterxml.jackson.databind.JsonNode;
  * @param ack        Acknowledges and permanently removes this item.
  * @param deadLetter Moves this item to the dead letter queue.
  * @param nack       Returns this item to the front of the session for redelivery.
+ * @param expiry     The message's expiry.
  */
 public record SessionDelivery(
         String sessionId,
@@ -22,5 +23,6 @@ public record SessionDelivery(
         double lockExpiresAt,
         Runnable ack,
         Runnable deadLetter,
-        Runnable nack) {
+        Runnable nack,
+        MessageExpiry expiry) {
 }

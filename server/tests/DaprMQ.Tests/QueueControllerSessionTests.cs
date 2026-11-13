@@ -42,7 +42,8 @@ public class QueueControllerSessionTests
             _objectClaimTokenIssuer,
             _mockBlobReaperActorInvoker.Object,
             _blobReapConfig,
-            (sessionCoordinatorActorInvoker ?? new Mock<ISessionCoordinatorActorInvoker>().Object));
+            (sessionCoordinatorActorInvoker ?? new Mock<ISessionCoordinatorActorInvoker>().Object),
+            new MessageExpiryStamper(new ExpiryConfig(), TimeProvider.System));
 
     // ---- AcceptSession ----
 

@@ -15,7 +15,7 @@ public class SessionQueueConsumerTests
         public bool Nacked;
         public SessionDelivery Delivery { get; }
 
-        public RecordingDelivery(string sessionId, string lockId)
+        public RecordingDelivery(string sessionId, string lockId, double? expiryAt = null, int? expiryTtlSeconds = null, int? originalExpiryTtlSeconds = null)
         {
             Delivery = new SessionDelivery
             {
@@ -24,6 +24,9 @@ public class SessionQueueConsumerTests
                 Item = JsonDocument.Parse("{}").RootElement,
                 Priority = 0,
                 LockExpiresAt = 0,
+                ExpiryAt = expiryAt,
+                ExpiryTtlSeconds = expiryTtlSeconds,
+                OriginalExpiryTtlSeconds = originalExpiryTtlSeconds,
                 AckAsync = _ => { Acked = true; return Task.CompletedTask; },
                 DeadLetterAsync = _ => { DeadLettered = true; return Task.CompletedTask; },
                 NackAsync = _ => { Nacked = true; return Task.CompletedTask; }
@@ -82,6 +85,30 @@ public class SessionQueueConsumerTests
 
         Assert.True(recording.Acked);
         Assert.False(recording.DeadLettered);
+    }
+
+    [Fact]
+    public async Task TheContextCarriesTheMessagesExpiry()
+    {
+        var recording = new RecordingDelivery("s1", "L1", expiryAt: 1_800_003_600, expiryTtlSeconds: 3600, originalExpiryTtlSeconds: 600);
+        var seen = new TaskCompletionSource<SessionMessageContext>();
+
+        var mockClient = new Mock<IDaprMQClient>();
+        mockClient
+            .Setup(c => c.ConsumeSessionAsync("q", null, 30, 1, It.IsAny<CancellationToken>(), It.IsAny<int>()))
+            .Returns(SingleItemThenComplete(recording.Delivery));
+
+        var consumer = new SessionQueueConsumer(
+            mockClient.Object, "q", new SessionQueueConsumerOptions { MaxConcurrentSessions = 1 },
+            (ctx, _) => { seen.TrySetResult(ctx); return Task.CompletedTask; });
+
+        await consumer.StartAsync();
+        var ctx = await seen.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await consumer.StopAsync();
+
+        Assert.Equal(1_800_003_600, ctx.ExpiryAt);
+        Assert.Equal(3600, ctx.ExpiryTtlSeconds);
+        Assert.Equal(600, ctx.OriginalExpiryTtlSeconds);
     }
 
     [Fact]

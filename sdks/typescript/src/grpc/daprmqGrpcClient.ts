@@ -27,7 +27,14 @@ export interface SessionAssignedMessage {
   leaseExpiresAt: number;
 }
 
-export interface SessionDeliveredMessage {
+/** Proto3 optional fields: absent, not 0, when unset. */
+export interface ExpiryFields {
+  expiryAt?: number;
+  expiryTtlSeconds?: number;
+  originalExpiryTtlSeconds?: number;
+}
+
+export interface SessionDeliveredMessage extends ExpiryFields {
   lockId: string;
   itemJson: string;
   priority: number;
@@ -70,7 +77,7 @@ export interface ConsumeRequestMessage {
   deadLetter?: { lockId: string };
 }
 
-export interface ConsumeDeliveredMessage {
+export interface ConsumeDeliveredMessage extends ExpiryFields {
   lockId: string;
   itemJson: string;
   priority: number;

@@ -92,7 +92,8 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
                 item = i.Item,
                 priority = i.Priority,
                 idempotencyKey = i.IdempotencyKey,
-                sessionId = i.SessionId
+                sessionId = i.SessionId,
+                expiryTtlSeconds = i.ExpiryTtlSeconds
             })
         };
         var keys = keyed.Select(i => i.IdempotencyKey).ToList();
@@ -157,7 +158,7 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
 
         var result = await ReadRequiredAsync<DequeueLockedResponseWire>(response, ct);
         var items = result.Items
-            .Select(i => new DequeueLockedItemDto(i.Item, i.Priority, i.LockId, i.LockExpiresAt))
+            .Select(i => new DequeueLockedItemDto(i.Item, i.Priority, i.LockId, i.LockExpiresAt, i.ExpiryAt, i.ExpiryTtlSeconds, i.OriginalExpiryTtlSeconds))
             .ToList();
         return new DequeueLockedResult(items, result.Locked, result.Message);
     }
@@ -393,6 +394,9 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
                             Item = JsonDocument.Parse(delivered.ItemJson).RootElement.Clone(),
                             Priority = delivered.Priority,
                             LockExpiresAt = delivered.LockExpiresAt,
+                            ExpiryAt = delivered.HasExpiryAt ? delivered.ExpiryAt : null,
+                            ExpiryTtlSeconds = delivered.HasExpiryTtlSeconds ? delivered.ExpiryTtlSeconds : null,
+                            OriginalExpiryTtlSeconds = delivered.HasOriginalExpiryTtlSeconds ? delivered.OriginalExpiryTtlSeconds : null,
                             AckAsync = _ => WriteAsync(new global::DaprMQ.ApiServer.Grpc.ConsumeSessionRequest
                             {
                                 Ack = new global::DaprMQ.ApiServer.Grpc.ConsumeSessionAck { LockId = delivered.LockId }
@@ -526,6 +530,9 @@ public class DaprMQClient : IDaprMQClient, IAsyncDisposable
                             Priority = delivered.Priority,
                             LockExpiresAt = delivered.LockExpiresAt,
                             DeliveryCount = delivered.DeliveryCount,
+                            ExpiryAt = delivered.HasExpiryAt ? delivered.ExpiryAt : null,
+                            ExpiryTtlSeconds = delivered.HasExpiryTtlSeconds ? delivered.ExpiryTtlSeconds : null,
+                            OriginalExpiryTtlSeconds = delivered.HasOriginalExpiryTtlSeconds ? delivered.OriginalExpiryTtlSeconds : null,
                             StartedAsync = _ => WriteAsync(new global::DaprMQ.ApiServer.Grpc.ConsumeRequest
                             {
                                 Started = new global::DaprMQ.ApiServer.Grpc.ConsumeStarted { LockIds = { delivered.LockId } }

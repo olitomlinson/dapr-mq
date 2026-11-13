@@ -17,6 +17,24 @@ function delivered(lockId: string, deliveryCount = 1): ConsumeResponseMessage {
 }
 
 describe("DaprMQClient.consume", () => {
+  it("deliveries carry their expiry", async () => {
+    const stream = new FakeDuplexStream();
+    const withExpiry = delivered("L1");
+    Object.assign(withExpiry.delivered!, { expiryAt: 1800003600, expiryTtlSeconds: 3600, originalExpiryTtlSeconds: 600 });
+    stream.emitData(withExpiry);
+    stream.emitData(delivered("L2"));
+    stream.emitEnd();
+
+    const deliveries: QueueDelivery[] = [];
+    for await (const delivery of createClient(stream).consume("q")) {
+      deliveries.push(delivery);
+    }
+
+    const expiryOf = (d: { expiryAt?: number; expiryTtlSeconds?: number; originalExpiryTtlSeconds?: number }) => ({ expiryAt: d.expiryAt, expiryTtlSeconds: d.expiryTtlSeconds, originalExpiryTtlSeconds: d.originalExpiryTtlSeconds });
+    expect(expiryOf(deliveries[0])).toEqual({ expiryAt: 1800003600, expiryTtlSeconds: 3600, originalExpiryTtlSeconds: 600 });
+    expect(expiryOf(deliveries[1])).toEqual({ expiryAt: undefined, expiryTtlSeconds: undefined, originalExpiryTtlSeconds: undefined });
+  });
+
   it("yields a delivered item and ack() writes an ack frame", async () => {
     const stream = new FakeDuplexStream();
     stream.emitData(delivered("L1", 2));

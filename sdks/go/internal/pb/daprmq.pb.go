@@ -21,6 +21,52 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type ConsumeLockRenewal int32
+
+const (
+	ConsumeLockRenewal_RENEW_DELIVERED ConsumeLockRenewal = 0
+	ConsumeLockRenewal_RENEW_STARTED   ConsumeLockRenewal = 1
+)
+
+// Enum value maps for ConsumeLockRenewal.
+var (
+	ConsumeLockRenewal_name = map[int32]string{
+		0: "RENEW_DELIVERED",
+		1: "RENEW_STARTED",
+	}
+	ConsumeLockRenewal_value = map[string]int32{
+		"RENEW_DELIVERED": 0,
+		"RENEW_STARTED":   1,
+	}
+)
+
+func (x ConsumeLockRenewal) Enum() *ConsumeLockRenewal {
+	p := new(ConsumeLockRenewal)
+	*p = x
+	return p
+}
+
+func (x ConsumeLockRenewal) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ConsumeLockRenewal) Descriptor() protoreflect.EnumDescriptor {
+	return file_daprmq_proto_enumTypes[0].Descriptor()
+}
+
+func (ConsumeLockRenewal) Type() protoreflect.EnumType {
+	return &file_daprmq_proto_enumTypes[0]
+}
+
+func (x ConsumeLockRenewal) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ConsumeLockRenewal.Descriptor instead.
+func (ConsumeLockRenewal) EnumDescriptor() ([]byte, []int) {
+	return file_daprmq_proto_rawDescGZIP(), []int{0}
+}
+
 // Individual item in an enqueue request
 type EnqueueItem struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -36,9 +82,13 @@ type EnqueueItem struct {
 	// Optional session id. If set, this item is routed to the queue's dedicated per-session
 	// QueueActor instance ("{queue_id}-session-{session_id}") instead of the plain queue actor -
 	// never forwarded into the actor-level request itself, purely a routing hint consumed here.
-	SessionId     *string `protobuf:"bytes,4,opt,name=session_id,json=sessionId,proto3,oneof" json:"session_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SessionId *string `protobuf:"bytes,4,opt,name=session_id,json=sessionId,proto3,oneof" json:"session_id,omitempty"`
+	// Optional message time to live in seconds, from DAPRMQ_MIN_EXPIRY_TTL_SECONDS up to 10 years.
+	// Omitted means the broker default (DAPRMQ_DEFAULT_EXPIRY_TTL_SECONDS). An item waiting in the
+	// queue past its expiry is never delivered.
+	ExpiryTtlSeconds *int32 `protobuf:"varint,5,opt,name=expiry_ttl_seconds,json=expiryTtlSeconds,proto3,oneof" json:"expiry_ttl_seconds,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *EnqueueItem) Reset() {
@@ -97,6 +147,13 @@ func (x *EnqueueItem) GetSessionId() string {
 		return *x.SessionId
 	}
 	return ""
+}
+
+func (x *EnqueueItem) GetExpiryTtlSeconds() int32 {
+	if x != nil && x.ExpiryTtlSeconds != nil {
+		return *x.ExpiryTtlSeconds
+	}
+	return 0
 }
 
 // Request to enqueue items to a queue
@@ -403,9 +460,13 @@ type DequeueSuccess struct {
 	// Item data as JSON strings (array of items)
 	ItemJson []string `protobuf:"bytes,1,rep,name=item_json,json=itemJson,proto3" json:"item_json,omitempty"`
 	// Priority levels of the dequeued items (parallel array)
-	Priority      []int32 `protobuf:"varint,2,rep,packed,name=priority,proto3" json:"priority,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Priority []int32 `protobuf:"varint,2,rep,packed,name=priority,proto3" json:"priority,omitempty"`
+	// Message expiry (parallel arrays). 0 means none: an item with no expiry, or one never dead-lettered.
+	ExpiryAt                 []float64 `protobuf:"fixed64,3,rep,packed,name=expiry_at,json=expiryAt,proto3" json:"expiry_at,omitempty"`
+	ExpiryTtlSeconds         []int32   `protobuf:"varint,4,rep,packed,name=expiry_ttl_seconds,json=expiryTtlSeconds,proto3" json:"expiry_ttl_seconds,omitempty"`
+	OriginalExpiryTtlSeconds []int32   `protobuf:"varint,5,rep,packed,name=original_expiry_ttl_seconds,json=originalExpiryTtlSeconds,proto3" json:"original_expiry_ttl_seconds,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *DequeueSuccess) Reset() {
@@ -448,6 +509,27 @@ func (x *DequeueSuccess) GetItemJson() []string {
 func (x *DequeueSuccess) GetPriority() []int32 {
 	if x != nil {
 		return x.Priority
+	}
+	return nil
+}
+
+func (x *DequeueSuccess) GetExpiryAt() []float64 {
+	if x != nil {
+		return x.ExpiryAt
+	}
+	return nil
+}
+
+func (x *DequeueSuccess) GetExpiryTtlSeconds() []int32 {
+	if x != nil {
+		return x.ExpiryTtlSeconds
+	}
+	return nil
+}
+
+func (x *DequeueSuccess) GetOriginalExpiryTtlSeconds() []int32 {
+	if x != nil {
+		return x.OriginalExpiryTtlSeconds
 	}
 	return nil
 }
@@ -751,8 +833,12 @@ type DequeueLockedSuccess struct {
 	LockId []string `protobuf:"bytes,3,rep,name=lock_id,json=lockId,proto3" json:"lock_id,omitempty"`
 	// Unix timestamps (seconds since epoch) when locks expire (parallel array)
 	LockExpiresAt []float64 `protobuf:"fixed64,4,rep,packed,name=lock_expires_at,json=lockExpiresAt,proto3" json:"lock_expires_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Message expiry (parallel arrays). 0 means none: an item with no expiry, or one never dead-lettered.
+	ExpiryAt                 []float64 `protobuf:"fixed64,5,rep,packed,name=expiry_at,json=expiryAt,proto3" json:"expiry_at,omitempty"`
+	ExpiryTtlSeconds         []int32   `protobuf:"varint,6,rep,packed,name=expiry_ttl_seconds,json=expiryTtlSeconds,proto3" json:"expiry_ttl_seconds,omitempty"`
+	OriginalExpiryTtlSeconds []int32   `protobuf:"varint,7,rep,packed,name=original_expiry_ttl_seconds,json=originalExpiryTtlSeconds,proto3" json:"original_expiry_ttl_seconds,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *DequeueLockedSuccess) Reset() {
@@ -809,6 +895,27 @@ func (x *DequeueLockedSuccess) GetLockId() []string {
 func (x *DequeueLockedSuccess) GetLockExpiresAt() []float64 {
 	if x != nil {
 		return x.LockExpiresAt
+	}
+	return nil
+}
+
+func (x *DequeueLockedSuccess) GetExpiryAt() []float64 {
+	if x != nil {
+		return x.ExpiryAt
+	}
+	return nil
+}
+
+func (x *DequeueLockedSuccess) GetExpiryTtlSeconds() []int32 {
+	if x != nil {
+		return x.ExpiryTtlSeconds
+	}
+	return nil
+}
+
+func (x *DequeueLockedSuccess) GetOriginalExpiryTtlSeconds() []int32 {
+	if x != nil {
+		return x.OriginalExpiryTtlSeconds
 	}
 	return nil
 }
@@ -2618,8 +2725,13 @@ type SessionDelivered struct {
 	ItemJson      string                 `protobuf:"bytes,2,opt,name=item_json,json=itemJson,proto3" json:"item_json,omitempty"`
 	Priority      int32                  `protobuf:"varint,3,opt,name=priority,proto3" json:"priority,omitempty"`
 	LockExpiresAt float64                `protobuf:"fixed64,4,opt,name=lock_expires_at,json=lockExpiresAt,proto3" json:"lock_expires_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Message expiry: when the item expires (Unix seconds), the time to live it was computed from, and,
+	// from a dead-letter queue, the producer's original time to live.
+	ExpiryAt                 *float64 `protobuf:"fixed64,5,opt,name=expiry_at,json=expiryAt,proto3,oneof" json:"expiry_at,omitempty"`
+	ExpiryTtlSeconds         *int32   `protobuf:"varint,6,opt,name=expiry_ttl_seconds,json=expiryTtlSeconds,proto3,oneof" json:"expiry_ttl_seconds,omitempty"`
+	OriginalExpiryTtlSeconds *int32   `protobuf:"varint,7,opt,name=original_expiry_ttl_seconds,json=originalExpiryTtlSeconds,proto3,oneof" json:"original_expiry_ttl_seconds,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *SessionDelivered) Reset() {
@@ -2676,6 +2788,27 @@ func (x *SessionDelivered) GetPriority() int32 {
 func (x *SessionDelivered) GetLockExpiresAt() float64 {
 	if x != nil {
 		return x.LockExpiresAt
+	}
+	return 0
+}
+
+func (x *SessionDelivered) GetExpiryAt() float64 {
+	if x != nil && x.ExpiryAt != nil {
+		return *x.ExpiryAt
+	}
+	return 0
+}
+
+func (x *SessionDelivered) GetExpiryTtlSeconds() int32 {
+	if x != nil && x.ExpiryTtlSeconds != nil {
+		return *x.ExpiryTtlSeconds
+	}
+	return 0
+}
+
+func (x *SessionDelivered) GetOriginalExpiryTtlSeconds() int32 {
+	if x != nil && x.OriginalExpiryTtlSeconds != nil {
+		return *x.OriginalExpiryTtlSeconds
 	}
 	return 0
 }
@@ -2834,6 +2967,7 @@ type ConsumeRequest struct {
 	//	*ConsumeRequest_Ack
 	//	*ConsumeRequest_Nack
 	//	*ConsumeRequest_DeadLetter
+	//	*ConsumeRequest_Started
 	Payload       isConsumeRequest_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2912,6 +3046,15 @@ func (x *ConsumeRequest) GetDeadLetter() *ConsumeDeadLetter {
 	return nil
 }
 
+func (x *ConsumeRequest) GetStarted() *ConsumeStarted {
+	if x != nil {
+		if x, ok := x.Payload.(*ConsumeRequest_Started); ok {
+			return x.Started
+		}
+	}
+	return nil
+}
+
 type isConsumeRequest_Payload interface {
 	isConsumeRequest_Payload()
 }
@@ -2937,6 +3080,12 @@ type ConsumeRequest_DeadLetter struct {
 	DeadLetter *ConsumeDeadLetter `protobuf:"bytes,4,opt,name=dead_letter,json=deadLetter,proto3,oneof"`
 }
 
+type ConsumeRequest_Started struct {
+	// Handlers have started these delivered items. With lock_renewal RENEW_STARTED, only these locks
+	// are renewed.
+	Started *ConsumeStarted `protobuf:"bytes,5,opt,name=started,proto3,oneof"`
+}
+
 func (*ConsumeRequest_Start) isConsumeRequest_Payload() {}
 
 func (*ConsumeRequest_Ack) isConsumeRequest_Payload() {}
@@ -2944,6 +3093,8 @@ func (*ConsumeRequest_Ack) isConsumeRequest_Payload() {}
 func (*ConsumeRequest_Nack) isConsumeRequest_Payload() {}
 
 func (*ConsumeRequest_DeadLetter) isConsumeRequest_Payload() {}
+
+func (*ConsumeRequest_Started) isConsumeRequest_Payload() {}
 
 // Configures the Consume loop. Must be the first message sent on a Consume stream.
 type ConsumeStart struct {
@@ -2954,14 +3105,23 @@ type ConsumeStart struct {
 	// a Nack can reorder delivery: items already in flight are delivered before the nacked one
 	// comes back.
 	PrefetchCount int32 `protobuf:"varint,2,opt,name=prefetch_count,json=prefetchCount,proto3" json:"prefetch_count,omitempty"`
-	// Lock time-to-live in seconds (1-300, default: 30). The server renews each outstanding lock at
-	// roughly lock_ttl_seconds/2 for as long as the stream stays open.
+	// Lock time-to-live in seconds (1-300, default: 30). The server renews each outstanding lock
+	// shortly before it expires - min(half its remaining time, 10s) before - for as long as the stream
+	// stays open.
 	LockTtlSeconds int32 `protobuf:"varint,3,opt,name=lock_ttl_seconds,json=lockTtlSeconds,proto3" json:"lock_ttl_seconds,omitempty"`
 	// Let this stream hold locks while other consumers hold theirs, as on DequeueLocked. When false,
 	// the queue serves one lock holder at a time.
 	AllowCompetingConsumers bool `protobuf:"varint,4,opt,name=allow_competing_consumers,json=allowCompetingConsumers,proto3" json:"allow_competing_consumers,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	// Which locks the server renews. RENEW_DELIVERED (the default) renews every delivered, unsettled
+	// lock. RENEW_STARTED renews only locks named in a Started frame, as Azure Service Bus renews only
+	// messages a handler is processing: a delivered item no handler has started runs out its lock and
+	// returns to the queue, counting as a delivery.
+	LockRenewal ConsumeLockRenewal `protobuf:"varint,5,opt,name=lock_renewal,json=lockRenewal,proto3,enum=daprmq.ConsumeLockRenewal" json:"lock_renewal,omitempty"`
+	// With RENEW_STARTED: stop renewing a started lock this many seconds after it started (0 = no
+	// limit), so a stuck handler can't hold its item forever. Service Bus's MaxAutoLockRenewalDuration.
+	MaxRenewalSeconds int32 `protobuf:"varint,6,opt,name=max_renewal_seconds,json=maxRenewalSeconds,proto3" json:"max_renewal_seconds,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *ConsumeStart) Reset() {
@@ -3022,6 +3182,64 @@ func (x *ConsumeStart) GetAllowCompetingConsumers() bool {
 	return false
 }
 
+func (x *ConsumeStart) GetLockRenewal() ConsumeLockRenewal {
+	if x != nil {
+		return x.LockRenewal
+	}
+	return ConsumeLockRenewal_RENEW_DELIVERED
+}
+
+func (x *ConsumeStart) GetMaxRenewalSeconds() int32 {
+	if x != nil {
+		return x.MaxRenewalSeconds
+	}
+	return 0
+}
+
+type ConsumeStarted struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	LockIds       []string               `protobuf:"bytes,1,rep,name=lock_ids,json=lockIds,proto3" json:"lock_ids,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConsumeStarted) Reset() {
+	*x = ConsumeStarted{}
+	mi := &file_daprmq_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConsumeStarted) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConsumeStarted) ProtoMessage() {}
+
+func (x *ConsumeStarted) ProtoReflect() protoreflect.Message {
+	mi := &file_daprmq_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConsumeStarted.ProtoReflect.Descriptor instead.
+func (*ConsumeStarted) Descriptor() ([]byte, []int) {
+	return file_daprmq_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *ConsumeStarted) GetLockIds() []string {
+	if x != nil {
+		return x.LockIds
+	}
+	return nil
+}
+
 type ConsumeAck struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	LockId        string                 `protobuf:"bytes,1,opt,name=lock_id,json=lockId,proto3" json:"lock_id,omitempty"`
@@ -3031,7 +3249,7 @@ type ConsumeAck struct {
 
 func (x *ConsumeAck) Reset() {
 	*x = ConsumeAck{}
-	mi := &file_daprmq_proto_msgTypes[43]
+	mi := &file_daprmq_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3043,7 +3261,7 @@ func (x *ConsumeAck) String() string {
 func (*ConsumeAck) ProtoMessage() {}
 
 func (x *ConsumeAck) ProtoReflect() protoreflect.Message {
-	mi := &file_daprmq_proto_msgTypes[43]
+	mi := &file_daprmq_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3056,7 +3274,7 @@ func (x *ConsumeAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConsumeAck.ProtoReflect.Descriptor instead.
 func (*ConsumeAck) Descriptor() ([]byte, []int) {
-	return file_daprmq_proto_rawDescGZIP(), []int{43}
+	return file_daprmq_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *ConsumeAck) GetLockId() string {
@@ -3075,7 +3293,7 @@ type ConsumeNack struct {
 
 func (x *ConsumeNack) Reset() {
 	*x = ConsumeNack{}
-	mi := &file_daprmq_proto_msgTypes[44]
+	mi := &file_daprmq_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3087,7 +3305,7 @@ func (x *ConsumeNack) String() string {
 func (*ConsumeNack) ProtoMessage() {}
 
 func (x *ConsumeNack) ProtoReflect() protoreflect.Message {
-	mi := &file_daprmq_proto_msgTypes[44]
+	mi := &file_daprmq_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3100,7 +3318,7 @@ func (x *ConsumeNack) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConsumeNack.ProtoReflect.Descriptor instead.
 func (*ConsumeNack) Descriptor() ([]byte, []int) {
-	return file_daprmq_proto_rawDescGZIP(), []int{44}
+	return file_daprmq_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *ConsumeNack) GetLockId() string {
@@ -3119,7 +3337,7 @@ type ConsumeDeadLetter struct {
 
 func (x *ConsumeDeadLetter) Reset() {
 	*x = ConsumeDeadLetter{}
-	mi := &file_daprmq_proto_msgTypes[45]
+	mi := &file_daprmq_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3131,7 +3349,7 @@ func (x *ConsumeDeadLetter) String() string {
 func (*ConsumeDeadLetter) ProtoMessage() {}
 
 func (x *ConsumeDeadLetter) ProtoReflect() protoreflect.Message {
-	mi := &file_daprmq_proto_msgTypes[45]
+	mi := &file_daprmq_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3144,7 +3362,7 @@ func (x *ConsumeDeadLetter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConsumeDeadLetter.ProtoReflect.Descriptor instead.
 func (*ConsumeDeadLetter) Descriptor() ([]byte, []int) {
-	return file_daprmq_proto_rawDescGZIP(), []int{45}
+	return file_daprmq_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *ConsumeDeadLetter) GetLockId() string {
@@ -3169,7 +3387,7 @@ type ConsumeResponse struct {
 
 func (x *ConsumeResponse) Reset() {
 	*x = ConsumeResponse{}
-	mi := &file_daprmq_proto_msgTypes[46]
+	mi := &file_daprmq_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3181,7 +3399,7 @@ func (x *ConsumeResponse) String() string {
 func (*ConsumeResponse) ProtoMessage() {}
 
 func (x *ConsumeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daprmq_proto_msgTypes[46]
+	mi := &file_daprmq_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3194,7 +3412,7 @@ func (x *ConsumeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConsumeResponse.ProtoReflect.Descriptor instead.
 func (*ConsumeResponse) Descriptor() ([]byte, []int) {
-	return file_daprmq_proto_rawDescGZIP(), []int{46}
+	return file_daprmq_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *ConsumeResponse) GetPayload() isConsumeResponse_Payload {
@@ -3266,13 +3484,18 @@ type ConsumeDelivered struct {
 	LockExpiresAt float64                `protobuf:"fixed64,4,opt,name=lock_expires_at,json=lockExpiresAt,proto3" json:"lock_expires_at,omitempty"`
 	// How many times this item has been delivered, counting this delivery (1 = first delivery).
 	DeliveryCount int32 `protobuf:"varint,5,opt,name=delivery_count,json=deliveryCount,proto3" json:"delivery_count,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Message expiry: when the item expires (Unix seconds), the time to live it was computed from, and,
+	// from a dead-letter queue, the producer's original time to live.
+	ExpiryAt                 *float64 `protobuf:"fixed64,6,opt,name=expiry_at,json=expiryAt,proto3,oneof" json:"expiry_at,omitempty"`
+	ExpiryTtlSeconds         *int32   `protobuf:"varint,7,opt,name=expiry_ttl_seconds,json=expiryTtlSeconds,proto3,oneof" json:"expiry_ttl_seconds,omitempty"`
+	OriginalExpiryTtlSeconds *int32   `protobuf:"varint,8,opt,name=original_expiry_ttl_seconds,json=originalExpiryTtlSeconds,proto3,oneof" json:"original_expiry_ttl_seconds,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *ConsumeDelivered) Reset() {
 	*x = ConsumeDelivered{}
-	mi := &file_daprmq_proto_msgTypes[47]
+	mi := &file_daprmq_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3284,7 +3507,7 @@ func (x *ConsumeDelivered) String() string {
 func (*ConsumeDelivered) ProtoMessage() {}
 
 func (x *ConsumeDelivered) ProtoReflect() protoreflect.Message {
-	mi := &file_daprmq_proto_msgTypes[47]
+	mi := &file_daprmq_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3297,7 +3520,7 @@ func (x *ConsumeDelivered) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConsumeDelivered.ProtoReflect.Descriptor instead.
 func (*ConsumeDelivered) Descriptor() ([]byte, []int) {
-	return file_daprmq_proto_rawDescGZIP(), []int{47}
+	return file_daprmq_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *ConsumeDelivered) GetLockId() string {
@@ -3335,6 +3558,27 @@ func (x *ConsumeDelivered) GetDeliveryCount() int32 {
 	return 0
 }
 
+func (x *ConsumeDelivered) GetExpiryAt() float64 {
+	if x != nil && x.ExpiryAt != nil {
+		return *x.ExpiryAt
+	}
+	return 0
+}
+
+func (x *ConsumeDelivered) GetExpiryTtlSeconds() int32 {
+	if x != nil && x.ExpiryTtlSeconds != nil {
+		return *x.ExpiryTtlSeconds
+	}
+	return 0
+}
+
+func (x *ConsumeDelivered) GetOriginalExpiryTtlSeconds() int32 {
+	if x != nil && x.OriginalExpiryTtlSeconds != nil {
+		return *x.OriginalExpiryTtlSeconds
+	}
+	return 0
+}
+
 type ConsumeSettleFailed struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	LockId        string                 `protobuf:"bytes,1,opt,name=lock_id,json=lockId,proto3" json:"lock_id,omitempty"`
@@ -3346,7 +3590,7 @@ type ConsumeSettleFailed struct {
 
 func (x *ConsumeSettleFailed) Reset() {
 	*x = ConsumeSettleFailed{}
-	mi := &file_daprmq_proto_msgTypes[48]
+	mi := &file_daprmq_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3358,7 +3602,7 @@ func (x *ConsumeSettleFailed) String() string {
 func (*ConsumeSettleFailed) ProtoMessage() {}
 
 func (x *ConsumeSettleFailed) ProtoReflect() protoreflect.Message {
-	mi := &file_daprmq_proto_msgTypes[48]
+	mi := &file_daprmq_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3371,7 +3615,7 @@ func (x *ConsumeSettleFailed) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConsumeSettleFailed.ProtoReflect.Descriptor instead.
 func (*ConsumeSettleFailed) Descriptor() ([]byte, []int) {
-	return file_daprmq_proto_rawDescGZIP(), []int{48}
+	return file_daprmq_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *ConsumeSettleFailed) GetLockId() string {
@@ -3405,7 +3649,7 @@ type ConsumeError struct {
 
 func (x *ConsumeError) Reset() {
 	*x = ConsumeError{}
-	mi := &file_daprmq_proto_msgTypes[49]
+	mi := &file_daprmq_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3417,7 +3661,7 @@ func (x *ConsumeError) String() string {
 func (*ConsumeError) ProtoMessage() {}
 
 func (x *ConsumeError) ProtoReflect() protoreflect.Message {
-	mi := &file_daprmq_proto_msgTypes[49]
+	mi := &file_daprmq_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3430,7 +3674,7 @@ func (x *ConsumeError) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConsumeError.ProtoReflect.Descriptor instead.
 func (*ConsumeError) Descriptor() ([]byte, []int) {
-	return file_daprmq_proto_rawDescGZIP(), []int{49}
+	return file_daprmq_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *ConsumeError) GetErrorCode() string {
@@ -3451,15 +3695,17 @@ var File_daprmq_proto protoreflect.FileDescriptor
 
 const file_daprmq_proto_rawDesc = "" +
 	"\n" +
-	"\fdaprmq.proto\x12\x06daprmq\"\xbb\x01\n" +
+	"\fdaprmq.proto\x12\x06daprmq\"\x85\x02\n" +
 	"\vEnqueueItem\x12\x1b\n" +
 	"\titem_json\x18\x01 \x01(\tR\bitemJson\x12\x1a\n" +
 	"\bpriority\x18\x02 \x01(\x05R\bpriority\x12,\n" +
 	"\x0fidempotency_key\x18\x03 \x01(\tH\x00R\x0eidempotencyKey\x88\x01\x01\x12\"\n" +
 	"\n" +
-	"session_id\x18\x04 \x01(\tH\x01R\tsessionId\x88\x01\x01B\x12\n" +
+	"session_id\x18\x04 \x01(\tH\x01R\tsessionId\x88\x01\x01\x121\n" +
+	"\x12expiry_ttl_seconds\x18\x05 \x01(\x05H\x02R\x10expiryTtlSeconds\x88\x01\x01B\x12\n" +
 	"\x10_idempotency_keyB\r\n" +
-	"\v_session_id\"V\n" +
+	"\v_session_idB\x15\n" +
+	"\x13_expiry_ttl_seconds\"V\n" +
 	"\x0eEnqueueRequest\x12\x19\n" +
 	"\bqueue_id\x18\x01 \x01(\tR\aqueueId\x12)\n" +
 	"\x05items\x18\x02 \x03(\v2\x13.daprmq.EnqueueItemR\x05items\"\x9b\x01\n" +
@@ -3477,10 +3723,13 @@ const file_daprmq_proto_rawDesc = "" +
 	"\asuccess\x18\x01 \x01(\v2\x16.daprmq.DequeueSuccessH\x00R\asuccess\x12,\n" +
 	"\x05empty\x18\x02 \x01(\v2\x14.daprmq.DequeueEmptyH\x00R\x05empty\x120\n" +
 	"\x06locked\x18\x03 \x01(\v2\x16.daprmq.DequeueBlockedH\x00R\x06lockedB\b\n" +
-	"\x06result\"I\n" +
+	"\x06result\"\xd3\x01\n" +
 	"\x0eDequeueSuccess\x12\x1b\n" +
 	"\titem_json\x18\x01 \x03(\tR\bitemJson\x12\x1a\n" +
-	"\bpriority\x18\x02 \x03(\x05R\bpriority\"(\n" +
+	"\bpriority\x18\x02 \x03(\x05R\bpriority\x12\x1b\n" +
+	"\texpiry_at\x18\x03 \x03(\x01R\bexpiryAt\x12,\n" +
+	"\x12expiry_ttl_seconds\x18\x04 \x03(\x05R\x10expiryTtlSeconds\x12=\n" +
+	"\x1boriginal_expiry_ttl_seconds\x18\x05 \x03(\x05R\x18originalExpiryTtlSeconds\"(\n" +
 	"\fDequeueEmpty\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\"R\n" +
 	"\x0eDequeueBlocked\x12\x18\n" +
@@ -3498,12 +3747,15 @@ const file_daprmq_proto_rawDesc = "" +
 	"\asuccess\x18\x01 \x01(\v2\x1c.daprmq.DequeueLockedSuccessH\x00R\asuccess\x12,\n" +
 	"\x05empty\x18\x02 \x01(\v2\x14.daprmq.DequeueEmptyH\x00R\x05empty\x120\n" +
 	"\x06locked\x18\x03 \x01(\v2\x16.daprmq.DequeueBlockedH\x00R\x06lockedB\b\n" +
-	"\x06result\"\x90\x01\n" +
+	"\x06result\"\x9a\x02\n" +
 	"\x14DequeueLockedSuccess\x12\x1b\n" +
 	"\titem_json\x18\x01 \x03(\tR\bitemJson\x12\x1a\n" +
 	"\bpriority\x18\x02 \x03(\x05R\bpriority\x12\x17\n" +
 	"\alock_id\x18\x03 \x03(\tR\x06lockId\x12&\n" +
-	"\x0flock_expires_at\x18\x04 \x03(\x01R\rlockExpiresAt\"u\n" +
+	"\x0flock_expires_at\x18\x04 \x03(\x01R\rlockExpiresAt\x12\x1b\n" +
+	"\texpiry_at\x18\x05 \x03(\x01R\bexpiryAt\x12,\n" +
+	"\x12expiry_ttl_seconds\x18\x06 \x03(\x05R\x10expiryTtlSeconds\x12=\n" +
+	"\x1boriginal_expiry_ttl_seconds\x18\a \x03(\x05R\x18originalExpiryTtlSeconds\"u\n" +
 	"\x12AcknowledgeRequest\x12\x19\n" +
 	"\bqueue_id\x18\x01 \x01(\tR\aqueueId\x12\x17\n" +
 	"\alock_id\x18\x02 \x01(\tR\x06lockId\x12\x1e\n" +
@@ -3627,12 +3879,19 @@ const file_daprmq_proto_rawDesc = "" +
 	"\x0fSessionAssigned\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12(\n" +
-	"\x10lease_expires_at\x18\x02 \x01(\x01R\x0eleaseExpiresAt\"\x8c\x01\n" +
+	"\x10lease_expires_at\x18\x02 \x01(\x01R\x0eleaseExpiresAt\"\xea\x02\n" +
 	"\x10SessionDelivered\x12\x17\n" +
 	"\alock_id\x18\x01 \x01(\tR\x06lockId\x12\x1b\n" +
 	"\titem_json\x18\x02 \x01(\tR\bitemJson\x12\x1a\n" +
 	"\bpriority\x18\x03 \x01(\x05R\bpriority\x12&\n" +
-	"\x0flock_expires_at\x18\x04 \x01(\x01R\rlockExpiresAt\"G\n" +
+	"\x0flock_expires_at\x18\x04 \x01(\x01R\rlockExpiresAt\x12 \n" +
+	"\texpiry_at\x18\x05 \x01(\x01H\x00R\bexpiryAt\x88\x01\x01\x121\n" +
+	"\x12expiry_ttl_seconds\x18\x06 \x01(\x05H\x01R\x10expiryTtlSeconds\x88\x01\x01\x12B\n" +
+	"\x1boriginal_expiry_ttl_seconds\x18\a \x01(\x05H\x02R\x18originalExpiryTtlSeconds\x88\x01\x01B\f\n" +
+	"\n" +
+	"_expiry_atB\x15\n" +
+	"\x13_expiry_ttl_secondsB\x1e\n" +
+	"\x1c_original_expiry_ttl_seconds\"G\n" +
 	"\fSessionError\x12\x1d\n" +
 	"\n" +
 	"error_code\x18\x01 \x01(\tR\terrorCode\x12\x18\n" +
@@ -3641,19 +3900,24 @@ const file_daprmq_proto_rawDesc = "" +
 	"\amessage\x18\x01 \x01(\tR\amessage\"/\n" +
 	"\x0eSessionDrained\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"\xda\x01\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"\x8e\x02\n" +
 	"\x0eConsumeRequest\x12,\n" +
 	"\x05start\x18\x01 \x01(\v2\x14.daprmq.ConsumeStartH\x00R\x05start\x12&\n" +
 	"\x03ack\x18\x02 \x01(\v2\x12.daprmq.ConsumeAckH\x00R\x03ack\x12)\n" +
 	"\x04nack\x18\x03 \x01(\v2\x13.daprmq.ConsumeNackH\x00R\x04nack\x12<\n" +
 	"\vdead_letter\x18\x04 \x01(\v2\x19.daprmq.ConsumeDeadLetterH\x00R\n" +
-	"deadLetterB\t\n" +
-	"\apayload\"\xb6\x01\n" +
+	"deadLetter\x122\n" +
+	"\astarted\x18\x05 \x01(\v2\x16.daprmq.ConsumeStartedH\x00R\astartedB\t\n" +
+	"\apayload\"\xa5\x02\n" +
 	"\fConsumeStart\x12\x19\n" +
 	"\bqueue_id\x18\x01 \x01(\tR\aqueueId\x12%\n" +
 	"\x0eprefetch_count\x18\x02 \x01(\x05R\rprefetchCount\x12(\n" +
 	"\x10lock_ttl_seconds\x18\x03 \x01(\x05R\x0elockTtlSeconds\x12:\n" +
-	"\x19allow_competing_consumers\x18\x04 \x01(\bR\x17allowCompetingConsumers\"%\n" +
+	"\x19allow_competing_consumers\x18\x04 \x01(\bR\x17allowCompetingConsumers\x12=\n" +
+	"\flock_renewal\x18\x05 \x01(\x0e2\x1a.daprmq.ConsumeLockRenewalR\vlockRenewal\x12.\n" +
+	"\x13max_renewal_seconds\x18\x06 \x01(\x05R\x11maxRenewalSeconds\"+\n" +
+	"\x0eConsumeStarted\x12\x19\n" +
+	"\block_ids\x18\x01 \x03(\tR\alockIds\"%\n" +
 	"\n" +
 	"ConsumeAck\x12\x17\n" +
 	"\alock_id\x18\x01 \x01(\tR\x06lockId\"&\n" +
@@ -3665,13 +3929,20 @@ const file_daprmq_proto_rawDesc = "" +
 	"\tdelivered\x18\x01 \x01(\v2\x18.daprmq.ConsumeDeliveredH\x00R\tdelivered\x12B\n" +
 	"\rsettle_failed\x18\x02 \x01(\v2\x1b.daprmq.ConsumeSettleFailedH\x00R\fsettleFailed\x12,\n" +
 	"\x05error\x18\x03 \x01(\v2\x14.daprmq.ConsumeErrorH\x00R\x05errorB\t\n" +
-	"\apayload\"\xb3\x01\n" +
+	"\apayload\"\x91\x03\n" +
 	"\x10ConsumeDelivered\x12\x17\n" +
 	"\alock_id\x18\x01 \x01(\tR\x06lockId\x12\x1b\n" +
 	"\titem_json\x18\x02 \x01(\tR\bitemJson\x12\x1a\n" +
 	"\bpriority\x18\x03 \x01(\x05R\bpriority\x12&\n" +
 	"\x0flock_expires_at\x18\x04 \x01(\x01R\rlockExpiresAt\x12%\n" +
-	"\x0edelivery_count\x18\x05 \x01(\x05R\rdeliveryCount\"g\n" +
+	"\x0edelivery_count\x18\x05 \x01(\x05R\rdeliveryCount\x12 \n" +
+	"\texpiry_at\x18\x06 \x01(\x01H\x00R\bexpiryAt\x88\x01\x01\x121\n" +
+	"\x12expiry_ttl_seconds\x18\a \x01(\x05H\x01R\x10expiryTtlSeconds\x88\x01\x01\x12B\n" +
+	"\x1boriginal_expiry_ttl_seconds\x18\b \x01(\x05H\x02R\x18originalExpiryTtlSeconds\x88\x01\x01B\f\n" +
+	"\n" +
+	"_expiry_atB\x15\n" +
+	"\x13_expiry_ttl_secondsB\x1e\n" +
+	"\x1c_original_expiry_ttl_seconds\"g\n" +
 	"\x13ConsumeSettleFailed\x12\x17\n" +
 	"\alock_id\x18\x01 \x01(\tR\x06lockId\x12\x1d\n" +
 	"\n" +
@@ -3680,7 +3951,10 @@ const file_daprmq_proto_rawDesc = "" +
 	"\fConsumeError\x12\x1d\n" +
 	"\n" +
 	"error_code\x18\x01 \x01(\tR\terrorCode\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage2\xb8\a\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage*<\n" +
+	"\x12ConsumeLockRenewal\x12\x13\n" +
+	"\x0fRENEW_DELIVERED\x10\x00\x12\x11\n" +
+	"\rRENEW_STARTED\x10\x012\xb8\a\n" +
 	"\x06DaprMQ\x12:\n" +
 	"\aEnqueue\x12\x16.daprmq.EnqueueRequest\x1a\x17.daprmq.EnqueueResponse\x12:\n" +
 	"\aDequeue\x12\x16.daprmq.DequeueRequest\x1a\x17.daprmq.DequeueResponse\x12L\n" +
@@ -3711,117 +3985,122 @@ func file_daprmq_proto_rawDescGZIP() []byte {
 	return file_daprmq_proto_rawDescData
 }
 
-var file_daprmq_proto_msgTypes = make([]protoimpl.MessageInfo, 50)
+var file_daprmq_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_daprmq_proto_msgTypes = make([]protoimpl.MessageInfo, 51)
 var file_daprmq_proto_goTypes = []any{
-	(*EnqueueItem)(nil),               // 0: daprmq.EnqueueItem
-	(*EnqueueRequest)(nil),            // 1: daprmq.EnqueueRequest
-	(*EnqueueResponse)(nil),           // 2: daprmq.EnqueueResponse
-	(*DequeueRequest)(nil),            // 3: daprmq.DequeueRequest
-	(*DequeueResponse)(nil),           // 4: daprmq.DequeueResponse
-	(*DequeueSuccess)(nil),            // 5: daprmq.DequeueSuccess
-	(*DequeueEmpty)(nil),              // 6: daprmq.DequeueEmpty
-	(*DequeueBlocked)(nil),            // 7: daprmq.DequeueBlocked
-	(*DequeueLockedRequest)(nil),      // 8: daprmq.DequeueLockedRequest
-	(*DequeueLockedResponse)(nil),     // 9: daprmq.DequeueLockedResponse
-	(*DequeueLockedSuccess)(nil),      // 10: daprmq.DequeueLockedSuccess
-	(*AcknowledgeRequest)(nil),        // 11: daprmq.AcknowledgeRequest
-	(*AcknowledgeResponse)(nil),       // 12: daprmq.AcknowledgeResponse
-	(*AcknowledgeBatchRequest)(nil),   // 13: daprmq.AcknowledgeBatchRequest
-	(*AcknowledgeResult)(nil),         // 14: daprmq.AcknowledgeResult
-	(*AcknowledgeBatchResponse)(nil),  // 15: daprmq.AcknowledgeBatchResponse
-	(*NackRequest)(nil),               // 16: daprmq.NackRequest
-	(*NackResponse)(nil),              // 17: daprmq.NackResponse
-	(*ExtendLockRequest)(nil),         // 18: daprmq.ExtendLockRequest
-	(*ExtendLockResponse)(nil),        // 19: daprmq.ExtendLockResponse
-	(*DeadLetterRequest)(nil),         // 20: daprmq.DeadLetterRequest
-	(*DeadLetterResponse)(nil),        // 21: daprmq.DeadLetterResponse
-	(*DeadLetterSuccess)(nil),         // 22: daprmq.DeadLetterSuccess
-	(*DeadLetterError)(nil),           // 23: daprmq.DeadLetterError
-	(*AcceptSessionRequest)(nil),      // 24: daprmq.AcceptSessionRequest
-	(*AcceptSessionResponse)(nil),     // 25: daprmq.AcceptSessionResponse
-	(*RenewSessionLeaseRequest)(nil),  // 26: daprmq.RenewSessionLeaseRequest
-	(*RenewSessionLeaseResponse)(nil), // 27: daprmq.RenewSessionLeaseResponse
-	(*ReleaseSessionRequest)(nil),     // 28: daprmq.ReleaseSessionRequest
-	(*ReleaseSessionResponse)(nil),    // 29: daprmq.ReleaseSessionResponse
-	(*ConsumeSessionRequest)(nil),     // 30: daprmq.ConsumeSessionRequest
-	(*ConsumeSessionStart)(nil),       // 31: daprmq.ConsumeSessionStart
-	(*ConsumeSessionAck)(nil),         // 32: daprmq.ConsumeSessionAck
-	(*ConsumeSessionDeadLetter)(nil),  // 33: daprmq.ConsumeSessionDeadLetter
-	(*ConsumeSessionNack)(nil),        // 34: daprmq.ConsumeSessionNack
-	(*ConsumeSessionResponse)(nil),    // 35: daprmq.ConsumeSessionResponse
-	(*SessionAssigned)(nil),           // 36: daprmq.SessionAssigned
-	(*SessionDelivered)(nil),          // 37: daprmq.SessionDelivered
-	(*SessionError)(nil),              // 38: daprmq.SessionError
-	(*SessionLost)(nil),               // 39: daprmq.SessionLost
-	(*SessionDrained)(nil),            // 40: daprmq.SessionDrained
-	(*ConsumeRequest)(nil),            // 41: daprmq.ConsumeRequest
-	(*ConsumeStart)(nil),              // 42: daprmq.ConsumeStart
-	(*ConsumeAck)(nil),                // 43: daprmq.ConsumeAck
-	(*ConsumeNack)(nil),               // 44: daprmq.ConsumeNack
-	(*ConsumeDeadLetter)(nil),         // 45: daprmq.ConsumeDeadLetter
-	(*ConsumeResponse)(nil),           // 46: daprmq.ConsumeResponse
-	(*ConsumeDelivered)(nil),          // 47: daprmq.ConsumeDelivered
-	(*ConsumeSettleFailed)(nil),       // 48: daprmq.ConsumeSettleFailed
-	(*ConsumeError)(nil),              // 49: daprmq.ConsumeError
+	(ConsumeLockRenewal)(0),           // 0: daprmq.ConsumeLockRenewal
+	(*EnqueueItem)(nil),               // 1: daprmq.EnqueueItem
+	(*EnqueueRequest)(nil),            // 2: daprmq.EnqueueRequest
+	(*EnqueueResponse)(nil),           // 3: daprmq.EnqueueResponse
+	(*DequeueRequest)(nil),            // 4: daprmq.DequeueRequest
+	(*DequeueResponse)(nil),           // 5: daprmq.DequeueResponse
+	(*DequeueSuccess)(nil),            // 6: daprmq.DequeueSuccess
+	(*DequeueEmpty)(nil),              // 7: daprmq.DequeueEmpty
+	(*DequeueBlocked)(nil),            // 8: daprmq.DequeueBlocked
+	(*DequeueLockedRequest)(nil),      // 9: daprmq.DequeueLockedRequest
+	(*DequeueLockedResponse)(nil),     // 10: daprmq.DequeueLockedResponse
+	(*DequeueLockedSuccess)(nil),      // 11: daprmq.DequeueLockedSuccess
+	(*AcknowledgeRequest)(nil),        // 12: daprmq.AcknowledgeRequest
+	(*AcknowledgeResponse)(nil),       // 13: daprmq.AcknowledgeResponse
+	(*AcknowledgeBatchRequest)(nil),   // 14: daprmq.AcknowledgeBatchRequest
+	(*AcknowledgeResult)(nil),         // 15: daprmq.AcknowledgeResult
+	(*AcknowledgeBatchResponse)(nil),  // 16: daprmq.AcknowledgeBatchResponse
+	(*NackRequest)(nil),               // 17: daprmq.NackRequest
+	(*NackResponse)(nil),              // 18: daprmq.NackResponse
+	(*ExtendLockRequest)(nil),         // 19: daprmq.ExtendLockRequest
+	(*ExtendLockResponse)(nil),        // 20: daprmq.ExtendLockResponse
+	(*DeadLetterRequest)(nil),         // 21: daprmq.DeadLetterRequest
+	(*DeadLetterResponse)(nil),        // 22: daprmq.DeadLetterResponse
+	(*DeadLetterSuccess)(nil),         // 23: daprmq.DeadLetterSuccess
+	(*DeadLetterError)(nil),           // 24: daprmq.DeadLetterError
+	(*AcceptSessionRequest)(nil),      // 25: daprmq.AcceptSessionRequest
+	(*AcceptSessionResponse)(nil),     // 26: daprmq.AcceptSessionResponse
+	(*RenewSessionLeaseRequest)(nil),  // 27: daprmq.RenewSessionLeaseRequest
+	(*RenewSessionLeaseResponse)(nil), // 28: daprmq.RenewSessionLeaseResponse
+	(*ReleaseSessionRequest)(nil),     // 29: daprmq.ReleaseSessionRequest
+	(*ReleaseSessionResponse)(nil),    // 30: daprmq.ReleaseSessionResponse
+	(*ConsumeSessionRequest)(nil),     // 31: daprmq.ConsumeSessionRequest
+	(*ConsumeSessionStart)(nil),       // 32: daprmq.ConsumeSessionStart
+	(*ConsumeSessionAck)(nil),         // 33: daprmq.ConsumeSessionAck
+	(*ConsumeSessionDeadLetter)(nil),  // 34: daprmq.ConsumeSessionDeadLetter
+	(*ConsumeSessionNack)(nil),        // 35: daprmq.ConsumeSessionNack
+	(*ConsumeSessionResponse)(nil),    // 36: daprmq.ConsumeSessionResponse
+	(*SessionAssigned)(nil),           // 37: daprmq.SessionAssigned
+	(*SessionDelivered)(nil),          // 38: daprmq.SessionDelivered
+	(*SessionError)(nil),              // 39: daprmq.SessionError
+	(*SessionLost)(nil),               // 40: daprmq.SessionLost
+	(*SessionDrained)(nil),            // 41: daprmq.SessionDrained
+	(*ConsumeRequest)(nil),            // 42: daprmq.ConsumeRequest
+	(*ConsumeStart)(nil),              // 43: daprmq.ConsumeStart
+	(*ConsumeStarted)(nil),            // 44: daprmq.ConsumeStarted
+	(*ConsumeAck)(nil),                // 45: daprmq.ConsumeAck
+	(*ConsumeNack)(nil),               // 46: daprmq.ConsumeNack
+	(*ConsumeDeadLetter)(nil),         // 47: daprmq.ConsumeDeadLetter
+	(*ConsumeResponse)(nil),           // 48: daprmq.ConsumeResponse
+	(*ConsumeDelivered)(nil),          // 49: daprmq.ConsumeDelivered
+	(*ConsumeSettleFailed)(nil),       // 50: daprmq.ConsumeSettleFailed
+	(*ConsumeError)(nil),              // 51: daprmq.ConsumeError
 }
 var file_daprmq_proto_depIdxs = []int32{
-	0,  // 0: daprmq.EnqueueRequest.items:type_name -> daprmq.EnqueueItem
-	5,  // 1: daprmq.DequeueResponse.success:type_name -> daprmq.DequeueSuccess
-	6,  // 2: daprmq.DequeueResponse.empty:type_name -> daprmq.DequeueEmpty
-	7,  // 3: daprmq.DequeueResponse.locked:type_name -> daprmq.DequeueBlocked
-	10, // 4: daprmq.DequeueLockedResponse.success:type_name -> daprmq.DequeueLockedSuccess
-	6,  // 5: daprmq.DequeueLockedResponse.empty:type_name -> daprmq.DequeueEmpty
-	7,  // 6: daprmq.DequeueLockedResponse.locked:type_name -> daprmq.DequeueBlocked
-	14, // 7: daprmq.AcknowledgeBatchResponse.results:type_name -> daprmq.AcknowledgeResult
-	22, // 8: daprmq.DeadLetterResponse.success:type_name -> daprmq.DeadLetterSuccess
-	23, // 9: daprmq.DeadLetterResponse.error:type_name -> daprmq.DeadLetterError
-	31, // 10: daprmq.ConsumeSessionRequest.start:type_name -> daprmq.ConsumeSessionStart
-	32, // 11: daprmq.ConsumeSessionRequest.ack:type_name -> daprmq.ConsumeSessionAck
-	33, // 12: daprmq.ConsumeSessionRequest.dead_letter:type_name -> daprmq.ConsumeSessionDeadLetter
-	34, // 13: daprmq.ConsumeSessionRequest.nack:type_name -> daprmq.ConsumeSessionNack
-	36, // 14: daprmq.ConsumeSessionResponse.session_assigned:type_name -> daprmq.SessionAssigned
-	37, // 15: daprmq.ConsumeSessionResponse.delivered:type_name -> daprmq.SessionDelivered
-	38, // 16: daprmq.ConsumeSessionResponse.error:type_name -> daprmq.SessionError
-	39, // 17: daprmq.ConsumeSessionResponse.session_lost:type_name -> daprmq.SessionLost
-	40, // 18: daprmq.ConsumeSessionResponse.session_drained:type_name -> daprmq.SessionDrained
-	42, // 19: daprmq.ConsumeRequest.start:type_name -> daprmq.ConsumeStart
-	43, // 20: daprmq.ConsumeRequest.ack:type_name -> daprmq.ConsumeAck
-	44, // 21: daprmq.ConsumeRequest.nack:type_name -> daprmq.ConsumeNack
-	45, // 22: daprmq.ConsumeRequest.dead_letter:type_name -> daprmq.ConsumeDeadLetter
-	47, // 23: daprmq.ConsumeResponse.delivered:type_name -> daprmq.ConsumeDelivered
-	48, // 24: daprmq.ConsumeResponse.settle_failed:type_name -> daprmq.ConsumeSettleFailed
-	49, // 25: daprmq.ConsumeResponse.error:type_name -> daprmq.ConsumeError
-	1,  // 26: daprmq.DaprMQ.Enqueue:input_type -> daprmq.EnqueueRequest
-	3,  // 27: daprmq.DaprMQ.Dequeue:input_type -> daprmq.DequeueRequest
-	8,  // 28: daprmq.DaprMQ.DequeueLocked:input_type -> daprmq.DequeueLockedRequest
-	11, // 29: daprmq.DaprMQ.Acknowledge:input_type -> daprmq.AcknowledgeRequest
-	13, // 30: daprmq.DaprMQ.AcknowledgeBatch:input_type -> daprmq.AcknowledgeBatchRequest
-	16, // 31: daprmq.DaprMQ.Nack:input_type -> daprmq.NackRequest
-	18, // 32: daprmq.DaprMQ.ExtendLock:input_type -> daprmq.ExtendLockRequest
-	20, // 33: daprmq.DaprMQ.DeadLetter:input_type -> daprmq.DeadLetterRequest
-	24, // 34: daprmq.DaprMQ.AcceptSession:input_type -> daprmq.AcceptSessionRequest
-	26, // 35: daprmq.DaprMQ.RenewSessionLease:input_type -> daprmq.RenewSessionLeaseRequest
-	28, // 36: daprmq.DaprMQ.ReleaseSession:input_type -> daprmq.ReleaseSessionRequest
-	30, // 37: daprmq.DaprMQ.ConsumeSession:input_type -> daprmq.ConsumeSessionRequest
-	41, // 38: daprmq.DaprMQ.Consume:input_type -> daprmq.ConsumeRequest
-	2,  // 39: daprmq.DaprMQ.Enqueue:output_type -> daprmq.EnqueueResponse
-	4,  // 40: daprmq.DaprMQ.Dequeue:output_type -> daprmq.DequeueResponse
-	9,  // 41: daprmq.DaprMQ.DequeueLocked:output_type -> daprmq.DequeueLockedResponse
-	12, // 42: daprmq.DaprMQ.Acknowledge:output_type -> daprmq.AcknowledgeResponse
-	15, // 43: daprmq.DaprMQ.AcknowledgeBatch:output_type -> daprmq.AcknowledgeBatchResponse
-	17, // 44: daprmq.DaprMQ.Nack:output_type -> daprmq.NackResponse
-	19, // 45: daprmq.DaprMQ.ExtendLock:output_type -> daprmq.ExtendLockResponse
-	21, // 46: daprmq.DaprMQ.DeadLetter:output_type -> daprmq.DeadLetterResponse
-	25, // 47: daprmq.DaprMQ.AcceptSession:output_type -> daprmq.AcceptSessionResponse
-	27, // 48: daprmq.DaprMQ.RenewSessionLease:output_type -> daprmq.RenewSessionLeaseResponse
-	29, // 49: daprmq.DaprMQ.ReleaseSession:output_type -> daprmq.ReleaseSessionResponse
-	35, // 50: daprmq.DaprMQ.ConsumeSession:output_type -> daprmq.ConsumeSessionResponse
-	46, // 51: daprmq.DaprMQ.Consume:output_type -> daprmq.ConsumeResponse
-	39, // [39:52] is the sub-list for method output_type
-	26, // [26:39] is the sub-list for method input_type
-	26, // [26:26] is the sub-list for extension type_name
-	26, // [26:26] is the sub-list for extension extendee
-	0,  // [0:26] is the sub-list for field type_name
+	1,  // 0: daprmq.EnqueueRequest.items:type_name -> daprmq.EnqueueItem
+	6,  // 1: daprmq.DequeueResponse.success:type_name -> daprmq.DequeueSuccess
+	7,  // 2: daprmq.DequeueResponse.empty:type_name -> daprmq.DequeueEmpty
+	8,  // 3: daprmq.DequeueResponse.locked:type_name -> daprmq.DequeueBlocked
+	11, // 4: daprmq.DequeueLockedResponse.success:type_name -> daprmq.DequeueLockedSuccess
+	7,  // 5: daprmq.DequeueLockedResponse.empty:type_name -> daprmq.DequeueEmpty
+	8,  // 6: daprmq.DequeueLockedResponse.locked:type_name -> daprmq.DequeueBlocked
+	15, // 7: daprmq.AcknowledgeBatchResponse.results:type_name -> daprmq.AcknowledgeResult
+	23, // 8: daprmq.DeadLetterResponse.success:type_name -> daprmq.DeadLetterSuccess
+	24, // 9: daprmq.DeadLetterResponse.error:type_name -> daprmq.DeadLetterError
+	32, // 10: daprmq.ConsumeSessionRequest.start:type_name -> daprmq.ConsumeSessionStart
+	33, // 11: daprmq.ConsumeSessionRequest.ack:type_name -> daprmq.ConsumeSessionAck
+	34, // 12: daprmq.ConsumeSessionRequest.dead_letter:type_name -> daprmq.ConsumeSessionDeadLetter
+	35, // 13: daprmq.ConsumeSessionRequest.nack:type_name -> daprmq.ConsumeSessionNack
+	37, // 14: daprmq.ConsumeSessionResponse.session_assigned:type_name -> daprmq.SessionAssigned
+	38, // 15: daprmq.ConsumeSessionResponse.delivered:type_name -> daprmq.SessionDelivered
+	39, // 16: daprmq.ConsumeSessionResponse.error:type_name -> daprmq.SessionError
+	40, // 17: daprmq.ConsumeSessionResponse.session_lost:type_name -> daprmq.SessionLost
+	41, // 18: daprmq.ConsumeSessionResponse.session_drained:type_name -> daprmq.SessionDrained
+	43, // 19: daprmq.ConsumeRequest.start:type_name -> daprmq.ConsumeStart
+	45, // 20: daprmq.ConsumeRequest.ack:type_name -> daprmq.ConsumeAck
+	46, // 21: daprmq.ConsumeRequest.nack:type_name -> daprmq.ConsumeNack
+	47, // 22: daprmq.ConsumeRequest.dead_letter:type_name -> daprmq.ConsumeDeadLetter
+	44, // 23: daprmq.ConsumeRequest.started:type_name -> daprmq.ConsumeStarted
+	0,  // 24: daprmq.ConsumeStart.lock_renewal:type_name -> daprmq.ConsumeLockRenewal
+	49, // 25: daprmq.ConsumeResponse.delivered:type_name -> daprmq.ConsumeDelivered
+	50, // 26: daprmq.ConsumeResponse.settle_failed:type_name -> daprmq.ConsumeSettleFailed
+	51, // 27: daprmq.ConsumeResponse.error:type_name -> daprmq.ConsumeError
+	2,  // 28: daprmq.DaprMQ.Enqueue:input_type -> daprmq.EnqueueRequest
+	4,  // 29: daprmq.DaprMQ.Dequeue:input_type -> daprmq.DequeueRequest
+	9,  // 30: daprmq.DaprMQ.DequeueLocked:input_type -> daprmq.DequeueLockedRequest
+	12, // 31: daprmq.DaprMQ.Acknowledge:input_type -> daprmq.AcknowledgeRequest
+	14, // 32: daprmq.DaprMQ.AcknowledgeBatch:input_type -> daprmq.AcknowledgeBatchRequest
+	17, // 33: daprmq.DaprMQ.Nack:input_type -> daprmq.NackRequest
+	19, // 34: daprmq.DaprMQ.ExtendLock:input_type -> daprmq.ExtendLockRequest
+	21, // 35: daprmq.DaprMQ.DeadLetter:input_type -> daprmq.DeadLetterRequest
+	25, // 36: daprmq.DaprMQ.AcceptSession:input_type -> daprmq.AcceptSessionRequest
+	27, // 37: daprmq.DaprMQ.RenewSessionLease:input_type -> daprmq.RenewSessionLeaseRequest
+	29, // 38: daprmq.DaprMQ.ReleaseSession:input_type -> daprmq.ReleaseSessionRequest
+	31, // 39: daprmq.DaprMQ.ConsumeSession:input_type -> daprmq.ConsumeSessionRequest
+	42, // 40: daprmq.DaprMQ.Consume:input_type -> daprmq.ConsumeRequest
+	3,  // 41: daprmq.DaprMQ.Enqueue:output_type -> daprmq.EnqueueResponse
+	5,  // 42: daprmq.DaprMQ.Dequeue:output_type -> daprmq.DequeueResponse
+	10, // 43: daprmq.DaprMQ.DequeueLocked:output_type -> daprmq.DequeueLockedResponse
+	13, // 44: daprmq.DaprMQ.Acknowledge:output_type -> daprmq.AcknowledgeResponse
+	16, // 45: daprmq.DaprMQ.AcknowledgeBatch:output_type -> daprmq.AcknowledgeBatchResponse
+	18, // 46: daprmq.DaprMQ.Nack:output_type -> daprmq.NackResponse
+	20, // 47: daprmq.DaprMQ.ExtendLock:output_type -> daprmq.ExtendLockResponse
+	22, // 48: daprmq.DaprMQ.DeadLetter:output_type -> daprmq.DeadLetterResponse
+	26, // 49: daprmq.DaprMQ.AcceptSession:output_type -> daprmq.AcceptSessionResponse
+	28, // 50: daprmq.DaprMQ.RenewSessionLease:output_type -> daprmq.RenewSessionLeaseResponse
+	30, // 51: daprmq.DaprMQ.ReleaseSession:output_type -> daprmq.ReleaseSessionResponse
+	36, // 52: daprmq.DaprMQ.ConsumeSession:output_type -> daprmq.ConsumeSessionResponse
+	48, // 53: daprmq.DaprMQ.Consume:output_type -> daprmq.ConsumeResponse
+	41, // [41:54] is the sub-list for method output_type
+	28, // [28:41] is the sub-list for method input_type
+	28, // [28:28] is the sub-list for extension type_name
+	28, // [28:28] is the sub-list for extension extendee
+	0,  // [0:28] is the sub-list for field type_name
 }
 
 func init() { file_daprmq_proto_init() }
@@ -3866,29 +4145,33 @@ func file_daprmq_proto_init() {
 		(*ConsumeSessionResponse_SessionLost)(nil),
 		(*ConsumeSessionResponse_SessionDrained)(nil),
 	}
+	file_daprmq_proto_msgTypes[37].OneofWrappers = []any{}
 	file_daprmq_proto_msgTypes[41].OneofWrappers = []any{
 		(*ConsumeRequest_Start)(nil),
 		(*ConsumeRequest_Ack)(nil),
 		(*ConsumeRequest_Nack)(nil),
 		(*ConsumeRequest_DeadLetter)(nil),
+		(*ConsumeRequest_Started)(nil),
 	}
-	file_daprmq_proto_msgTypes[46].OneofWrappers = []any{
+	file_daprmq_proto_msgTypes[47].OneofWrappers = []any{
 		(*ConsumeResponse_Delivered)(nil),
 		(*ConsumeResponse_SettleFailed)(nil),
 		(*ConsumeResponse_Error)(nil),
 	}
+	file_daprmq_proto_msgTypes[48].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_daprmq_proto_rawDesc), len(file_daprmq_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   50,
+			NumEnums:      1,
+			NumMessages:   51,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_daprmq_proto_goTypes,
 		DependencyIndexes: file_daprmq_proto_depIdxs,
+		EnumInfos:         file_daprmq_proto_enumTypes,
 		MessageInfos:      file_daprmq_proto_msgTypes,
 	}.Build()
 	File_daprmq_proto = out.File

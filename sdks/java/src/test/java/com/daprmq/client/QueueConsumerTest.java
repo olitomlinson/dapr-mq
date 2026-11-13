@@ -60,6 +60,12 @@ class QueueConsumerTest {
                     .setLockId(lockId).setItemJson("{\"n\":1}").setPriority(1).setLockExpiresAt(0).setDeliveryCount(deliveryCount)).build()));
         }
 
+        void deliverWithExpiry(String lockId) {
+            whenOpen(() -> responses.onNext(ConsumeResponse.newBuilder().setDelivered(ConsumeDelivered.newBuilder()
+                    .setLockId(lockId).setItemJson("{\"n\":1}").setPriority(1).setLockExpiresAt(0).setDeliveryCount(1)
+                    .setExpiryAt(1800003600.0).setExpiryTtlSeconds(3600).setOriginalExpiryTtlSeconds(600)).build()));
+        }
+
         void breakStream() {
             whenOpen(() -> responses.onError(Status.UNAVAILABLE.withDescription("stream broke").asRuntimeException()));
         }
@@ -144,6 +150,20 @@ class QueueConsumerTest {
         assertEquals(1, ctx.item().get("n").asInt());
         assertEquals(1, ctx.priority());
         assertEquals(3, ctx.deliveryCount());
+    }
+
+    @Test
+    void passesTheMessagesExpiryToTheHandler() throws Exception {
+        FakeServerStream stream = new FakeServerStream();
+        List<QueueMessageContext> contexts = new CopyOnWriteArrayList<>();
+        QueueConsumer consumer = consumer(new FakeClient(stream), new QueueConsumerOptions(), contexts::add, new CopyOnWriteArrayList<>());
+
+        consumer.start();
+        stream.deliverWithExpiry("L1");
+        waitUntil(() -> stream.settled().size() == 1);
+        consumer.stop();
+
+        assertEquals(new com.daprmq.client.types.MessageExpiry(1800003600.0, 3600, 600), contexts.get(0).expiry());
     }
 
     @Test

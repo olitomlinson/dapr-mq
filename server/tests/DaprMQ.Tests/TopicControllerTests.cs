@@ -5,6 +5,8 @@ using Microsoft.Extensions.Logging;
 using Moq;
 using DaprMQ.ApiServer.Controllers;
 using DaprMQ.ApiServer.Models;
+using DaprMQ.ApiServer.Services;
+using Microsoft.Extensions.Time.Testing;
 using DaprMQ.Interfaces;
 
 namespace DaprMQ.Tests;
@@ -13,7 +15,62 @@ public class TopicControllerTests
 {
     private readonly Mock<ILogger<TopicController>> _mockLogger = new();
 
-    private TopicController CreateController(ITopicActorInvoker invoker) => new(_mockLogger.Object, invoker);
+    private static readonly DateTimeOffset Now = DateTimeOffset.FromUnixTimeSeconds(1_800_000_000);
+
+    private TopicController CreateController(ITopicActorInvoker invoker, ExpiryConfig? expiryConfig = null) =>
+        new(_mockLogger.Object, invoker, new MessageExpiryStamper(expiryConfig ?? new ExpiryConfig(), new FakeTimeProvider(Now)));
+
+    private static ApiPublishRequest PublishRequestWithExpiry(int? expiryTtlSeconds) => new(new List<ApiEnqueueItem>
+    {
+        new ApiEnqueueItem(JsonSerializer.SerializeToElement(new { hello = "world" }), ExpiryTtlSeconds: expiryTtlSeconds)
+    });
+
+    private static (Mock<ITopicActorInvoker> Invoker, Func<PublishRequest?> Captured) CapturingInvoker()
+    {
+        var mockInvoker = new Mock<ITopicActorInvoker>();
+        PublishRequest? captured = null;
+        mockInvoker.Setup(i => i.InvokeMethodAsync<PublishRequest, PublishResponse>(
+                It.IsAny<ActorId>(), It.IsAny<string>(), It.IsAny<PublishRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<ActorId, string, PublishRequest, CancellationToken>((_, _, req, _) => captured = req)
+            .ReturnsAsync(new PublishResponse { Accepted = true, PublishId = "p1", Sequence = 0 });
+        return (mockInvoker, () => captured);
+    }
+
+    [Theory]
+    [InlineData(599)]
+    [InlineData(0)]
+    [InlineData(ExpiryConfig.MaxExpiryTtlSeconds + 1)]
+    public async Task Publish_ExpiryTtlSecondsOutOfRange_Returns400(int expiryTtlSeconds)
+    {
+        var (invoker, captured) = CapturingInvoker();
+
+        var result = await CreateController(invoker.Object).Publish("topic-a", PublishRequestWithExpiry(expiryTtlSeconds));
+
+        Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Null(captured());
+    }
+
+    [Fact]
+    public async Task Publish_StampsExpiryAtOnceFromTheControllersClock()
+    {
+        var (invoker, captured) = CapturingInvoker();
+
+        await CreateController(invoker.Object).Publish("topic-a", PublishRequestWithExpiry(3600));
+
+        var item = Assert.Single(captured()!.Items);
+        Assert.Equal(3600, item.ExpiryTtlSeconds);
+        Assert.Equal(Now.ToUnixTimeSeconds() + 3600, item.ExpiryAt);
+    }
+
+    [Fact]
+    public async Task Publish_WithoutATimeToLive_UsesTheConfiguredDefault()
+    {
+        var (invoker, captured) = CapturingInvoker();
+
+        await CreateController(invoker.Object, new ExpiryConfig { DefaultExpiryTtlSeconds = 7200 }).Publish("topic-a", PublishRequestWithExpiry(null));
+
+        Assert.Equal(7200, Assert.Single(captured()!.Items).ExpiryTtlSeconds);
+    }
 
     private static ApiPublishRequest SinglePublishRequest() => new(new List<ApiEnqueueItem>
     {

@@ -129,6 +129,41 @@ describe('Queue detail', () => {
     await waitFor(() => expect(cursors).toEqual([null, '1:3:1040011']))
   })
 
+  it('shows when each message expires and marks expired ones', async () => {
+    const now = Date.now() / 1000
+    server.use(http.get(api('/queues/orders/messages'), () => HttpResponse.json({ items: [
+      { location: '1:3:11', priority: 1, sequence: 11, deliveryCount: 0, sizeBytes: 2, text: '{}', textTruncated: false, isBlobReference: false, expiryAt: now + 3630, expiryTtlSeconds: 7200 },
+      { location: '1:3:12', priority: 1, sequence: 12, deliveryCount: 0, sizeBytes: 2, text: '{}', textTruncated: false, isBlobReference: false, expiryAt: now - 5, expiryTtlSeconds: 600 },
+      { location: '1:3:13', priority: 1, sequence: 13, deliveryCount: 0, sizeBytes: 2, text: '{}', textTruncated: false, isBlobReference: false },
+    ], nextCursor: null })))
+    renderAt('/queues/orders?tab=messages')
+
+    const live = (await screen.findByText('11')).closest('tr')!
+    expect(within(live).getByText('1h')).toBeInTheDocument()
+    const expired = screen.getByText('12').closest('tr')!
+    expect(within(expired).getByText('expired')).toBeInTheDocument()
+    expect(expired).toHaveAttribute('data-expired', 'true')
+    const never = screen.getByText('13').closest('tr')!
+    expect(within(never).getByText('never')).toBeInTheDocument()
+  })
+
+  it('shows the expiry and the original time to live in the drawer', async () => {
+    const now = Date.now() / 1000
+    server.use(http.get(api('/queues/orders-deadletter/messages/:location'), () => HttpResponse.json({
+      location: '1:0:0', priority: 1, sequence: 7, deliveryCount: 0, sizeBytes: 2, text: '{}', textTruncated: false, isBlobReference: false,
+      expiryAt: now + 3630, expiryTtlSeconds: 2_419_200, originalExpiryTtlSeconds: 600,
+    })))
+    server.use(http.get(api('/queues/orders-deadletter/messages'), () => HttpResponse.json({ items: [
+      { location: '1:0:0', priority: 1, sequence: 7, deliveryCount: 0, sizeBytes: 2, text: '{}', textTruncated: false, isBlobReference: false, expiryAt: now + 3630, expiryTtlSeconds: 2_419_200, originalExpiryTtlSeconds: 600 },
+    ], nextCursor: null })))
+    renderAt('/queues/orders?tab=deadletter')
+
+    await userEvent.click((await screen.findByText('7')).closest('tr')!)
+    const drawer = await screen.findByRole('dialog')
+    expect(await within(drawer).findByText('in 1h (time to live 28d)')).toBeInTheDocument()
+    expect(within(drawer).getByText('10m')).toBeInTheDocument()
+  })
+
   it('shows "consumed since listed" when a message has gone', async () => {
     server.use(http.get(api('/queues/orders/messages/:location'), () => new HttpResponse(null, { status: 410 })))
     renderAt('/queues/orders?tab=messages')
