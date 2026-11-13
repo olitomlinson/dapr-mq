@@ -1,7 +1,7 @@
 # Message expiry
 
-**Status:** proposed. Not yet implemented. Needed by the topic design in
-[large-payload-offload.md](large-payload-offload.md) (open question 2).
+**Status:** implemented, except the pubsub component (phase 3) and the shared topic blob parts, which wait on
+[large-payload-offload.md](large-payload-offload.md). Needed by that proposal's topic design (open question 2).
 
 ## Context
 
